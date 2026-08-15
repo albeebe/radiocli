@@ -1,49 +1,80 @@
 # radiocli
 
-A command-line tool for controlling and inspecting a Uniden SDS150 scanner over its USB serial port. The binary is called `radiocli`.
+Control your Uniden SDS150 scanner from your computer.
 
-The SDS150 is a handheld radio scanner: it sweeps a large set of frequencies and stops on the ones that are active, trunk-tracking Motorola, P25, DMR and NXDN systems and filtering a nationwide database down to wherever you are. Everything it can do is normally driven by a knob and a keypad. `radiocli` drives the same radio from a terminal instead, so a person or a script can read what the scanner is doing, browse and edit its memory, tune it, and change its settings, with output as either human-readable text or JSON.
+The SDS150 is normally driven by its knob and keypad. `radiocli` drives the same radio over its USB cable instead, from a terminal window on macOS, Windows, or Linux, though macOS is where it has been tested so far. You can see what the scanner is doing, browse and edit your favorites lists, tune to a frequency, change settings, and back up the memory card. Everything works as plain text you can read, or as JSON a script can consume.
 
-The tool is unofficial and not affiliated with Uniden. It was built by working the radio out from the outside, and the notes behind it live in [research/](research/). Everything here was developed and tested against one SDS150 on firmware 1.00.37.
+This tool is unofficial and not affiliated with Uniden. It was built by working the radio out from the outside, and the notes behind it live in [research/](research/). Everything was developed and tested against one SDS150 on firmware 1.00.37. The SDS100 and SDS200 speak the same protocol, so it may well work on them unchanged, but I only own an SDS150 and can't confirm it. If you try one, open an issue and tell me what happened, either way.
 
-## Why it exists
+## Why this exists
 
-The SDS150 exposes two low-level primitives over its serial port: a command to press any front-panel key, including the rotary knob, and a command to read the whole screen back as text plus per-character attributes. Between them they are a complete remote-control substrate. Anything the operator can do, a program can do, and anything the screen shows, a program can read. `radiocli` is built on that pair, wrapping the raw key-pressing and screen-reading in commands that name what they do and check that they worked. How the protocol and the display were reverse-engineered is written up in [research/](research/).
+This is a hobby project. I wanted an AI agent to be able to run my scanner, and there was no way to do that, so after thirty years of building software for a living I built one for fun. It turns out an agent needs the same things a person at a keyboard needs: commands that say what they do, check that they worked, and answer in a form that can be parsed. So the same tool serves both. You can type the commands yourself, wire them into a script, or hand the whole thing to an agent and tell it to program your scanner for you.
 
-## Requirements
+I write about the project at [radiocli.com](https://radiocli.com), including blog posts on how it was built and some of the cool facts and oddities the radio gave up along the way.
 
-- Go 1.25 or newer to build.
-- An SDS150 connected by USB, in serial-port mode rather than mass-storage mode.
-- A supported operating system: macOS, Linux, or Windows.
+## Installing
 
-The scanner's audio does not travel over the USB control cable. It leaves the radio as an ordinary sound signal from the headphone or record socket, so hearing it on the computer means running a second cable into an audio input. The `audio` command lists the inputs available.
+You do not need to install anything else first. Download the file for your computer from the [latest release](https://github.com/albeebe/radiocli/releases/latest), and follow the steps for your system.
 
-## Building
+### Mac
 
-The Go module lives in [source/](source/). Build the binary from there:
+1. Download `radiocli-mac.zip` and double-click it. That leaves a file named `radiocli` in your Downloads folder.
+2. Open the Terminal app (press Cmd-Space, type `terminal`, press Return).
+3. Type these two lines, pressing Return after each. The first one tells macOS you trust the file, since it was downloaded from the internet:
 
 ```
-cd source
-go build -o radiocli .
+xattr -d com.apple.quarantine ~/Downloads/radiocli
+sudo mv ~/Downloads/radiocli /usr/local/bin/
 ```
 
-That produces a `radiocli` binary in `source/`. Copy it onto your `PATH`, or run it in place as `./radiocli`.
+The second line asks for your Mac's password and puts the tool where the Terminal can always find it. From then on, typing `radiocli` in any Terminal window works.
 
-## Quick start
+### Windows
 
-Find the attached scanners and the serial port to address:
+Heads up: I develop on a Mac, and the Windows build has not been tested against a real scanner yet. It should work, but you may be the first to find out. If something misbehaves, [open an issue](https://github.com/albeebe/radiocli/issues) and tell me about it.
+
+1. Download `radiocli-windows.zip`, right-click it, and choose **Extract All**. That leaves a file named `radiocli.exe`.
+2. Open the extracted folder, click in the address bar at the top, type `cmd`, and press Enter. A black command window opens in that folder.
+3. Type `radiocli devices` and press Enter.
+
+If Windows shows a blue "Windows protected your PC" screen the first time, click **More info** and then **Run anyway**. That screen appears because the tool is from a small independent project rather than a large company.
+
+### Linux
+
+Same caveat as Windows: I develop on a Mac, and the Linux build has not been tested against a real scanner yet. If it misbehaves, [open an issue](https://github.com/albeebe/radiocli/issues).
+
+```
+tar xzf radiocli-linux.tar.gz        # radiocli-linux-arm64.tar.gz on a Raspberry Pi
+sudo mv radiocli /usr/local/bin/
+```
+
+If the scanner's port later refuses with a permission error, add yourself to the group that owns serial ports and log out and back in:
+
+```
+sudo usermod -a -G dialout $USER
+```
+
+## Plugging in the scanner
+
+Connect the SDS150 to the computer with its USB cable and turn it on. The scanner briefly asks which USB mode to use; press the `.` key for Serial Port, or ignore the prompt and it picks the right mode on its own. Then ask the computer what it sees:
 
 ```
 radiocli devices
 ```
 
-Every command that talks to the radio needs to be told which port to use, with `--device`, because nothing is remembered between runs. Putting the port in a shell variable keeps the examples short:
+That prints the scanner and, in the `PORT` column, the name of the port to use. Every command that talks to the radio needs that port passed with `--device`, because nothing is remembered between runs. Putting it in a shell variable keeps things short:
 
 ```
 SDS=/dev/cu.usbmodem00000000000011
+```
 
-radiocli --device $SDS status        # confirm it answers, and what it is doing
-radiocli --device $SDS screen        # the display, as text
+One thing the cable does not carry is sound. The scanner's audio leaves through its headphone socket like any radio, so hearing it on the computer means running an audio cable into an input. The `audio` command lists the inputs available.
+
+## First commands
+
+```
+radiocli --device $SDS status             # confirm it answers, and what it is doing
+radiocli --device $SDS screen             # the display, as text
 radiocli --device $SDS scanning systems   # the systems being cycled through
 radiocli --device $SDS tune 162.550       # park it on one frequency
 radiocli --device $SDS scan               # back to scanning
@@ -55,71 +86,49 @@ The commands that never need `--device` are `devices` and `audio`, which look at
 
 The full command reference is in [documentation/commands/](documentation/commands/), and a task-oriented tour is in [documentation/examples.md](documentation/examples.md). The commands group roughly as follows.
 
-Inspect what the scanner is doing right now:
+- **See what it is doing right now**: `status`, `scanning`, `screen`, `battery`, `backlight`, `display`, `colors`, `version`.
+- **Browse the memory**, which is organized as favorites lists, then systems, then departments, then channels: `favorites`, `systems`, `departments`, `sites`, `channels`, `banks`.
+- **Control and tune it**: `scan`, `tune`, `weather`, `location`, `volume`, `squelch`, `beep`, `clock`.
+- **Edit the memory** at every level, with `new`, `rename`, and `delete` subcommands on `favorites`, `systems`, `departments`, `sites`, and `channels`. Deletes take everything underneath with them and require `--yes`.
+- **Drive it by hand**: `menu` reads and moves around the on-screen menus, and `key` presses front-panel keys directly. `key` is the blunt instrument: it presses what you ask and checks nothing, so prefer a command that names what it does.
+- **Manage the tool itself**: `config`, `daemon`, `backup`, and `audio`.
 
-- `status`, `scanning`, `screen` report the current state, the channels being worked through, and the raw display.
-- `battery`, `backlight`, `display`, `colors`, `version`, `devices` report hardware and configuration.
+## Output for scripts and AI agents
 
-Browse the scanner's memory, which is organized as favorites lists, then systems, then departments, then channels, with sites holding a trunked system's shared frequencies:
-
-- `favorites`, `systems`, `departments`, `sites`, `channels`, `banks`.
-
-Control and tune the radio:
-
-- `scan`, `tune`, `weather`, `location`, `volume`, `squelch`, `beep`, `clock`.
-
-Edit the memory, at every level, with `new`, `rename` and `delete` subcommands on `favorites`, `systems`, `departments`, `sites` and `channels`. Deletes take everything underneath with them and require `--yes`.
-
-Drive the radio by hand or read it at a low level:
-
-- `menu` reports and moves around the on-screen menus.
-- `key` presses front-panel keys directly. It is the blunt instrument: it presses what you ask and checks nothing, so prefer a command that names what it does, and use `--pace slow` when stepping through by hand.
-
-Manage the tool itself:
-
-- `config` reports and changes the settings the tool keeps.
-- `daemon` holds one scanner so that other commands queue for it rather than being refused.
-- `backup` copies the scanner's memory card to the computer.
-- `audio` lists the sound inputs the scanner's audio cable might be plugged into.
-
-## Output for scripts
-
-Every listing command speaks JSON with `-o json`. Results go to stdout and everything else, progress, prompts and errors, goes to stderr, so redirecting stderr leaves stdout holding only the answer.
+Every listing command speaks JSON with `-o json`. This is the part that makes the tool agent-friendly: an AI agent with terminal access can discover the commands with `--help`, run them, and parse the answers, with no wrapper needed. Results go to stdout and everything else, progress, prompts and errors, goes to stderr, so redirecting stderr leaves stdout holding only the answer.
 
 ```
 radiocli --device $SDS scanning systems -o json
 radiocli --device $SDS favorites -o json | jq -r '.[] | select(.monitored) | .name'
 ```
 
-## Global flags and configuration
+Flags that work on every command, along with the config file and its location per operating system, are documented in [documentation/global_flags.md](documentation/global_flags.md).
 
-Flags that work on every command, along with the config file and its default location per operating system, are documented in [documentation/global_flags.md](documentation/global_flags.md). In short: `--device` chooses the scanner, `-o`/`--output` chooses `text` or `json`, `--pace` sets how fast keys are sent, `--wait` queues behind another running command, and `-v`/`--verbose` prints the raw serial exchange.
+## Good to know
 
-## One scanner at a time
+**One scanner, one command at a time.** The scanner answers on one line with nothing identifying who asked, so two programs sharing the port would read each other's replies. `radiocli` therefore claims the port for the length of a command, and a second command started meanwhile is refused rather than allowed to talk over the first. Pass `--wait` to queue, or run [`daemon`](documentation/commands/daemon.md) to let commands share one held scanner.
 
-Only one `radiocli` talks to a given scanner at a time. A command claims the port before opening it and holds the claim until it exits, so a second command started meanwhile is refused rather than allowed to talk over the first. The reason is in the hardware: the scanner answers on one line with nothing identifying who asked, so two programs sharing a port read each other's replies. Pass `--wait` to queue, or run [`daemon`](documentation/commands/daemon.md) to let commands share one held scanner.
+**One request is refused on purpose.** Asking for the systems of "Full Database" returns a short, wrong answer and then locks the scanner up until it is power cycled, so the tool refuses to send it and says so. Use [`scanning systems`](documentation/commands/scanning.md) to read what is being scanned instead.
 
-## A command that refuses to run
+## Building from source
+
+The prebuilt downloads above are all most people need. To build it yourself, install [Go](https://go.dev/dl/) 1.25 or newer; the module lives in [source/](source/):
 
 ```
-$ radiocli systems "Full Database"
-error: "Full Database" is the scanner's built-in database rather than a favorites list, and asking it for its systems returns a short, wrong answer and then locks the scanner up until it is power cycled: run "radiocli scanning systems" to read what it is scanning instead
+cd source
+go build -o radiocli .
 ```
-
-The lockup was reproduced twice, so the request is refused rather than merely documented. The refusal covers the reserved index as well as the name, and it lives in the layer that would send the request, which is the last place anything can be stopped. Use [`scanning systems`](documentation/commands/scanning.md) to read the database instead.
 
 ## Repository layout
 
 - [source/](source/) is the Go module and all of the tool's code.
 - [documentation/](documentation/) is the command reference, the global-flags guide, and worked examples.
 - [contributing/](contributing/) is the standard a command is built and documented to, for anyone adding to the tool.
-- [research/](research/) is the reverse-engineering: how the serial protocol, the display, the fonts, the colors and the menu tree were worked out, plus write-ups of the process.
-- [testing/](testing/) is the end-to-end suite, a Go module of its own that drives a real scanner, plus the renderer that draws a run as it happens.
+- [research/](research/) is the reverse-engineering: how the serial protocol, the display, the fonts, the colors, and the menu tree were worked out.
+- [testing/](testing/) is the end-to-end suite, a Go module of its own that drives a real scanner.
 
-## License
+## License and status
 
 MIT. See [LICENSE](LICENSE). The tool is provided as is and without warranty, which is worth reading before pointing it at a radio you care about.
 
-## Status
-
-Unofficial and not affiliated with Uniden. Developed and verified against a single SDS150 on firmware 1.00.37. The palette, the font and the protocol are presumed to be the firmware's rather than one unit's, but that has not been tested against a second radio or against the related SDS100 and SDS200.
+Unofficial and not affiliated with Uniden. Developed and verified against a single SDS150 on firmware 1.00.37, from a Mac. The Windows and Linux builds compile and ship, but they have not been run against a real scanner yet, and the related SDS100 and SDS200 have not been tried at all. The palette, the font, and the protocol are presumed to be the firmware's rather than one unit's, but that has not been tested against a second radio. If you run any of the untested combinations, open an issue and say how it went; that is how this list shrinks.
