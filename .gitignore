@@ -1,0 +1,28 @@
+# Built binaries. `go build` names the binary after the module, so building in
+# source/ leaves source/radiocli and building in testing/ leaves testing/testing.
+/radiocli
+/source/radiocli
+/testing/testing
+
+# The same binaries under any other name: a cross-compile, a -o, or Windows.
+radiocli-*
+*.exe
+*.test
+
+# Anything `go build -buildmode` can leave behind
+*.a
+*.so
+*.dylib
+*.dll
+
+# Coverage, from the checks in contributing/WRITING_COMMANDS.md
+cov.out
+coverage.out
+*.coverprofile
+
+# Go's own caches, if either module is ever vendored or worked on offline
+/source/vendor/
+/testing/vendor/
+
+# macOS
+.DS_Store
