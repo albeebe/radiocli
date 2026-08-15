@@ -1,0 +1,102 @@
+# Builds release binaries when a version tag is pushed, and publishes them as a
+# GitHub Release. Cut a release with:
+#
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# Each platform builds on its own native runner because the audio command needs
+# cgo (see internal/audioin). The Mac binary is universal, one file that runs on
+# both Apple Silicon and Intel. Linux additionally cross-compiles an arm64 build
+# for Raspberry Pi class machines.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: radiocli-mac
+          - os: ubuntu-latest
+            artifact: radiocli-linux
+          - os: windows-latest
+            artifact: radiocli-windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/go.mod
+
+      # Stamp the binary so "radiocli version" reports what it was built from.
+      # See internal/buildinfo.
+      - name: Compute ldflags
+        run: |
+          PKG=github.com/albeebe/radiocli/internal/buildinfo
+          echo "LDFLAGS=-s -w \
+            -X ${PKG}.Version=${GITHUB_REF_NAME} \
+            -X ${PKG}.Commit=$(git rev-parse --short HEAD) \
+            -X ${PKG}.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        run: |
+          CGO_ENABLED=1 GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o radiocli-arm64 .
+          CGO_ENABLED=1 GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o radiocli-amd64 .
+          lipo -create -output radiocli radiocli-arm64 radiocli-amd64
+          zip radiocli-mac.zip radiocli
+
+      - name: Build (Linux amd64 and arm64)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          CGO_ENABLED=1 go build -trimpath -ldflags "$LDFLAGS" -o radiocli .
+          tar czf radiocli-linux.tar.gz radiocli
+          CGO_ENABLED=1 GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -trimpath -ldflags "$LDFLAGS" -o radiocli .
+          tar czf radiocli-linux-arm64.tar.gz radiocli
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          CGO_ENABLED=1 go build -trimpath -ldflags "$LDFLAGS" -o radiocli.exe .
+          7z a radiocli-windows.zip radiocli.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            source/*.zip
+            source/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
