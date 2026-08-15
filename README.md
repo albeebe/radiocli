@@ -8,7 +8,7 @@ The tool is unofficial and not affiliated with Uniden. It was built by working t
 
 ## Why it exists
 
-The SDS150 exposes two low-level primitives over its serial port: a command to press any front-panel key, including the rotary knob, and a command to read the whole screen back as text plus per-character attributes. Between them they are a complete remote-control substrate. Anything the operator can do, a program can do, and anything the screen shows, a program can read. `radiocli` is built on that pair, wrapping the raw key-pressing and screen-reading in commands that name what they do and check that they worked. How the protocol and the display were reverse-engineered is written up in [research/](research/), including a set of posts starting with [research/colors-blog.md](research/colors-blog.md).
+The SDS150 exposes two low-level primitives over its serial port: a command to press any front-panel key, including the rotary knob, and a command to read the whole screen back as text plus per-character attributes. Between them they are a complete remote-control substrate. Anything the operator can do, a program can do, and anything the screen shows, a program can read. `radiocli` is built on that pair, wrapping the raw key-pressing and screen-reading in commands that name what they do and check that they worked. How the protocol and the display were reverse-engineered is written up in [research/](research/).
 
 ## Requirements
 
