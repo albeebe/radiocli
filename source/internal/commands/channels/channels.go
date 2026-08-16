@@ -5,10 +5,12 @@
 // Package channels implements the "channels" command, which lists the channels
 // inside one department.
 //
-// It is the only command here that reads something the protocol will not
-// report. The request that would list channels answers with the wrong document
-// on this firmware, so the channels are read the way a person reads them: by
-// walking the scanner's menus and reading its screen.
+// The protocol reports them in one exchange, and that is what this asks for
+// first. It also keeps the slower reading, which is the way a person does it:
+// walking the scanner's menus and reading its screen. That is not a leftover.
+// The protocol caps a list reply at about a kilobyte with no way to ask for the
+// rest, so a department of forty channels answers with seven of them, and the
+// screen is the only reading that misses nothing.
 package channels
 
 import (
@@ -108,7 +110,9 @@ func newDelete(app *appcontext.App) *cobra.Command {
 //   - *cobra.Command that creates a channel on the frequency or talkgroup
 //     given on the command line
 func newNew(app *appcontext.App) *cobra.Command {
-	return &cobra.Command{
+	var allowDuplicate bool
+
+	cmd := &cobra.Command{
 		Use:   "new <department> <frequency|TGID:id> <name>",
 		Short: "Create a channel in a department",
 		Long: "New creates a channel in one department, with a name.\n\n" +
@@ -123,15 +127,23 @@ func newNew(app *appcontext.App) *cobra.Command {
 			"across everybody on it and hands one out per transmission, so a talkgroup, not\n" +
 			"a frequency, is what identifies a conversation there.\n\n" +
 			"Giving the wrong kind for the department is refused before anything is created.\n\n" +
+			"A frequency the scanner already has in reach makes it ask whether to add it\n" +
+			"again. That is answered no, and the command fails saying so, which is what\n" +
+			"makes running the same create twice harmless. Pass --allow-duplicate to have\n" +
+			"it answered yes.\n\n" +
 			"It comes before the name because that is the order the scanner asks in: New\n" +
 			"Channel opens an entry screen before the channel exists at all, and the name is\n" +
 			"given afterwards. The channel is read back afterwards to confirm it is there.\n" +
 			"This stops the scanner scanning, and returns it to scanning when it is done.",
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runNew(cmd.Context(), app, args[0], args[1], args[2])
+			return runNew(cmd.Context(), app, args[0], args[1], args[2], allowDuplicate)
 		},
 	}
+
+	cmd.Flags().BoolVar(&allowDuplicate, "allow-duplicate", false,
+		"create it even though the scanner already has that frequency in reach")
+	return cmd
 }
 
 // newRename returns the "channels rename" subcommand.
@@ -196,18 +208,27 @@ func (c channel) address() string {
 // several seconds and a great many key presses on a result nobody is waiting
 // for any more.
 //
+// A department with more channels than the protocol will report in one reply is
+// the third case, and it is the reason this cannot simply trust a read that
+// succeeded. The read comes back complete either way, because navigate fills in
+// what the scanner cut off, but the entries it filled in carry names alone. When
+// what those channels receive has been asked for, the only way to get it is to
+// open each one, which is what the walk does.
+//
 // Parameters:
 //   - ctx: context for cancellation and timeouts
 //   - client: the scanner to read from
 //   - index: the index of the department to read
+//   - namesOnly: the names are all that was asked for, so a channel with no
+//     frequency read off it is no loss
 //
 // Returns:
 //   - []channel holding the department's channels, empty when it holds none
 //   - error if the caller gave up, if the walk cannot reach the channel list,
 //     or if it fails part way through reading it
-func ask(ctx context.Context, client *device.Scanner, index string) ([]channel, error) {
-	read, err := catalog.ReadChannels(ctx, client, index)
-	if err == nil {
+func ask(ctx context.Context, client *device.Scanner, index string, namesOnly bool) ([]channel, error) {
+	read, err := navigate.ReadChannels(ctx, client, index)
+	if err == nil && (namesOnly || !partial(read)) {
 		found := make([]channel, 0, len(read))
 		for _, c := range read {
 			found = append(found, channel{
@@ -223,7 +244,67 @@ func ask(ctx context.Context, client *device.Scanner, index string) ([]channel, 
 		return nil, ctxErr
 	}
 
-	return walk(ctx, client, index, false)
+	return walk(ctx, client, index, namesOnly)
+}
+
+// accepted answers the prompt the scanner raises when what was just entered is
+// already in reach, and reports whether the entry went through.
+//
+// The scanner asks rather than refusing, because a duplicate is legal: the same
+// frequency can sit in two departments on purpose, and a department can even
+// hold it twice. But it asks with a popup that is not a menu and does not clear
+// itself, and until this was here nothing answered it. The command carried on
+// into a walk for the Edit Name entry, turned the knob against a prompt that has
+// no entries, and timed out with the scanner still sitting on the question.
+//
+// No is the default, because the way somebody meets this prompt is by running
+// the same create twice: it is the answer that makes a repeated command harmless
+// rather than doubling what is there. Somebody who means the duplicate says so
+// with --allow-duplicate.
+//
+// A screen with no such prompt on it is the ordinary case and costs one read.
+//
+// Parameters:
+//   - ctx: context for cancellation and timeouts
+//   - client: the scanner, having just had a frequency or talkgroup committed
+//   - allow: whether a duplicate was asked for, which answers the prompt yes
+//   - department: the department being written to, for the error message
+//   - address: what the channel was to receive, for the error message
+//
+// Returns:
+//   - error if the screen cannot be read, if either key press fails, or if the
+//     prompt was there and the duplicate was not asked for
+func accepted(ctx context.Context, client *device.Scanner, allow bool, department, address string) error {
+	d, err := client.Display(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the screen after entering %s: %w\n"+
+			"Run \"radiocli scan\"", address, err)
+	}
+
+	asking := false
+	for _, l := range d.Lines {
+		if strings.Contains(strings.ToLower(l.Text), strings.ToLower(existsPrompt)) {
+			asking = true
+			break
+		}
+	}
+	if !asking {
+		return nil
+	}
+
+	if allow {
+		return menus.Confirm(ctx, client)
+	}
+
+	if err := client.PressKey(ctx, device.KeyNo, device.KeyPress); err != nil {
+		return fmt.Errorf("answering the scanner's question about %s: %w\n"+
+			"It is still asking. Run \"radiocli key no\" and then \"radiocli scan\"", address, err)
+	}
+	menus.Leave(ctx, client)
+
+	return fmt.Errorf("%s is already in reach of %q, and the scanner asked whether to add it again: "+
+		"that was answered no and nothing was created\n"+
+		"Pass --allow-duplicate to answer yes", address, department)
 }
 
 // collect reads the channel list the scanner is showing.
@@ -432,6 +513,24 @@ func listed(found []channel) string {
 	return strings.Join(names, ", ")
 }
 
+// partial reports whether any of the channels came back as a name and nothing
+// else, which is what the scanner leaving one out of its list looks like once
+// navigate has found it on the menus.
+//
+// Parameters:
+//   - read: the channels as they were read
+//
+// Returns:
+//   - true if anything about any of them is still unknown
+func partial(read []catalog.Channel) bool {
+	for _, c := range read {
+		if c.Partial {
+			return true
+		}
+	}
+	return false
+}
+
 // read lists a department's channels, for confirming what was just created.
 //
 // Parameters:
@@ -515,12 +614,12 @@ func run(ctx context.Context, app *appcontext.App, want string, namesOnly bool) 
 		return err
 	}
 
-	index, err := catalog.ResolveDepartment(ctx, client, want)
+	index, err := navigate.ResolveDepartment(ctx, client, want)
 	if err != nil {
 		return err
 	}
 
-	found, err := ask(ctx, client, index)
+	found, err := ask(ctx, client, index, namesOnly)
 	if err != nil {
 		return err
 	}
@@ -628,13 +727,16 @@ func runDelete(ctx context.Context, app *appcontext.App, department, name string
 //   - address: what the channel receives, as a frequency in megahertz or a
 //     talkgroup written with the TGID: prefix
 //   - name: what to call the new channel
+//   - allowDuplicate: create it even though the scanner already has that
+//     frequency in reach, rather than refusing
 //
 // Returns:
 //   - error if no scanner is named, if no talkgroup was given after the
 //     prefix, if the department cannot be reached, if the entry screen is the
 //     one the address was not written for, if the address or the name cannot be
-//     typed, or if the channel does not appear afterwards
-func runNew(ctx context.Context, app *appcontext.App, department, address, name string) error {
+//     typed, if the scanner already has that frequency in reach and the
+//     duplicate was not asked for, or if the channel does not appear afterwards
+func runNew(ctx context.Context, app *appcontext.App, department, address, name string, allowDuplicate bool) error {
 	client, err := app.Device(ctx)
 	if err != nil {
 		return err
@@ -668,6 +770,12 @@ func runNew(ctx context.Context, app *appcontext.App, department, address, name 
 		return fmt.Errorf("entering the %s: %w\n"+
 			"Nothing has been created. Run \"radiocli scan\" to leave the scanner as it was",
 			kind(wantTalkgroup), err)
+	}
+
+	// Committing that entry is what creates the channel, and it is also what can
+	// raise a question instead. Nothing below here works until it is answered.
+	if err := accepted(ctx, client, allowDuplicate, department, address); err != nil {
+		return err
 	}
 
 	if err := menus.Select(ctx, client, editNameEntry); err != nil {

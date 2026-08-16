@@ -10,6 +10,7 @@ package suite
 // tests so a run reports most of its answers early. See harness_test.go.
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -313,6 +314,166 @@ func TestChannelsDelete_SimilarNames(t *testing.T) {
 			if c.Name == made[0].name {
 				t.Errorf("the channel %q is still there after deleting it", made[0].name)
 			}
+		}
+	})
+}
+
+// longDepartmentChannels is how many channels the long department test builds.
+//
+// The protocol caps a list reply at roughly a kilobyte, and a CFREQ row runs to
+// something over a hundred bytes, so somewhere around seven of these come back
+// in one reply and the rest do not. Twelve is comfortably past that on the
+// firmware this was measured against, without paying for forty channels typed
+// one character at a time.
+const longDepartmentChannels = 12
+
+// TestChannels_LongDepartment checks that a department with more channels than
+// one protocol reply holds is reported in full.
+//
+// This is a regression test with a story. A favorites list was built from
+// scratch with all 40 CB channels in it, every create reported success, and
+// listing the department back reported seven. Nothing said the other
+// thirty-three had been left out: not the table, not the JSON, not stderr, and
+// the exit code was zero. It reads exactly like a department holding seven
+// channels, and the only reason the other thirty-three were not created a
+// second time is that somebody cross-checked against a different command.
+//
+// The cause is the reply cap rather than anything about channels. The scanner
+// ends a long list early and marks the footer EOT="0", and there is no way to
+// ask for the second part, so the rest has to be read off the scanner's own
+// menus. See research/protocol.md.
+//
+// A firmware with a larger cap would make this a weaker test rather than a
+// wrong one: the assertion is that the listing agrees with what was created,
+// which has to hold whether or not the reply was cut short.
+//
+// It builds its own list because it deletes nothing and changes a lot, and it
+// is slow: twelve creates, each typing a name into the scanner one character at
+// a time.
+func TestChannels_LongDepartment(t *testing.T) {
+	needWrites(t)
+
+	t.Cleanup(func() { mustRun(t, "scan") })
+
+	list := ownList(t)
+	system := ownSystem(t, list)
+	department := ownDepartment(t, system)
+
+	// Short names, because every character is a turn of the knob, and a short
+	// name makes the rows smaller, which needs more of them to overflow the
+	// reply. Twelve covers both.
+	//
+	// --allow-duplicate because these frequencies are ordinary ones and this is
+	// somebody's radio: whether the scanner already has one of them in reach is
+	// not this test's business, and being asked about it is not a failure here.
+	wanted := make([]string, 0, longDepartmentChannels)
+	frequencies := make([]string, 0, longDepartmentChannels)
+	for i := range longDepartmentChannels {
+		name := fmt.Sprintf("CH %02d", i+1)
+		frequency := fmt.Sprintf("154.%03d", 400+i*25)
+
+		mustRun(t, "channels", "new", department, frequency, name, "--allow-duplicate")
+		wanted = append(wanted, name)
+		frequencies = append(frequencies, frequency)
+	}
+
+	// Names only first, because the count is the whole of the bug and this is
+	// the cheap way to it.
+	named := readChannels(t, department, "--names")
+	if len(named) != len(wanted) {
+		t.Fatalf("created %d channels and the department reports %d: "+
+			"the listing stops where the scanner's reply did",
+			len(wanted), len(named))
+	}
+	for i, want := range wanted {
+		if named[i].Name != want {
+			t.Errorf("channel %d is %q, wanted %q", i, named[i].Name, want)
+		}
+	}
+
+	// Then the full listing, which is the reading that has to go and open every
+	// channel past the end of the reply to find out what it receives.
+	t.Run("reading what each one receives", func(t *testing.T) {
+		found := readChannels(t, department)
+		if len(found) != len(wanted) {
+			t.Fatalf("the full listing reports %d channels and --names reports %d",
+				len(found), len(wanted))
+		}
+
+		for i, want := range wanted {
+			if found[i].Name != want {
+				t.Errorf("channel %d is %q, wanted %q", i, found[i].Name, want)
+			}
+
+			// A channel past the end of the reply is the one this used to get
+			// wrong, by not reporting it at all.
+			if !strings.HasPrefix(found[i].Frequency, frequencies[i]) {
+				t.Errorf("the channel %q reports %q, wanted %q",
+					want, found[i].Frequency, frequencies[i])
+			}
+		}
+	})
+}
+
+// TestChannelsNew_DuplicateFrequency checks what happens when the frequency
+// being created is one the scanner can already reach.
+//
+// This is a regression test with a story. Re-creating CB channel 8 on 27.055
+// MHz, which already existed, made the scanner raise a popup asking whether to
+// accept the duplicate. The tool had no handling for it, went looking for the
+// name screen, turned the knob against a popup that is not a menu and has no
+// rows to step through, and timed out with the scanner still sitting on the
+// question and a half-made channel behind it.
+//
+// A retry is the ordinary way to meet that prompt, so answering it is the
+// point: no by default, which makes running the same create twice harmless,
+// and yes when --allow-duplicate says so.
+func TestChannelsNew_DuplicateFrequency(t *testing.T) {
+	needWrites(t)
+
+	t.Cleanup(func() { mustRun(t, "scan") })
+
+	list := ownList(t)
+	system := ownSystem(t, list)
+	department := ownDepartment(t, system)
+
+	const frequency = "154.100"
+
+	mustRun(t, "channels", "new", department, frequency, ownChannelName)
+
+	res, err := execute("channels", "new", department, frequency, ownChannelName+" 2")
+	if err != nil {
+		t.Fatalf("running the second create: %v", err)
+	}
+
+	// A scanner that does not ask about this has nothing here to test. Said out
+	// loud rather than passed quietly, because a prompt that stopped appearing
+	// is worth knowing about.
+	if res.code == 0 {
+		t.Skip("this scanner did not ask about a duplicate frequency in the same department")
+	}
+
+	if !strings.Contains(res.stderr, "--allow-duplicate") {
+		t.Errorf("the refusal does not name the flag that would allow it:\n%s", res.stderr)
+	}
+
+	// Nothing was created, and the scanner is not parked on the question. The
+	// second half of that is what the timeout used to leave behind.
+	found := readChannels(t, department)
+	if len(found) != 1 {
+		t.Fatalf("the department holds %d channels after a refused duplicate, wanted 1", len(found))
+	}
+
+	t.Run("creating it anyway", func(t *testing.T) {
+		mustRun(t, "channels", "new", department, frequency, ownChannelName+" 2", "--allow-duplicate")
+
+		found := readChannels(t, department)
+		if len(found) != 2 {
+			t.Fatalf("the department holds %d channels after allowing the duplicate, wanted 2",
+				len(found))
+		}
+		if !strings.HasPrefix(found[1].Frequency, frequency) {
+			t.Errorf("the second channel reports %q, wanted %q", found[1].Frequency, frequency)
 		}
 	})
 }

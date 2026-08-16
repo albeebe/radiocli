@@ -15,8 +15,10 @@ system shares a pool of frequencies across everybody on it and hands one out per
 transmission, so a frequency identifies nobody. See [`sites`](sites.md) for what
 that means and where the frequencies live.
 
-This asks the scanner directly and takes one exchange. It does not stop the
-scanner scanning. It needs a scanner, so name one with `--device`.
+This asks the scanner directly and usually takes one exchange, without stopping
+the scan. A department with more channels than one reply holds is the exception,
+described in [Long departments](#long-departments) below. It needs a scanner, so
+name one with `--device`.
 
 A department's contents are two separate requests, `CFREQ` for frequencies and
 `TGID` for talkgroups, and this asks for both. No department holds a mix: which
@@ -37,6 +39,7 @@ radiocli channels delete <department> <name> --yes [flags]
 | --------- | -------- | ------- | ----------- |
 | `<department>` | Yes | none | The department to look inside, by index or by name. |
 | `--names` | No | `false` | List the names only, without reading the frequencies. |
+| `--allow-duplicate` | No | `false` | On `new` only: create the channel even though the scanner already has that frequency in reach. |
 
 ### `<department>`
 
@@ -49,8 +52,9 @@ about which system or favorites list holds it.
 
 Reports the names alone, without the column saying what each channel receives.
 This used to be the quick form, back when each frequency meant opening a channel
-and climbing back out. Both are now one exchange, so this is a narrower table
-rather than a faster command.
+and climbing back out. Both are normally one exchange, so this is usually a
+narrower table rather than a faster command. In a long department it is the
+quick form again, for the reason below.
 
 ## Examples
 
@@ -210,6 +214,57 @@ for.
 
 **This stops the scanner scanning**, and returns it when finished.
 
+### Duplicate frequencies
+
+A frequency the scanner can already reach makes it ask, on screen, whether to add
+it again: **Frequency Exists / Accept? (Y/N)**. That prompt is a popup rather
+than a menu, and it does not clear itself.
+
+`radiocli` answers it **no** and fails saying so:
+
+```
+$ radiocli channels new "CB Channels" 27.055 "CH 08"
+error: 27.055 is already in reach of "CB Channels", and the scanner asked whether to add it again: that was answered no and nothing was created
+Pass --allow-duplicate to answer yes
+```
+
+No is the default because the way anybody meets this prompt is by running the
+same create twice, and a repeated command should be harmless rather than end in
+two copies. If the duplicate is deliberate, and it sometimes is, say so:
+
+```
+$ radiocli channels new "CB Channels" 27.055 "CH 08 ALT" --allow-duplicate
+CH 08 ALT
+```
+
+Before this was handled, the command walked into the prompt looking for the name
+screen, timed out after three seconds, and left the scanner sitting on the
+question with a half-made channel behind it. If an older version has left one
+there, `radiocli key no` followed by `radiocli scan` clears it.
+
+## Long departments
+
+The scanner caps a list reply at roughly a kilobyte and offers no way to ask for
+the rest. A department of forty CB channels does not fit: the scanner sends the
+first seven or so, marks the document `EOT="0"` to say there is more, and stops.
+Nothing asks for the second part, because nothing can. Repeating the request
+answers with the same first part.
+
+`radiocli` used to hand that straight back, so a department of forty channels
+listed as seven with nothing anywhere saying so. It no longer does. When the
+scanner admits it cut the list short, the rest of the names are read the slow
+way, off the scanner's own menus, which is the one reading that misses nothing:
+the knob reaches every entry whether or not the protocol will report it.
+
+That costs several seconds and stops the scan, and it happens only when the
+scanner has said the list was short. Reading the frequencies of those extra
+channels means opening each one, which is the bulk of it, so `--names` is much
+faster in a long department.
+
+The result is complete either way. Nothing in the output distinguishes a channel
+the protocol reported from one read off the screen, because by then both are
+fully read.
+
 ## When to use `scanning` instead
 
 [`scanning`](scanning.md) answers a different question. It reports every channel
@@ -243,9 +298,12 @@ Two things follow that are worth keeping in mind:
   for "the channels", and no such request exists, because a channel holds a
   frequency or a talkgroup depending on the system above it.
 
-The menu walk is still there as a fallback, used only if the protocol will not
-answer. It is what worked for as long as the keywords were wrong, and a firmware
-that behaves differently would otherwise take this command with it.
+The menu walk is still there, and it earns its keep twice over. It runs if the
+protocol will not answer, which is what worked for as long as the keywords were
+wrong and what would keep this command alive on a firmware that behaves
+differently. It also runs when the protocol answers but admits the answer is
+short, which is the case described in [Long departments](#long-departments) and
+the one that happens on a real radio.
 
 One consequence of the old walk survives in the data. **Names are stored exactly
 as they were typed**, including oddities: a channel really can be called

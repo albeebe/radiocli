@@ -310,10 +310,18 @@ func renderLists(app *appcontext.App, lists []catalog.FavoritesList) error {
 	fmt.Fprintln(w, "\tNAME\tSCANNED\tQUICK KEY\tNUMBER TAG")
 
 	anyBuiltIn := false
+	filled := 0
 	for _, l := range lists {
 		marker := " "
 		if l.BuiltIn {
 			marker, anyBuiltIn = "+", true
+		}
+
+		if l.Partial {
+			filled++
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				marker, l.Name, render.Unread, render.Unread, render.Unread)
+			continue
 		}
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
@@ -323,6 +331,8 @@ func renderLists(app *appcontext.App, lists []catalog.FavoritesList) error {
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("writing the favorites list: %w", err)
 	}
+
+	render.Filled(app, "favorites lists", filled)
 
 	if anyBuiltIn {
 		app.Notef("\n+ built into the scanner, not a list you created\n")
@@ -383,7 +393,7 @@ func run(ctx context.Context, app *appcontext.App) error {
 		return err
 	}
 
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -417,7 +427,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 	// Resolve before asking about --yes, so the refusal names the list the way
 	// the scanner does rather than the way it was typed, and a name that does
 	// not exist is reported as that rather than as a missing flag.
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -465,7 +475,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 	}
 
 	// Read back, because the scanner is the only authority on what it holds.
-	after, err := catalog.ReadFavorites(ctx, client)
+	after, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -544,7 +554,7 @@ func runNew(ctx context.Context, app *appcontext.App, name string) error {
 		return err
 	}
 
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -612,7 +622,7 @@ func runRename(ctx context.Context, app *appcontext.App, want, name string) erro
 	// Read back, because the scanner is the only authority on what it holds.
 	// Reporting success from inside the menus says the name was typed, which is
 	// not the same as the scanner having kept it.
-	after, err := catalog.ReadFavorites(ctx, client)
+	after, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -659,7 +669,7 @@ func runScan(ctx context.Context, app *appcontext.App, names []string, all, none
 
 	// Resolve the names before touching the scanner, so a name it does not
 	// have costs nothing and leaves it scanning.
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -674,7 +684,7 @@ func runScan(ctx context.Context, app *appcontext.App, names []string, all, none
 
 	// Read back, because the scanner is the only authority on what is being
 	// scanned.
-	after, err := catalog.ReadFavorites(ctx, client)
+	after, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}

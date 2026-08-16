@@ -339,6 +339,20 @@ entries: Edit Name, Edit Frequency, Set Audio Type, Set Channel Number Tag, Set
 Modulation, Set Attenuator, Set Service Type, Set Delay Time, Set Priority, Set
 Alert, Set Avoid, Volume Offset, Delete Channel, New Channel.
 
+`New Channel` appears twice in that subtree and means the same thing in both
+places: once at the bottom of a channel's own menu, and once as the first row of
+the channel list a department's `Edit Channel` opens. Either is a creation flow
+rather than an editor prompt, in the same way `New System` is. Choosing it opens
+an entry screen straight away, before any channel exists: `Input Frequency` on a
+conventional system, `Input TGID` on a trunked one. Which of the two the scanner
+offers is the only thing that says what the department deals in.
+
+Committing that entry is what creates the channel, and it is also the point
+where the walk can stop being a walk. A frequency the scanner can already reach
+raises a popup, `Frequency Exists / Accept? (Y/N)`, which is not a menu and has
+no rows to step through. It is written up in
+[oddities.md](oddities.md#a-duplicate-frequency-raises-a-popup-that-waits-for-ever).
+
 That part of the tree is per-system rather than fixed, so it is described by
 shape here rather than enumerated. `radiocli menu open system|department|
 channel <index>` reaches any of it directly.

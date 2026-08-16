@@ -15,3 +15,15 @@ const (
 	reviewSystems   = "Review/Edit System"
 	setFrequencies  = "Set Frequencies"
 )
+
+// The entry that creates a new one, at the top of each of those lists. It is on
+// the menu but it is not a member of the list, so a walk reading the list off
+// the screen has to leave it out.
+const (
+	newChannel       = "New Channel"
+	newDepartment    = "New Department"
+	newFavoritesList = "New Favorites List"
+	newFrequency     = "New Frequency"
+	newSite          = "New Site"
+	newSystem        = "New System"
+)

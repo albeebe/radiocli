@@ -1412,3 +1412,29 @@ func Test_systemName(t *testing.T) {
 		}
 	})
 }
+
+// Test_renderSystemsPartial tests the branch that renders a system the scanner
+// left out of its own list.
+//
+// Coverage: 100% (1 test case covering the remaining branch)
+//
+// Test cases:
+//   - Partial: the columns nobody read say so, and a note explains the mark
+func Test_renderSystemsPartial(t *testing.T) {
+	// Verify that "unknown" is not printed as a confident "not scanned"
+	t.Run("Partial", func(t *testing.T) {
+		app := appcontext.New()
+		out, notes := &bytes.Buffer{}, &bytes.Buffer{}
+		app.Stdout, app.Stderr = out, notes
+
+		if err := renderSystems(app, []catalog.System{{Name: "FIRE", Partial: true}}); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+		if !strings.Contains(out.String(), render.Unread) {
+			t.Errorf("expected the unread mark in the table, got: %q", out.String())
+		}
+		if !strings.Contains(notes.String(), "read off") {
+			t.Errorf("expected a note explaining the mark, got: %q", notes.String())
+		}
+	})
+}

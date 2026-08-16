@@ -219,22 +219,65 @@ func Enter(ctx context.Context, client *device.Scanner) error {
 //   - error if the display cannot be read, if the knob cannot be turned, or
 //     if the menu does not come back round
 func Entries(ctx context.Context, client *device.Scanner) ([]string, error) {
-	first, err := Highlighted(ctx, client)
+	entries, err := FullEntries(ctx, client)
 	if err != nil {
 		return nil, err
 	}
 
-	seen := []string{first}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name)
+	}
+	return names, nil
+}
+
+// FullEntries lists every entry of the menu the scanner is showing, with the
+// index the scanner gives each one where it gives one at all.
+//
+// It is Entries with the indexes kept. Reading the display is what makes the
+// list complete, and the display carries no indexes, so the scanner's own
+// listing is asked for at every step and its rows collected as they go by. That
+// listing is a window rather than the whole menu, which is why it is gathered
+// along the way instead of once at the start, and why an entry it never
+// mentions ends up with no index rather than a wrong one.
+//
+// The scanner is left on the entry it started from, so a caller can carry on
+// without having moved anything.
+//
+// Parameters:
+//   - ctx: context for cancellation and timeouts
+//   - client: the scanner to read
+//
+// Returns:
+//   - []Entry holding every entry of the menu, in the order the knob reaches
+//     them, starting from the one the scanner was on
+//   - error if the display cannot be read, if the knob cannot be turned, or
+//     if the menu does not come back round
+func FullEntries(ctx context.Context, client *device.Scanner) ([]Entry, error) {
+	var indexes []listed
+
+	first, err := highlighted(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	indexes = note(ctx, client, indexes)
+
+	rows := []row{first}
+	seen := []string{first.text}
+
 	for step := 0; step < maxSteps; step++ {
 		if err := client.PressKey(ctx, device.KeyRotateRight, device.KeyPress); err != nil {
 			return nil, fmt.Errorf("turning the knob: %w", err)
 		}
 
-		on, err := Highlighted(ctx, client)
+		on, err := highlighted(ctx, client)
 		if err != nil {
 			return nil, err
 		}
-		seen = append(seen, on)
+		indexes = note(ctx, client, indexes)
+
+		rows = append(rows, on)
+		seen = append(seen, on.text)
 
 		// Back where it started, so the whole menu has been seen. The walk has
 		// gone one entry past the start to prove it, so put the knob back on
@@ -243,7 +286,7 @@ func Entries(ctx context.Context, client *device.Scanner) ([]string, error) {
 			if err := client.PressKey(ctx, device.KeyRotateLeft, device.KeyPress); err != nil {
 				return nil, fmt.Errorf("turning the knob back to where it started: %w", err)
 			}
-			return seen[:length], nil
+			return entries(rows[:length], indexes), nil
 		}
 	}
 
@@ -341,6 +384,25 @@ func Leave(ctx context.Context, client *device.Scanner) (int, error) {
 func Lookup(name string) (device.MenuID, bool) {
 	id, ok := byName[strings.ToLower(name)]
 	return id, ok
+}
+
+// Matches reports whether an entry read off the display is the thing called
+// want.
+//
+// It is the comparison every walk through these menus is built on, exported for
+// callers that hold an Entry and a name from somewhere else and have to line the
+// two up themselves. The display cuts a long name to the width of the screen, so
+// an entry the scanner shortened is treated as the name it is the start of, and
+// one it did not shorten has to match outright.
+//
+// Parameters:
+//   - e: the entry as a walk read it off the display
+//   - want: the name being looked for, in full
+//
+// Returns:
+//   - bool reporting whether the entry is the thing want names
+func Matches(e Entry, want string) bool {
+	return matches(row{text: e.Name, cut: e.Cut}, want)
 }
 
 // Names lists the accepted menu names in a stable order.
@@ -678,6 +740,40 @@ func dash(value string) string {
 	return value
 }
 
+// entries pairs the rows a walk read with the indexes gathered alongside them.
+//
+// A row is matched against the names the listing gave rather than looked up by
+// its own text, because the display shortens a long name and the listing does
+// not, so the two are equal only for the names that fit. Each index is handed
+// out once: a menu really can hold two entries called the same thing, and giving
+// both the first one's index would be a wrong answer rather than a missing one.
+//
+// Parameters:
+//   - rows: the rows the walk read, in the order the knob reached them
+//   - seen: the rows of the scanner's listing, in the order they were gathered
+//
+// Returns:
+//   - []Entry holding each row with its index, empty where the listing never
+//     mentioned the row
+func entries(rows []row, seen []listed) []Entry {
+	taken := make([]bool, len(seen))
+
+	out := make([]Entry, 0, len(rows))
+	for _, r := range rows {
+		e := Entry{Name: r.text, Cut: r.cut}
+		for i, l := range seen {
+			if taken[i] || !matches(r, l.name) {
+				continue
+			}
+			e.Index = l.index
+			taken[i] = true
+			break
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // highlighted reads the selected display row, and whether it was cut short.
 //
 // Parameters:
@@ -860,6 +956,51 @@ func matches(shown row, want string) bool {
 		return false
 	}
 	return strings.HasPrefix(strings.ToLower(want), strings.ToLower(shown.text))
+}
+
+// note asks the scanner for its own listing of the menu on screen and keeps the
+// rows it has not already got.
+//
+// It is called at every step of a walk because the listing is a window on a long
+// menu rather than the whole of it: the rows it carries change as the cursor
+// moves, and gathering them as they pass is the only way to end up with more
+// than one screenful.
+//
+// A listing that cannot be read is not an error here. The indexes are a bonus on
+// top of the names, which are what the walk is really for, and several of the
+// screens these walks cross report no listing at all.
+//
+// Parameters:
+//   - ctx: context for cancellation and timeouts
+//   - client: the scanner to ask
+//   - seen: the rows gathered so far, appended to in place
+//
+// Returns:
+//   - the rows gathered so far, with any the listing added on the end
+func note(ctx context.Context, client *device.Scanner, seen []listed) []listed {
+	info, err := client.MenuInfo(ctx)
+	if err != nil {
+		return seen
+	}
+
+	for _, item := range info.Items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" || item.Index == "" {
+			continue
+		}
+
+		known := false
+		for _, l := range seen {
+			if strings.EqualFold(l.name, name) {
+				known = true
+				break
+			}
+		}
+		if !known {
+			seen = append(seen, listed{name: name, index: item.Index})
+		}
+	}
+	return seen
 }
 
 // quote renders a list of entry names for a message.

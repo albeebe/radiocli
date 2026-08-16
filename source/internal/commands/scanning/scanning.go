@@ -26,6 +26,7 @@ import (
 	"github.com/albeebe/radiocli/internal/catalog"
 	"github.com/albeebe/radiocli/internal/device"
 	"github.com/albeebe/radiocli/internal/menus"
+	"github.com/albeebe/radiocli/internal/navigate"
 	"github.com/albeebe/radiocli/internal/render"
 	"github.com/spf13/cobra"
 )
@@ -446,7 +447,7 @@ func listedSystems(ctx context.Context, client *device.Scanner, lists []catalog.
 			continue
 		}
 
-		systems, err := catalog.ReadSystems(ctx, client, l.Index)
+		systems, err := navigate.ReadSystems(ctx, client, l.Index)
 		if err != nil {
 			return nil, fmt.Errorf("reading the systems in %q: %w", l.Name, err)
 		}
@@ -818,7 +819,7 @@ func run(ctx context.Context, app *appcontext.App, limit int, watch time.Duratio
 		return err
 	}
 
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -888,7 +889,7 @@ func runSystems(ctx context.Context, app *appcontext.App) error {
 		return err
 	}
 
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}

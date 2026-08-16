@@ -311,12 +311,12 @@ func runFrequencies(ctx context.Context, app *appcontext.App, want string) error
 		return err
 	}
 
-	index, err := catalog.ResolveSite(ctx, client, want)
+	index, err := navigate.ResolveSite(ctx, client, want)
 	if err != nil {
 		return err
 	}
 
-	found, err := catalog.ReadSiteFrequencies(ctx, client, index)
+	found, err := navigate.ReadSiteFrequencies(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -356,12 +356,12 @@ func runFrequenciesAdd(ctx context.Context, app *appcontext.App, want string, wa
 		wanted[i] = typed
 	}
 
-	index, err := catalog.ResolveSite(ctx, client, want)
+	index, err := navigate.ResolveSite(ctx, client, want)
 	if err != nil {
 		return err
 	}
 
-	before, err := catalog.ReadSiteFrequencies(ctx, client, index)
+	before, err := navigate.ReadSiteFrequencies(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -401,7 +401,7 @@ func runFrequenciesAdd(ctx context.Context, app *appcontext.App, want string, wa
 	}
 
 	// Read back, because the scanner is the only authority on what it holds.
-	after, err := catalog.ReadSiteFrequencies(ctx, client, index)
+	after, err := navigate.ReadSiteFrequencies(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -440,14 +440,14 @@ func runFrequenciesDelete(ctx context.Context, app *appcontext.App, want, freque
 		return err
 	}
 
-	index, err := catalog.ResolveSite(ctx, client, want)
+	index, err := navigate.ResolveSite(ctx, client, want)
 	if err != nil {
 		return err
 	}
 
 	// Look before asking about --yes, so a frequency the site does not hold is
 	// reported as that rather than as a missing flag.
-	before, err := catalog.ReadSiteFrequencies(ctx, client, index)
+	before, err := navigate.ReadSiteFrequencies(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -488,7 +488,7 @@ func runFrequenciesDelete(ctx context.Context, app *appcontext.App, want, freque
 	}
 
 	// Read back, because the scanner is the only authority on what it holds.
-	after, err := catalog.ReadSiteFrequencies(ctx, client, index)
+	after, err := navigate.ReadSiteFrequencies(ctx, client, index)
 	if err != nil {
 		return err
 	}

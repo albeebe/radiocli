@@ -90,6 +90,29 @@ var (
 	resumeGap   = 50 * time.Millisecond
 )
 
+// Entry is one entry of a menu as a walk off the display reads it.
+//
+// It is what FullEntries returns, and it is deliberately not Item: Item is one
+// row of the scanner's own listing, which is complete only when the menu is
+// short. This is one row of the screen, which is the only reading that misses
+// nothing, with the listing's index attached where the listing happened to
+// mention the row.
+type Entry struct {
+	// Name is the entry as the display draws it, which the scanner shortens
+	// when it is too long for the screen.
+	Name string `json:"name"`
+
+	// Index is how the scanner names the thing behind the entry in other
+	// requests, empty when its listing never mentioned this row. A long menu
+	// has rows the listing leaves out, and nothing else on the screen carries
+	// an index, so this cannot always be filled in.
+	Index string `json:"index,omitempty"`
+
+	// Cut reports whether the scanner shortened the name to fit the screen, and
+	// so whether it may be compared as the start of a longer name.
+	Cut bool `json:"-"`
+}
+
 // Item is one entry of a menu.
 type Item struct {
 	// Name is the entry as the scanner spells it.
@@ -128,6 +151,18 @@ type Row struct {
 	// so whether it may be compared as the start of a longer name. Comparing a
 	// row that was not cut as a prefix is how a walk lands on the wrong entry.
 	Cut bool
+}
+
+// listed is one row of the scanner's own menu listing, kept while a walk
+// gathers the listing a window at a time.
+type listed struct {
+	// name is the entry as the listing spells it, which is in full: only the
+	// display shortens a name to the width of the screen.
+	name string
+
+	// index is how the scanner names the thing behind the entry in other
+	// requests.
+	index string
 }
 
 // row is one reading of the highlighted display row.

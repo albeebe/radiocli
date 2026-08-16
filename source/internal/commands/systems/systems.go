@@ -114,7 +114,7 @@ func newGoto(app *appcontext.App) *cobra.Command {
 				return err
 			}
 
-			index, err := catalog.ResolveSystem(ctx, client, args[0])
+			index, err := navigate.ResolveSystem(ctx, client, args[0])
 			if err != nil {
 				return err
 			}
@@ -206,7 +206,7 @@ func confirm(ctx context.Context, client *device.Scanner, list, index string) er
 		return nil
 	}
 
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := navigate.ReadFavorites(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -278,7 +278,14 @@ func renderSystems(app *appcontext.App, found []catalog.System) error {
 	w := tabwriter.NewWriter(app.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tTYPE\tSCANNED\tQUICK KEY\tNUMBER TAG")
 
+	filled := 0
 	for _, s := range found {
+		if s.Partial {
+			filled++
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				s.Name, render.Unread, render.Unread, render.Unread, render.Unread)
+			continue
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			s.Name, s.Kind, render.YesNo(!s.Avoided), render.Dash(s.QuickKey), render.Dash(s.NumberTag))
 	}
@@ -286,6 +293,8 @@ func renderSystems(app *appcontext.App, found []catalog.System) error {
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("writing the system list: %w", err)
 	}
+
+	render.Filled(app, "systems", filled)
 	return nil
 }
 
@@ -311,12 +320,12 @@ func run(ctx context.Context, app *appcontext.App, list string) error {
 		return err
 	}
 
-	index, err := catalog.ResolveFavorites(ctx, client, list)
+	index, err := navigate.ResolveFavorites(ctx, client, list)
 	if err != nil {
 		return err
 	}
 
-	found, err := catalog.ReadSystems(ctx, client, index)
+	found, err := navigate.ReadSystems(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -358,7 +367,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 
 	// Resolving first means a name the scanner does not have is reported as
 	// that, rather than as a missing flag.
-	index, err := catalog.ResolveSystem(ctx, client, want)
+	index, err := navigate.ResolveSystem(ctx, client, want)
 	if err != nil {
 		return err
 	}
@@ -395,7 +404,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 	// that moves into a deleted one's place would otherwise be read as the one
 	// that was meant to go, and a delete that worked would be reported as
 	// having done nothing.
-	all, err := catalog.EverySystem(ctx, client)
+	all, err := navigate.EverySystem(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -466,7 +475,7 @@ func runNew(ctx context.Context, app *appcontext.App, list, name, kind string) e
 		return err
 	}
 
-	all, err := catalog.EverySystem(ctx, client)
+	all, err := navigate.EverySystem(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -500,7 +509,7 @@ func runRename(ctx context.Context, app *appcontext.App, want, name string) erro
 		return err
 	}
 
-	index, err := catalog.ResolveSystem(ctx, client, want)
+	index, err := navigate.ResolveSystem(ctx, client, want)
 	if err != nil {
 		return err
 	}
@@ -557,7 +566,7 @@ func runRename(ctx context.Context, app *appcontext.App, want, name string) erro
 //   - the name the scanner gives the system at that index
 //   - error if the systems cannot be read, or if no system has that index
 func systemName(ctx context.Context, client *device.Scanner, index string) (string, error) {
-	all, err := catalog.EverySystem(ctx, client)
+	all, err := navigate.EverySystem(ctx, client)
 	if err != nil {
 		return "", err
 	}

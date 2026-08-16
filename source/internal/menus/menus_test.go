@@ -1926,3 +1926,179 @@ func Test_renderMenu(t *testing.T) {
 		}
 	})
 }
+
+// TestFullEntries tests the FullEntries function with 100% coverage.
+//
+// Coverage: 100% (4 test cases covering all branches)
+//
+// Test cases:
+//   - Success: every entry is read off the screen and given the index the
+//     scanner's own listing mentioned it under
+//   - Unlisted: an entry the listing never mentions comes back without an index
+//   - FirstReadError: a screen that cannot be read at the start is reported
+//   - TurnError: a knob the scanner will not turn is reported
+func TestFullEntries(t *testing.T) {
+	quicken(t, 2)
+
+	// Verify that the names come off the display and the indexes off the
+	// listing, which is the whole point of reading both.
+	t.Run("Success", func(t *testing.T) {
+		var pressed []string
+		conn := menu([]string{"Volume", "Squelch"}, &pressed)
+		conn.execXML = func(command string) (string, error) {
+			return menuDoc("Settings", "Volume", "Squelch"), nil
+		}
+
+		got, err := FullEntries(context.Background(), client(conn))
+		if err != nil {
+			t.Fatalf("FullEntries() = %v, want nil", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("read %d entries, want the two the menu holds", len(got))
+		}
+		if got[0].Name != "Volume" || got[0].Index != "1" {
+			t.Errorf("first entry = %+v, want Volume with the listing's index", got[0])
+		}
+		if got[1].Name != "Squelch" || got[1].Index != "2" {
+			t.Errorf("second entry = %+v, want Squelch with the listing's index", got[1])
+		}
+	})
+
+	// Verify that a row the listing leaves out keeps its name and gets no
+	// index, rather than borrowing one from another row.
+	t.Run("Unlisted", func(t *testing.T) {
+		var pressed []string
+		conn := menu([]string{"Volume", "Squelch"}, &pressed)
+		conn.execXML = func(command string) (string, error) {
+			return menuDoc("Settings", "Volume"), nil
+		}
+
+		got, err := FullEntries(context.Background(), client(conn))
+		if err != nil {
+			t.Fatalf("FullEntries() = %v, want nil", err)
+		}
+		if got[1].Index != "" {
+			t.Errorf("second entry index = %q, want none: the listing never mentioned it", got[1].Index)
+		}
+	})
+
+	// Verify that a screen that cannot be read stops the walk rather than
+	// producing an entry list built on nothing.
+	t.Run("FirstReadError", func(t *testing.T) {
+		conn := &stubConn{exec: func(command string) (string, error) {
+			return "", errors.New("the port is gone")
+		}}
+
+		if _, err := FullEntries(context.Background(), client(conn)); err == nil {
+			t.Error("expected an error when the screen cannot be read, got none")
+		}
+	})
+
+	// Verify that a knob press the scanner refuses is reported.
+	t.Run("TurnError", func(t *testing.T) {
+		conn := &stubConn{exec: func(command string) (string, error) {
+			if command == "STS" {
+				return selected("Volume"), nil
+			}
+			return "", errors.New("the knob will not turn")
+		}}
+
+		if _, err := FullEntries(context.Background(), client(conn)); err == nil {
+			t.Error("expected an error when the knob will not turn, got none")
+		}
+	})
+}
+
+// TestMatches tests the Matches function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - Exact: a name the screen showed in full matches it
+//   - Cut: a name the screen shortened matches the name it is the start of
+//   - Different: a name the screen showed in full matches nothing longer
+func TestMatches(t *testing.T) {
+	// Verify that a whole name matches the name it is.
+	t.Run("Exact", func(t *testing.T) {
+		if !Matches(Entry{Name: "CH 08"}, "CH 08") {
+			t.Error("a whole name did not match itself")
+		}
+	})
+
+	// Verify that a name the display had to shorten matches the longer name.
+	t.Run("Cut", func(t *testing.T) {
+		if !Matches(Entry{Name: "Quick Save Favorites L", Cut: true}, "Quick Save Favorites List") {
+			t.Error("a shortened name did not match the name it is the start of")
+		}
+	})
+
+	// Verify that a name shown in full is not treated as the start of a longer
+	// one, which is what keeps a walk off the entry next to the one it wants.
+	t.Run("Different", func(t *testing.T) {
+		if Matches(Entry{Name: "TEST CH"}, "TEST CH 2") {
+			t.Error("a whole name matched a longer name it is only the start of")
+		}
+	})
+}
+
+// Test_note tests the note function with 100% coverage.
+//
+// Coverage: 100% (4 test cases covering all branches)
+//
+// Test cases:
+//   - Collects: the listing's rows are kept with their indexes
+//   - Skips: a row with no name or no index is passed over
+//   - Repeat: a row already gathered is not gathered twice
+//   - Unreadable: a listing that cannot be read leaves what was gathered alone
+func Test_note(t *testing.T) {
+	// Verify that the listing's rows arrive with their indexes attached.
+	t.Run("Collects", func(t *testing.T) {
+		conn := &stubConn{execXML: func(command string) (string, error) {
+			return menuDoc("Settings", "Volume", "Squelch"), nil
+		}}
+
+		got := note(context.Background(), client(conn), nil)
+		if len(got) != 2 || got[0].name != "Volume" || got[0].index != "1" {
+			t.Fatalf("gathered %+v, want both rows of the listing", got)
+		}
+	})
+
+	// Verify that a row carrying no index is no use and is passed over.
+	t.Run("Skips", func(t *testing.T) {
+		conn := &stubConn{execXML: func(command string) (string, error) {
+			return `<MenuInfo Name="Settings" MenuType="TypeSelect">` +
+				`<MenuItem Name="Volume" Index=""/><MenuItem Name="" Index="2"/>` +
+				`</MenuInfo>`, nil
+		}}
+
+		if got := note(context.Background(), client(conn), nil); len(got) != 0 {
+			t.Fatalf("gathered %+v, want nothing usable", got)
+		}
+	})
+
+	// Verify that walking past the same row twice does not record it twice.
+	t.Run("Repeat", func(t *testing.T) {
+		conn := &stubConn{execXML: func(command string) (string, error) {
+			return menuDoc("Settings", "Volume"), nil
+		}}
+
+		got := note(context.Background(), client(conn), nil)
+		got = note(context.Background(), client(conn), got)
+		if len(got) != 1 {
+			t.Fatalf("gathered %+v, want the row kept once", got)
+		}
+	})
+
+	// Verify that a screen with no listing at all is not an error here: the
+	// names are what the walk is for and the indexes are the bonus.
+	t.Run("Unreadable", func(t *testing.T) {
+		conn := &stubConn{execXML: func(command string) (string, error) {
+			return "", errors.New("this screen has no listing")
+		}}
+
+		before := []listed{{name: "Volume", index: "1"}}
+		if got := note(context.Background(), client(conn), before); len(got) != 1 {
+			t.Fatalf("gathered %+v, want what was already there", got)
+		}
+	})
+}

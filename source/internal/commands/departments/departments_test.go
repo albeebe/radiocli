@@ -1235,3 +1235,30 @@ func Test_runRename(t *testing.T) {
 		}
 	})
 }
+
+// Test_renderDepartmentsPartial tests the branch that renders a department the
+// scanner left out of its own list.
+//
+// Coverage: 100% (1 test case covering the remaining branch)
+//
+// Test cases:
+//   - Partial: the columns nobody read say so, and a note explains the mark
+func Test_renderDepartmentsPartial(t *testing.T) {
+	// Verify that "unknown" is not printed as a confident "not scanned"
+	t.Run("Partial", func(t *testing.T) {
+		app := appcontext.New()
+		out, notes := &bytes.Buffer{}, &bytes.Buffer{}
+		app.Stdout, app.Stderr = out, notes
+
+		err := renderDepartments(app, []catalog.Department{{Name: "MARINE", Partial: true}})
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+		if !strings.Contains(out.String(), render.Unread) {
+			t.Errorf("expected the unread mark in the table, got: %q", out.String())
+		}
+		if !strings.Contains(notes.String(), "read off") {
+			t.Errorf("expected a note explaining the mark, got: %q", notes.String())
+		}
+	})
+}
