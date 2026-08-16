@@ -35,7 +35,7 @@ func setBeepOff(ctx context.Context, client *device.Scanner) error {
 }
 ```
 
-Use `menus.Show` to print the menu the scanner is on, `menus.Lookup` and `menus.Names` for the menu names this tool accepts, and `menus.Entries` to read a menu the protocol will not report.
+Use `menus.Show` to print the menu the scanner is on, `menus.Lookup` and `menus.Names` for the menu names this tool accepts, `menus.Entries` to read a menu the protocol will not report, and `menus.FullEntries` for the same reading with the scanner's own indexes attached where its listing happened to mention a row.
 
 ### Testing
 

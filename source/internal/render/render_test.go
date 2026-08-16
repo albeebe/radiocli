@@ -200,3 +200,62 @@ func TestYesNo(t *testing.T) {
 		t.Errorf("YesNo(false) = %q, wanted \"no\"", got)
 	}
 }
+
+// TestFilled tests the Filled function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - Some: the note names how many entries are only partly known
+//   - None: a whole listing says nothing at all
+//   - JSON: the note is left out of the machine-readable path
+func TestFilled(t *testing.T) {
+	// Verify that the note goes to stderr, names the count, and says which
+	// mark stands for the columns nobody read.
+	t.Run("Some", func(t *testing.T) {
+		app := appcontext.New()
+		out, notes := &bytes.Buffer{}, &bytes.Buffer{}
+		app.Stdout, app.Stderr = out, notes
+
+		Filled(app, "departments", 3)
+
+		if !strings.Contains(notes.String(), "3 of these departments") {
+			t.Errorf("the note reads %q, wanted it to name the count and the kind", notes.String())
+		}
+		if !strings.Contains(notes.String(), Unread) {
+			t.Errorf("the note reads %q, wanted it to name the mark it explains", notes.String())
+		}
+		if out.Len() != 0 {
+			t.Errorf("the note wrote %q to stdout, which belongs to the listing", out.String())
+		}
+	})
+
+	// Verify that a listing with nothing missing says nothing, rather than
+	// reporting that none of it is missing.
+	t.Run("None", func(t *testing.T) {
+		app := appcontext.New()
+		notes := &bytes.Buffer{}
+		app.Stdout, app.Stderr = &bytes.Buffer{}, notes
+
+		Filled(app, "departments", 0)
+
+		if notes.Len() != 0 {
+			t.Errorf("the note reads %q, wanted nothing", notes.String())
+		}
+	})
+
+	// Verify that a script asking for JSON gets none of the prose: it reads the
+	// partial field on the entries instead.
+	t.Run("JSON", func(t *testing.T) {
+		app := appcontext.New()
+		notes := &bytes.Buffer{}
+		app.Stdout, app.Stderr = &bytes.Buffer{}, notes
+		app.Config.Output = appcontext.OutputJSON
+
+		Filled(app, "departments", 3)
+
+		if notes.Len() != 0 {
+			t.Errorf("the note reads %q, wanted nothing on the JSON path", notes.String())
+		}
+	})
+}

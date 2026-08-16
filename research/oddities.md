@@ -236,6 +236,40 @@ believing a listing: a walk that stopped at 20 areas thinking it was done, and a
 wrap test that computed zero steps and proved nothing. The screen is the only
 complete source, and anything counting positions has to count them there.
 
+The listing is still the only thing that carries an **index**, and the screen
+never does, so anything that needs both has to read both. Whether the listing is
+a fixed first-N or a window that slides with the cursor has not been measured.
+See [Still unexplained](#still-unexplained).
+
+### A duplicate frequency raises a popup that waits for ever
+
+*2026-08-16*
+
+Entering a frequency the scanner can already reach does not fail and does not
+succeed. It raises a popup: **Frequency Exists / Accept? (Y/N)**. It is the
+button kind of popup rather than the transient kind, so it does not clear
+itself, and it is not a menu, so `MSI` reports nothing to walk and the knob has
+nothing to turn.
+
+Found by re-creating CB channel 8 on 27.055 MHz, which already existed. The tool
+did not know about the prompt, went looking for the name screen, turned the knob
+against a popup, timed out after three seconds, and left the radio sitting on the
+question. Something had been created by then: an unnamed channel on 27.055 was
+there afterwards and had to be deleted by hand, alongside the real CH 08, which
+was intact.
+
+**Why it matters.** A retry is the ordinary way to meet this. Anything creating
+a channel has to read the screen after committing the entry and answer the
+question, because everything sent afterwards goes into a radio that is not
+listening for it. `radiocli channels new` answers no by default, so running the
+same create twice is harmless, and `--allow-duplicate` answers yes.
+
+**Answering no creates nothing.** Measured rather than assumed, since the stray
+channel above made it worth checking: a department with one channel on 154.100,
+a second create on the same frequency, N, and the department still holds one
+channel. The stray came from the timeout, not from the prompt. The end to end
+suite checks it, in `TestChannelsNew_DuplicateFrequency`.
+
 ### `MSV` is refused inside a color picker
 
 *2026-08-05*
@@ -574,6 +608,17 @@ no reason to use `STS` except habit.
   which is evidence but not proof.
 - **Whether any of this differs on a fresh radio**, or on an SDS100. Everything
   here is one scanner on one firmware.
+- **Whether an `MSI` listing slides with the cursor.** It reports 20 of 50
+  areas, but nothing has established whether those 20 are always the first 20 or
+  the 20 around wherever the knob is. It matters because it decides whether
+  gathering the listing at every step of a walk recovers indexes for a whole
+  long menu or only ever for its first screenful. The experiment is one walk
+  round a menu of more than 26 entries, recording each listing as it goes and
+  comparing the union against the names read off the display.
+- **Whether popup buttons can be read from the protocol.** The specification
+  says a button popup carries each button's label and key code, which would be
+  an exact way to recognise a prompt instead of matching screen text. Nothing
+  here has confirmed the radio actually sends those fields, or where.
 - **Why a named layout is sometimes called not-current when it is.** Seen once
   in five runs, never reproduced on demand. Written up with the evidence and the
   experiment that would settle it in

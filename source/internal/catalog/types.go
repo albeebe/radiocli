@@ -20,6 +20,17 @@ var builtInNames = map[string]string{
 	searchWithScanIndex: "Search with Scan",
 }
 
+// How a list document says it was cut short. The footer is the last element of
+// a reply that carries one, and EOT is the scanner's own spelling of "end of
+// text": "1" for a document that finished, "0" for one it had to stop writing.
+//
+// Not every reply carries a footer, so the absence of one says nothing.
+const (
+	footerElement      = "Footer"
+	endOfTextAttribute = "EOT"
+	notTheEnd          = "0"
+)
+
 // known is every element name a list document can be built from. A document
 // carrying one of these when a different one was asked for is the scanner
 // answering the wrong question, rather than answering emptily.
@@ -53,6 +64,13 @@ type Channel struct {
 
 	// Avoided reports whether the scanner is skipping this channel.
 	Avoided bool `json:"avoided"`
+
+	// Partial marks an entry the scanner left out of its own list, which this
+	// tool found by walking the menus instead. Its name is what the screen
+	// showed and everything else about it is unknown rather than empty, so a
+	// blank field here means "not read" and not "not set". See ErrIncomplete for
+	// why the scanner leaves entries out.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // CustomSearchBank is one of the ten custom search banks.
@@ -97,6 +115,13 @@ type Department struct {
 	// QuickKey is empty when nothing is assigned. Departments carry no number
 	// tag, unlike the levels above them.
 	QuickKey string `json:"quickKey,omitempty"`
+
+	// Partial marks an entry the scanner left out of its own list, which this
+	// tool found by walking the menus instead. Its name is what the screen
+	// showed and everything else about it is unknown rather than empty, so a
+	// blank field here means "not read" and not "not set". See ErrIncomplete for
+	// why the scanner leaves entries out.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // FavoritesList is one of the scanner's favorites lists.
@@ -119,6 +144,13 @@ type FavoritesList struct {
 	// BuiltIn marks a scan source built into the scanner rather than a list
 	// someone created. Those cannot be edited or deleted.
 	BuiltIn bool `json:"builtIn"`
+
+	// Partial marks an entry the scanner left out of its own list, which this
+	// tool found by walking the menus instead. Its name is what the screen
+	// showed and everything else about it is unknown rather than empty, so a
+	// blank field here means "not read" and not "not set". See ErrIncomplete for
+	// why the scanner leaves entries out.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // Site is one site of a trunked system. A site is the transmitter a system
@@ -140,6 +172,13 @@ type Site struct {
 
 	// QuickKey is empty when nothing is assigned.
 	QuickKey string `json:"quickKey,omitempty"`
+
+	// Partial marks an entry the scanner left out of its own list, which this
+	// tool found by walking the menus instead. Its name is what the screen
+	// showed and everything else about it is unknown rather than empty, so a
+	// blank field here means "not read" and not "not set". See ErrIncomplete for
+	// why the scanner leaves entries out.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // SiteFrequency is one frequency of a site.
@@ -153,6 +192,13 @@ type SiteFrequency struct {
 
 	// Index is the slot the frequency occupies in the site.
 	Index string `json:"index"`
+
+	// Partial marks an entry the scanner left out of its own list, which this
+	// tool found by walking the menus instead. Its name is what the screen
+	// showed and everything else about it is unknown rather than empty, so a
+	// blank field here means "not read" and not "not set". See ErrIncomplete for
+	// why the scanner leaves entries out.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // System is one system inside a favorites list.
@@ -175,4 +221,11 @@ type System struct {
 	// QuickKey and NumberTag are empty when nothing is assigned.
 	QuickKey  string `json:"quickKey,omitempty"`
 	NumberTag string `json:"numberTag,omitempty"`
+
+	// Partial marks an entry the scanner left out of its own list, which this
+	// tool found by walking the menus instead. Its name is what the screen
+	// showed and everything else about it is unknown rather than empty, so a
+	// blank field here means "not read" and not "not set". See ErrIncomplete for
+	// why the scanner leaves entries out.
+	Partial bool `json:"partial,omitempty"`
 }

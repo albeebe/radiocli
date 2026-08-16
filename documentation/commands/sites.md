@@ -318,6 +318,30 @@ can tell a create from a rename without comparing strings.
 The text output is unchanged. It is what people already read, so the machine-
 readable mode was added beside it rather than in place of it.
 
+## Long lists
+
+The scanner caps a list reply at roughly a kilobyte and offers no way to ask for
+the rest. On a system with a lot of sites, the reply stops early and is marked `EOT="0"` to say
+there is more; repeating the request answers with the same first part.
+
+`radiocli` used to hand that straight back, which reported a short list as though
+it were the whole thing. It no longer does. When the scanner admits it cut the
+list short, the missing names are read the slow way, off the scanner's own menus,
+which is the one reading that misses nothing. That costs several seconds and
+stops the scan, and it happens only when the scanner has said the list was short.
+
+Only the **names** come off the screen. Everything else about a site lives
+in the list the scanner would not finish sending, so those columns are shown as
+`?`, which means "not read" and is a different thing from the `-` that means "the
+scanner says there is nothing here". A note on stderr says how many sites that
+covers. Under `--output json` those entries carry `"partial": true` instead.
+
+```
+NAME    SCANNED  QUICK KEY
+NORTH   yes      3
+SOUTH   ?        ?
+```
+
 ## Errors
 
 Every failure exits with status `1` and prints to stderr. Errors that any

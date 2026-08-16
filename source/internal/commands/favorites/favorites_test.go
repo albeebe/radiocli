@@ -1910,3 +1910,29 @@ func Test_toScanSelection(t *testing.T) {
 //
 // Coverage: 100% (1 test case covering both branches)
 //
+
+// Test_renderListsPartial tests the branch that renders a favorites list the
+// scanner left out of its own list.
+//
+// Coverage: 100% (1 test case covering the remaining branch)
+//
+// Test cases:
+//   - Partial: the columns nobody read say so, and a note explains the mark
+func Test_renderListsPartial(t *testing.T) {
+	// Verify that "unknown" is not printed as a confident "not monitored"
+	t.Run("Partial", func(t *testing.T) {
+		app := appcontext.New()
+		out, notes := &bytes.Buffer{}, &bytes.Buffer{}
+		app.Stdout, app.Stderr = out, notes
+
+		if err := renderLists(app, []catalog.FavoritesList{{Name: "WORK", Partial: true}}); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+		if !strings.Contains(out.String(), render.Unread) {
+			t.Errorf("expected the unread mark in the table, got: %q", out.String())
+		}
+		if !strings.Contains(notes.String(), "read off") {
+			t.Errorf("expected a note explaining the mark, got: %q", notes.String())
+		}
+	})
+}

@@ -29,6 +29,23 @@ import (
 // caller cannot tell them apart; nothing so far needs to.
 type Element map[string]string
 
+// ErrIncomplete reports a list the scanner cut short.
+//
+// The reply to a list request is capped at roughly a kilobyte. A list that does
+// not fit is ended early and marked with EOT="0" in its footer, and nothing
+// found asks for the rest: repeating the request answers with the same first
+// part, and a page number in it is ignored. So the rows that did arrive are
+// good, and there is no telling from the document how many did not.
+//
+// It is returned alongside those rows rather than instead of them, because a
+// truncated list is useful and a missing one is not. Every function in this
+// package that reads a list may return it, and a caller that ignores it reports
+// a short list as though it were the whole thing. That was a real bug: forty
+// channels were created, seven were listed back, and nothing anywhere said the
+// other thirty-three had been left out. Use navigate to read a list that has to
+// be complete, which fills in what was cut by walking the scanner's menus.
+var ErrIncomplete = errors.New("the scanner cut the list short")
+
 // BuiltInSource returns the scanner's name for the built-in scan source an
 // index belongs to.
 //
@@ -53,10 +70,12 @@ func BuiltInSource(index string) string {
 //
 // Returns:
 //   - the banks the document describes, empty when it describes none
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func CustomSearchBanks(doc string) ([]CustomSearchBank, error) {
 	elements, err := Elements(doc, "CS_BANK")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -71,7 +90,7 @@ func CustomSearchBanks(doc string) ([]CustomSearchBank, error) {
 			Step:       e.Get("Step"),
 		})
 	}
-	return banks, nil
+	return banks, err
 }
 
 // Departments reads the answer to a request for the departments in a system.
@@ -81,10 +100,12 @@ func CustomSearchBanks(doc string) ([]CustomSearchBank, error) {
 //
 // Returns:
 //   - the departments the document describes, empty when it describes none
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func Departments(doc string) ([]Department, error) {
 	elements, err := Elements(doc, "DEPT")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -97,7 +118,7 @@ func Departments(doc string) ([]Department, error) {
 			QuickKey: e.Optional("Q_Key"),
 		})
 	}
-	return departments, nil
+	return departments, err
 }
 
 // Elements returns every element named want.
@@ -110,12 +131,18 @@ func Departments(doc string) ([]Department, error) {
 // Finding elements of a different known kind is an error, because that is the
 // scanner answering a question other than the one asked.
 //
+// A document the scanner cut short returns the elements that did arrive along
+// with ErrIncomplete, because they are as good as any other elements and
+// throwing them away helps nobody. Callers have to check for it.
+//
 // Parameters:
 //   - doc: the document the scanner answered a list request with
 //   - want: the element name to collect, such as "SYS"
 //
 // Returns:
 //   - every element named want, empty when the document carries none
+//   - ErrIncomplete if the document's footer says the scanner cut the list
+//     short, wrapped alongside the elements that did arrive
 //   - error if the document is not valid XML, or carries elements of another
 //     known kind instead of the one asked for
 func Elements(doc, want string) ([]Element, error) {
@@ -123,6 +150,7 @@ func Elements(doc, want string) ([]Element, error) {
 
 	var found []Element
 	var other string
+	cut := false
 
 	for {
 		token, err := dec.Token()
@@ -145,6 +173,10 @@ func Elements(doc, want string) ([]Element, error) {
 			found = append(found, attributes(start))
 			continue
 		}
+		if strings.EqualFold(name, footerElement) {
+			cut = incomplete(attributes(start))
+			continue
+		}
 		if other == "" && isKnown(name) {
 			other = name
 		}
@@ -153,6 +185,11 @@ func Elements(doc, want string) ([]Element, error) {
 	if len(found) == 0 && other != "" {
 		return nil, fmt.Errorf("the scanner answered with a %s list instead of a %s list, "+
 			"which is how this firmware refuses a list it cannot produce", other, want)
+	}
+
+	if cut {
+		return found, fmt.Errorf("%w: it sent %d %s and a footer saying there are more, "+
+			"and there is no way to ask for the rest", ErrIncomplete, len(found), want)
 	}
 	return found, nil
 }
@@ -167,22 +204,26 @@ func Elements(doc, want string) ([]Element, error) {
 //
 // Returns:
 //   - every department of every system, in the order they were read
+//   - ErrIncomplete alongside those rows if any of the lists was cut short
 //   - error if any of the reads fails
 func EveryDepartment(ctx context.Context, client *device.Scanner) ([]Department, error) {
-	systems, err := EverySystem(ctx, client)
-	if err != nil {
-		return nil, err
+	systems, cut := EverySystem(ctx, client)
+	if !usable(cut) {
+		return nil, cut
 	}
 
 	var all []Department
 	for _, s := range systems {
 		departments, err := ReadDepartments(ctx, client, s.Index)
-		if err != nil {
+		if !usable(err) {
 			return nil, err
+		}
+		if cut == nil {
+			cut = err
 		}
 		all = append(all, departments...)
 	}
-	return all, nil
+	return all, cut
 }
 
 // EverySite reads the sites of every system, so a site can be named by name
@@ -195,22 +236,26 @@ func EveryDepartment(ctx context.Context, client *device.Scanner) ([]Department,
 //
 // Returns:
 //   - every site of every system, in the order they were read
+//   - ErrIncomplete alongside those rows if any of the lists was cut short
 //   - error if any of the reads fails
 func EverySite(ctx context.Context, client *device.Scanner) ([]Site, error) {
-	systems, err := EverySystem(ctx, client)
-	if err != nil {
-		return nil, err
+	systems, cut := EverySystem(ctx, client)
+	if !usable(cut) {
+		return nil, cut
 	}
 
 	var all []Site
 	for _, s := range systems {
 		sites, err := ReadSites(ctx, client, s.Index)
-		if err != nil {
+		if !usable(err) {
 			return nil, err
+		}
+		if cut == nil {
+			cut = err
 		}
 		all = append(all, sites...)
 	}
-	return all, nil
+	return all, cut
 }
 
 // EverySystem reads the systems of every favorites list.
@@ -238,11 +283,12 @@ func EverySite(ctx context.Context, client *device.Scanner) ([]Site, error) {
 //
 // Returns:
 //   - every system of every list someone created, in the order they were read
+//   - ErrIncomplete alongside those rows if any of the lists was cut short
 //   - error if any of the reads fails
 func EverySystem(ctx context.Context, client *device.Scanner) ([]System, error) {
-	lists, err := ReadFavorites(ctx, client)
-	if err != nil {
-		return nil, err
+	lists, cut := ReadFavorites(ctx, client)
+	if !usable(cut) {
+		return nil, cut
 	}
 
 	var all []System
@@ -252,12 +298,15 @@ func EverySystem(ctx context.Context, client *device.Scanner) ([]System, error) 
 		}
 
 		systems, err := ReadSystems(ctx, client, l.Index)
-		if err != nil {
+		if !usable(err) {
 			return nil, err
+		}
+		if cut == nil {
+			cut = err
 		}
 		all = append(all, systems...)
 	}
-	return all, nil
+	return all, cut
 }
 
 // Favorites reads the answer to a favorites list request.
@@ -268,10 +317,12 @@ func EverySystem(ctx context.Context, client *device.Scanner) ([]System, error) 
 // Returns:
 //   - the lists the document describes, empty when it describes none, with the
 //     built-in scan sources marked
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func Favorites(doc string) ([]FavoritesList, error) {
 	elements, err := Elements(doc, "FL")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -287,7 +338,7 @@ func Favorites(doc string) ([]FavoritesList, error) {
 			BuiltIn:   BuiltInSource(index) != "",
 		})
 	}
-	return lists, nil
+	return lists, err
 }
 
 // Frequencies reads the answer to a request for a department's conventional
@@ -298,10 +349,12 @@ func Favorites(doc string) ([]FavoritesList, error) {
 //
 // Returns:
 //   - the channels the document describes, empty when it describes none
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func Frequencies(doc string) ([]Channel, error) {
 	elements, err := Elements(doc, "CFREQ")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -314,7 +367,7 @@ func Frequencies(doc string) ([]Channel, error) {
 			Avoided:   !e.Is("Avoid", "Off"),
 		})
 	}
-	return channels, nil
+	return channels, err
 }
 
 // Get returns an attribute with its surrounding space removed, or "" when the
@@ -389,18 +442,24 @@ func (e Element) Optional(name string) string {
 // Returns:
 //   - the department's frequencies, or its talkgroups when it holds no
 //     frequencies, empty when it holds neither
-//   - error if either exchange fails or either answer cannot be read
+//   - ErrIncomplete alongside those rows if the scanner cut the list short
+//   - error if there is no index to ask with, if either exchange fails, or if
+//     either answer cannot be read
 func ReadChannels(ctx context.Context, client *device.Scanner, department string) ([]Channel, error) {
+	if err := addressable(department, "department"); err != nil {
+		return nil, err
+	}
+
 	doc, err := client.List(ctx, device.ListFrequencies, department)
 	if err != nil {
 		return nil, fmt.Errorf("reading the channels: %w", err)
 	}
 	frequencies, err := Frequencies(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the channels: %w", err)
 	}
 	if len(frequencies) > 0 {
-		return frequencies, nil
+		return frequencies, wrap("reading the channels", err)
 	}
 
 	doc, err = client.List(ctx, device.ListTalkgroups, department)
@@ -408,10 +467,10 @@ func ReadChannels(ctx context.Context, client *device.Scanner, department string
 		return nil, fmt.Errorf("reading the talkgroups: %w", err)
 	}
 	talkgroups, err := Talkgroups(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the talkgroups: %w", err)
 	}
-	return talkgroups, nil
+	return talkgroups, wrap("reading the talkgroups", err)
 }
 
 // ReadCustomSearchBanks asks the scanner for its custom search banks.
@@ -422,6 +481,8 @@ func ReadChannels(ctx context.Context, client *device.Scanner, department string
 //
 // Returns:
 //   - the scanner's custom search banks
+//   - ErrIncomplete alongside those rows if the scanner cut the list short,
+//     which it does at nine banks with the names it ships
 //   - error if the exchange fails or the answer cannot be read
 func ReadCustomSearchBanks(ctx context.Context, client *device.Scanner) ([]CustomSearchBank, error) {
 	doc, err := client.List(ctx, device.ListCustomSearchBanks)
@@ -430,10 +491,10 @@ func ReadCustomSearchBanks(ctx context.Context, client *device.Scanner) ([]Custo
 	}
 
 	banks, err := CustomSearchBanks(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the custom search banks: %w", err)
 	}
-	return banks, nil
+	return banks, wrap("reading the custom search banks", err)
 }
 
 // ReadDepartments asks the scanner for the departments in one system.
@@ -445,18 +506,24 @@ func ReadCustomSearchBanks(ctx context.Context, client *device.Scanner) ([]Custo
 //
 // Returns:
 //   - the system's departments, empty when it holds none
-//   - error if the exchange fails or the answer cannot be read
+//   - ErrIncomplete alongside those rows if the scanner cut the list short
+//   - error if there is no index to ask with, if the exchange fails, or if the
+//     answer cannot be read
 func ReadDepartments(ctx context.Context, client *device.Scanner, system string) ([]Department, error) {
+	if err := addressable(system, "system"); err != nil {
+		return nil, err
+	}
+
 	doc, err := client.List(ctx, device.ListDepartments, system)
 	if err != nil {
 		return nil, fmt.Errorf("reading the departments: %w", err)
 	}
 
 	departments, err := Departments(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the departments: %w", err)
 	}
-	return departments, nil
+	return departments, wrap("reading the departments", err)
 }
 
 // ReadFavorites asks the scanner for its favorites lists.
@@ -471,6 +538,7 @@ func ReadDepartments(ctx context.Context, client *device.Scanner, system string)
 //
 // Returns:
 //   - the scanner's favorites lists, including its built-in scan sources
+//   - ErrIncomplete alongside those rows if the scanner cut the list short
 //   - error if the exchange fails or the answer cannot be read
 func ReadFavorites(ctx context.Context, client *device.Scanner) ([]FavoritesList, error) {
 	doc, err := client.List(ctx, device.ListFavorites)
@@ -479,10 +547,10 @@ func ReadFavorites(ctx context.Context, client *device.Scanner) ([]FavoritesList
 	}
 
 	lists, err := Favorites(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the favorites lists: %w", err)
 	}
-	return lists, nil
+	return lists, wrap("reading the favorites lists", err)
 }
 
 // ReadSiteFrequencies asks the scanner for one site's frequencies.
@@ -494,18 +562,24 @@ func ReadFavorites(ctx context.Context, client *device.Scanner) ([]FavoritesList
 //
 // Returns:
 //   - the site's frequencies, empty when it holds none
-//   - error if the exchange fails or the answer cannot be read
+//   - ErrIncomplete alongside those rows if the scanner cut the list short
+//   - error if there is no index to ask with, if the exchange fails, or if the
+//     answer cannot be read
 func ReadSiteFrequencies(ctx context.Context, client *device.Scanner, site string) ([]SiteFrequency, error) {
+	if err := addressable(site, "site"); err != nil {
+		return nil, err
+	}
+
 	doc, err := client.List(ctx, device.ListSiteFrequencies, site)
 	if err != nil {
 		return nil, fmt.Errorf("reading the site's frequencies: %w", err)
 	}
 
 	frequencies, err := SiteFrequencies(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the site's frequencies: %w", err)
 	}
-	return frequencies, nil
+	return frequencies, wrap("reading the site's frequencies", err)
 }
 
 // ReadSites asks the scanner for the sites in one system. A conventional
@@ -518,18 +592,24 @@ func ReadSiteFrequencies(ctx context.Context, client *device.Scanner, site strin
 //
 // Returns:
 //   - the system's sites, empty when it holds none
-//   - error if the exchange fails or the answer cannot be read
+//   - ErrIncomplete alongside those rows if the scanner cut the list short
+//   - error if there is no index to ask with, if the exchange fails, or if the
+//     answer cannot be read
 func ReadSites(ctx context.Context, client *device.Scanner, system string) ([]Site, error) {
+	if err := addressable(system, "system"); err != nil {
+		return nil, err
+	}
+
 	doc, err := client.List(ctx, device.ListSites, system)
 	if err != nil {
 		return nil, fmt.Errorf("reading the sites: %w", err)
 	}
 
 	sites, err := Sites(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the sites: %w", err)
 	}
-	return sites, nil
+	return sites, wrap("reading the sites", err)
 }
 
 // ReadSystems asks the scanner for the systems in one favorites list.
@@ -547,11 +627,16 @@ func ReadSites(ctx context.Context, client *device.Scanner, system string) ([]Si
 //
 // Returns:
 //   - the list's systems, empty when it holds none
-//   - error if the list is a built-in scan source, if the exchange fails, or if
-//     the answer cannot be read
+//   - ErrIncomplete alongside those rows if the scanner cut the list short
+//   - error if the list is a built-in scan source, if there is no index to ask
+//     with, if the exchange fails, or if the answer cannot be read
 func ReadSystems(ctx context.Context, client *device.Scanner, list string) ([]System, error) {
 	if source := BuiltInSource(list); source != "" {
 		return nil, builtInRefusal(source)
+	}
+
+	if err := addressable(list, "favorites list"); err != nil {
+		return nil, err
 	}
 
 	doc, err := client.List(ctx, device.ListSystems, list)
@@ -560,10 +645,10 @@ func ReadSystems(ctx context.Context, client *device.Scanner, list string) ([]Sy
 	}
 
 	systems, err := Systems(doc)
-	if err != nil {
+	if !usable(err) {
 		return nil, fmt.Errorf("reading the systems: %w", err)
 	}
-	return systems, nil
+	return systems, wrap("reading the systems", err)
 }
 
 // Resolve turns a name or an index into an index.
@@ -684,10 +769,12 @@ func ResolveSystem(ctx context.Context, client *device.Scanner, want string) (st
 //
 // Returns:
 //   - the frequencies the document describes, empty when it describes none
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func SiteFrequencies(doc string) ([]SiteFrequency, error) {
 	elements, err := Elements(doc, "SFREQ")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -698,7 +785,7 @@ func SiteFrequencies(doc string) ([]SiteFrequency, error) {
 			Index:     e.Get("Index"),
 		})
 	}
-	return frequencies, nil
+	return frequencies, err
 }
 
 // Sites reads the answer to a request for the sites in a system.
@@ -708,10 +795,12 @@ func SiteFrequencies(doc string) ([]SiteFrequency, error) {
 //
 // Returns:
 //   - the sites the document describes, empty when it describes none
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func Sites(doc string) ([]Site, error) {
 	elements, err := Elements(doc, "SITE")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -724,7 +813,7 @@ func Sites(doc string) ([]Site, error) {
 			QuickKey: e.Optional("Q_Key"),
 		})
 	}
-	return sites, nil
+	return sites, err
 }
 
 // Systems reads the answer to a request for the systems in a favorites list.
@@ -734,10 +823,12 @@ func Sites(doc string) ([]Site, error) {
 //
 // Returns:
 //   - the systems the document describes, empty when it describes none
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func Systems(doc string) ([]System, error) {
 	elements, err := Elements(doc, "SYS")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -752,7 +843,7 @@ func Systems(doc string) ([]System, error) {
 			NumberTag: e.Optional("N_Tag"),
 		})
 	}
-	return systems, nil
+	return systems, err
 }
 
 // Talkgroups reads the answer to a request for a department's talkgroups.
@@ -762,10 +853,12 @@ func Systems(doc string) ([]System, error) {
 //
 // Returns:
 //   - the channels the document describes, empty when it describes none
+//   - ErrIncomplete alongside those rows if the document's footer says the
+//     scanner cut the list short
 //   - error if the document is not valid XML, or is a list of another kind
 func Talkgroups(doc string) ([]Channel, error) {
 	elements, err := Elements(doc, "TGID")
-	if err != nil {
+	if !usable(err) {
 		return nil, err
 	}
 
@@ -778,7 +871,29 @@ func Talkgroups(doc string) ([]Channel, error) {
 			Avoided:   !e.Is("Avoid", "Off"),
 		})
 	}
-	return channels, nil
+	return channels, err
+}
+
+// addressable refuses a request that has nothing to address.
+//
+// An index is how every list below the favorites lists is asked for, and an
+// empty one produces a command with a trailing comma and no argument, which the
+// scanner answers with something nobody wants. It can happen honestly: an entry
+// this tool found by walking the menus carries a name and, when the scanner's
+// own listing never mentioned it, no index at all. Saying so beats sending it.
+//
+// Parameters:
+//   - index: the index the request would be addressed by
+//   - kind: what the index names, singular, for the message
+//
+// Returns:
+//   - error if there is no index to address the request with
+func addressable(index, kind string) error {
+	if strings.TrimSpace(index) != "" {
+		return nil
+	}
+	return fmt.Errorf("no %s index was given: the scanner addresses this request by index, "+
+		"and this entry was read off its menus, which do not carry one", kind)
 }
 
 // attributes collects an element's attributes by name.
@@ -818,6 +933,47 @@ func builtInRefusal(source string) error {
 		"and asking it for its systems returns a short, wrong answer and then locks the "+
 		"scanner up until it is power cycled: run \"radiocli scanning systems\" to read "+
 		"what it is scanning instead", source)
+}
+
+// incomplete reads a list document's footer and reports whether the scanner
+// said there was more it did not send.
+//
+// Only the word for "not the end" counts. A footer saying the document finished
+// means it finished, and a footer that says nothing either way is treated the
+// same as the documents that carry no footer at all, which is most of them: a
+// list is assumed whole unless the scanner says otherwise, because reporting
+// every short list as suspect would send every read down the slow path.
+//
+// Parameters:
+//   - footer: the attributes of the document's footer element
+//
+// Returns:
+//   - true if the footer says the scanner cut the list short
+func incomplete(footer Element) bool {
+	value, carried := footer[endOfTextAttribute]
+	if !carried {
+		return false
+	}
+	return strings.TrimSpace(value) == notTheEnd
+}
+
+// wrap puts a read's own words in front of an error, and keeps nil as nil.
+//
+// It exists because a truncated list is returned as rows plus an error, so the
+// error has to be passed along a path where it is usually absent. fmt.Errorf
+// would happily wrap nil into a real error saying nothing went wrong.
+//
+// Parameters:
+//   - what: what the read was doing, as it would start an error message
+//   - err: the error to wrap, which is usually nil
+//
+// Returns:
+//   - the error with what in front of it, or nil when there was no error
+func wrap(what string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 // isKnown reports whether name is one of the list element names.
@@ -871,6 +1027,21 @@ func resolveNamed[T Named](ctx context.Context, client *device.Scanner, want, ki
 		return "", err
 	}
 	return Resolve(want, kind, all)
+}
+
+// usable reports whether the rows an error came with are worth keeping.
+//
+// Only one error means that: the scanner having cut the list short, which
+// leaves the rows it did send as good as any others. Everything else means the
+// document could not be read at all, and there are no rows to keep.
+//
+// Parameters:
+//   - err: the error a read or a parse returned, which may be nil
+//
+// Returns:
+//   - true if there was no error, or if the error was ErrIncomplete
+func usable(err error) bool {
+	return err == nil || errors.Is(err, ErrIncomplete)
 }
 
 // named returns the favorites list's name and index.

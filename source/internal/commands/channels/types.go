@@ -31,6 +31,18 @@ const (
 	editNameEntry   = "Edit Name"
 )
 
+// existsPrompt is the word the scanner puts on screen when what has just been
+// entered is already somewhere it can reach, and it wants to know whether to
+// add it anyway. It labels its own keys: Yes="E" / No=".".
+//
+// One word rather than the whole sentence, because the sentence is not one
+// sentence. A frequency and a talkgroup are announced differently, the wording
+// has room to change between firmwares, and the screen wraps the question over
+// two lines at a width that depends on what was typed. The word is the part that
+// does not move, and the prompt can only appear here: it comes up in answer to
+// the entry screen this command has just committed.
+const existsPrompt = "Exists"
+
 // talkgroupPrefix marks the positional argument as a talkgroup rather than a
 // frequency. It is the same spelling the scanner uses when it reports one.
 const talkgroupPrefix = "TGID:"

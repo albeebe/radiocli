@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1940,6 +1941,292 @@ func TestSystem_named(t *testing.T) {
 		name, index := System{Name: "Test System", Index: "10"}.named()
 		if name != "Test System" || index != "10" {
 			t.Errorf("expected \"Test System\" and \"10\", got %q and %q", name, index)
+		}
+	})
+}
+
+// TestElementsIncomplete tests the truncation branch of Elements with 100%
+// coverage.
+//
+// Coverage: 100% (4 test cases covering all branches)
+//
+// Test cases:
+//   - CutShort: a footer saying there is more returns the rows and ErrIncomplete
+//   - Finished: a footer saying the document ended is not a truncation
+//   - NoFooter: a document with no footer at all is taken as whole
+//   - NoEndOfText: a footer that says nothing either way is taken as whole
+func TestElementsIncomplete(t *testing.T) {
+	// Verify that a cut document hands back the rows it did carry, along with
+	// the sentinel, since a short list is worth more than no list.
+	t.Run("CutShort", func(t *testing.T) {
+		doc := `<GLT><CFREQ Index="0" Name="CH 01"/><CFREQ Index="1" Name="CH 02"/>` +
+			`<Footer No="1" EOT="0"/></GLT>`
+
+		got, err := Elements(doc, "CFREQ")
+		if !errors.Is(err, ErrIncomplete) {
+			t.Fatalf("Elements() = %v, want ErrIncomplete", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("kept %d rows, want the two that did arrive", len(got))
+		}
+	})
+
+	// Verify that the footer every finished document carries is not mistaken
+	// for the one that says there is more.
+	t.Run("Finished", func(t *testing.T) {
+		doc := `<GLT><CFREQ Index="0" Name="CH 01"/><Footer No="1" EOT="1"/></GLT>`
+
+		if _, err := Elements(doc, "CFREQ"); err != nil {
+			t.Fatalf("Elements() = %v, want nil for a document that finished", err)
+		}
+	})
+
+	// Verify that a document with no footer is taken as whole, which most of
+	// them are.
+	t.Run("NoFooter", func(t *testing.T) {
+		doc := `<GLT><CFREQ Index="0" Name="CH 01"/></GLT>`
+
+		if _, err := Elements(doc, "CFREQ"); err != nil {
+			t.Fatalf("Elements() = %v, want nil for a document with no footer", err)
+		}
+	})
+
+	// Verify that a footer carrying no end-of-text attribute says nothing, and
+	// is not read as an admission.
+	t.Run("NoEndOfText", func(t *testing.T) {
+		doc := `<GLT><CFREQ Index="0" Name="CH 01"/><Footer No="1"/></GLT>`
+
+		if _, err := Elements(doc, "CFREQ"); err != nil {
+			t.Fatalf("Elements() = %v, want nil for a footer that says nothing", err)
+		}
+	})
+}
+
+// TestReadChannelsIncomplete tests that a cut list reaches the caller with both
+// its rows and the sentinel, through the read functions and the types they
+// build.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - Frequencies: a cut frequency list keeps its rows and reports the cut
+//   - Talkgroups: a cut talkgroup list does the same
+//   - Whole: a list that fits reports nothing
+func TestReadChannelsIncomplete(t *testing.T) {
+	// Verify that a department whose frequencies did not fit is reported as
+	// such, rather than as a department holding only what fitted.
+	t.Run("Frequencies", func(t *testing.T) {
+		conn := &stubConn{exec: func(command string) (string, error) {
+			return `<GLT><CFREQ Index="0" Name="CH 01" Freq="27.055 MHz" Avoid="Off"/>` +
+				`<Footer No="1" EOT="0"/></GLT>`, nil
+		}}
+
+		got, err := ReadChannels(context.Background(), device.New(conn), "20")
+		if !errors.Is(err, ErrIncomplete) {
+			t.Fatalf("ReadChannels() = %v, want ErrIncomplete", err)
+		}
+		if len(got) != 1 || got[0].Name != "CH 01" {
+			t.Fatalf("kept %+v, want the one channel that did arrive", got)
+		}
+	})
+
+	// Verify that the same holds on the talkgroup side, which is the second of
+	// the two requests a department is read with.
+	t.Run("Talkgroups", func(t *testing.T) {
+		conn := &stubConn{exec: func(command string) (string, error) {
+			if strings.HasPrefix(command, "GLT,CFREQ") {
+				return `<GLT></GLT>`, nil
+			}
+			return `<GLT><TGID Index="0" Name="FIRE" TGID="9051" Avoid="Off"/>` +
+				`<Footer No="1" EOT="0"/></GLT>`, nil
+		}}
+
+		got, err := ReadChannels(context.Background(), device.New(conn), "20")
+		if !errors.Is(err, ErrIncomplete) {
+			t.Fatalf("ReadChannels() = %v, want ErrIncomplete", err)
+		}
+		if len(got) != 1 || got[0].Talkgroup != "9051" {
+			t.Fatalf("kept %+v, want the one talkgroup that did arrive", got)
+		}
+	})
+
+	// Verify that a list that fitted says nothing about being cut.
+	t.Run("Whole", func(t *testing.T) {
+		conn := &stubConn{exec: func(command string) (string, error) {
+			return `<GLT><CFREQ Index="0" Name="CH 01" Freq="27.055 MHz" Avoid="Off"/>` +
+				`<Footer No="1" EOT="1"/></GLT>`, nil
+		}}
+
+		if _, err := ReadChannels(context.Background(), device.New(conn), "20"); err != nil {
+			t.Fatalf("ReadChannels() = %v, want nil", err)
+		}
+	})
+}
+
+// Test_incomplete tests the incomplete function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - NotTheEnd: the scanner's word for "there is more" is recognised
+//   - TheEnd: the word for "that was all" is not
+//   - Absent: a footer carrying no such attribute says nothing
+func Test_incomplete(t *testing.T) {
+	// Verify that the one value meaning "there is more" is recognised.
+	t.Run("NotTheEnd", func(t *testing.T) {
+		if !incomplete(Element{"EOT": "0"}) {
+			t.Error("a footer saying there is more was read as whole")
+		}
+	})
+
+	// Verify that a finished document is not reported as cut.
+	t.Run("TheEnd", func(t *testing.T) {
+		if incomplete(Element{"EOT": "1"}) {
+			t.Error("a footer saying that was all was read as cut")
+		}
+	})
+
+	// Verify that a footer without the attribute is treated the same as no
+	// footer, which is how most replies arrive.
+	t.Run("Absent", func(t *testing.T) {
+		if incomplete(Element{"No": "1"}) {
+			t.Error("a footer saying nothing was read as cut")
+		}
+	})
+}
+
+// Test_usable tests the usable function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - NoError: nothing went wrong, so the rows stand
+//   - Incomplete: a cut list leaves the rows it did send worth keeping
+//   - Other: any other failure leaves no rows at all
+func Test_usable(t *testing.T) {
+	// Verify that no error means the rows are good.
+	t.Run("NoError", func(t *testing.T) {
+		if !usable(nil) {
+			t.Error("no error was treated as unusable")
+		}
+	})
+
+	// Verify that a cut list keeps its rows.
+	t.Run("Incomplete", func(t *testing.T) {
+		if !usable(fmt.Errorf("reading: %w", ErrIncomplete)) {
+			t.Error("a cut list was treated as unusable")
+		}
+	})
+
+	// Verify that a document that could not be read at all keeps nothing.
+	t.Run("Other", func(t *testing.T) {
+		if usable(errors.New("the port is gone")) {
+			t.Error("a failed read was treated as usable")
+		}
+	})
+}
+
+// Test_wrap tests the wrap function with 100% coverage.
+//
+// Coverage: 100% (2 test cases covering all branches)
+//
+// Test cases:
+//   - Nil: nothing wrong stays nothing wrong
+//   - Error: the read's own words go in front, and the sentinel survives
+func Test_wrap(t *testing.T) {
+	// Verify that nil is not turned into an error saying nothing went wrong.
+	t.Run("Nil", func(t *testing.T) {
+		if err := wrap("reading the channels", nil); err != nil {
+			t.Errorf("wrap() = %v, want nil", err)
+		}
+	})
+
+	// Verify that the message gains its context and can still be recognised.
+	t.Run("Error", func(t *testing.T) {
+		err := wrap("reading the channels", ErrIncomplete)
+		if !errors.Is(err, ErrIncomplete) {
+			t.Fatalf("wrap() = %v, want it to still be ErrIncomplete", err)
+		}
+		if !strings.Contains(err.Error(), "reading the channels") {
+			t.Errorf("wrap() = %v, want the read's own words in front", err)
+		}
+	})
+}
+
+// TestReadWithoutIndex tests that a read with nothing to address is refused
+// before it is sent, in each of the reads that take an index.
+//
+// Coverage: 100% (5 test cases covering all branches)
+//
+// Test cases:
+//   - Channels: a department with no index is refused
+//   - Departments: a system with no index is refused
+//   - SiteFrequencies: a site with no index is refused
+//   - Sites: a system with no index is refused
+//   - Systems: a favorites list with no index is refused
+func TestReadWithoutIndex(t *testing.T) {
+	// A connection that fails loudly, so a request that should never have been
+	// sent is impossible to mistake for one that was answered.
+	conn := &stubConn{exec: func(command string) (string, error) {
+		return "", errors.New("this request should never have been sent: " + command)
+	}}
+	client := device.New(conn)
+
+	reads := []struct {
+		name string
+		read func() error
+		want string
+	}{
+		{"Channels", func() error { _, err := ReadChannels(context.Background(), client, ""); return err }, "department"},
+		{"Departments", func() error { _, err := ReadDepartments(context.Background(), client, ""); return err }, "system"},
+		{"SiteFrequencies", func() error { _, err := ReadSiteFrequencies(context.Background(), client, ""); return err }, "site"},
+		{"Sites", func() error { _, err := ReadSites(context.Background(), client, ""); return err }, "system"},
+		{"Systems", func() error { _, err := ReadSystems(context.Background(), client, ""); return err }, "favorites list"},
+	}
+
+	for _, r := range reads {
+		// Verify the request is refused here rather than sent with a trailing
+		// comma and nothing after it.
+		t.Run(r.name, func(t *testing.T) {
+			err := r.read()
+			if err == nil {
+				t.Fatal("expected an error when there is no index to ask with, got none")
+			}
+			if !strings.Contains(err.Error(), r.want) {
+				t.Errorf("read reported %v, wanted it to name the %s", err, r.want)
+			}
+		})
+	}
+}
+
+// Test_addressable tests the addressable function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - Index: an index is something to ask with
+//   - Empty: nothing at all is refused
+//   - Blank: a run of spaces is nothing at all
+func Test_addressable(t *testing.T) {
+	// Verify that an ordinary index is accepted.
+	t.Run("Index", func(t *testing.T) {
+		if err := addressable("20", "department"); err != nil {
+			t.Errorf("addressable() = %v, want nil", err)
+		}
+	})
+
+	// Verify that an entry read off the menus, which carries no index, is
+	// refused rather than sent.
+	t.Run("Empty", func(t *testing.T) {
+		if err := addressable("", "department"); err == nil {
+			t.Error("expected an error for an empty index, got none")
+		}
+	})
+
+	// Verify that padding is not an index.
+	t.Run("Blank", func(t *testing.T) {
+		if err := addressable("  ", "department"); err == nil {
+			t.Error("expected an error for an index of nothing but spaces, got none")
 		}
 	})
 }

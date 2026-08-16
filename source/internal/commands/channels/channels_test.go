@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/albeebe/radiocli/internal/appcontext"
+	"github.com/albeebe/radiocli/internal/catalog"
 	"github.com/albeebe/radiocli/internal/device"
 )
 
@@ -421,7 +422,7 @@ func Test_ask(t *testing.T) {
 		}}
 		client := device.New(fakeConn{reply: r.reply})
 
-		found, err := ask(context.Background(), client, "0")
+		found, err := ask(context.Background(), client, "0", false)
 		if err != nil {
 			t.Fatalf("ask: %v", err)
 		}
@@ -439,7 +440,7 @@ func Test_ask(t *testing.T) {
 		}}
 		client := device.New(fakeConn{reply: r.reply})
 
-		found, err := ask(context.Background(), client, "0")
+		found, err := ask(context.Background(), client, "0", false)
 		if err != nil {
 			t.Fatalf("ask: %v", err)
 		}
@@ -469,7 +470,7 @@ func Test_ask(t *testing.T) {
 		}
 		client := device.New(fakeConn{reply: r.reply})
 
-		found, err := ask(context.Background(), client, "0")
+		found, err := ask(context.Background(), client, "0", false)
 		if err != nil {
 			t.Fatalf("ask: %v", err)
 		}
@@ -499,7 +500,7 @@ func Test_ask(t *testing.T) {
 		ctx, stop := context.WithCancel(context.Background())
 		stop()
 
-		if _, err := ask(ctx, client, "0"); !errors.Is(err, context.Canceled) {
+		if _, err := ask(ctx, client, "0", false); !errors.Is(err, context.Canceled) {
 			t.Fatalf("ask reported %v, wanted the caller's own cancellation", err)
 		}
 		if len(r.pressed) != 0 {
@@ -1389,10 +1390,12 @@ func Test_runDelete(t *testing.T) {
 // Test_runNew covers creating a channel, setting what it receives, and naming
 // it.
 //
-// Coverage: 100% (11 test cases covering every branch)
+// Coverage: 100% (12 test cases covering every branch)
 //
 // Test cases:
 //   - Creates: the channel is created on a frequency, named, and confirmed
+//   - AlreadyThere: a frequency the scanner already has is refused at its own
+//     prompt, rather than the prompt being walked into
 //   - NoDevice: a run with no scanner named is refused
 //   - EmptyTalkgroup: a prefix with nothing after it is refused
 //   - WalkFails: a department that cannot be opened is reported
@@ -1433,7 +1436,7 @@ func Test_runNew(t *testing.T) {
 		r := walk()
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		if err := runNew(context.Background(), app, "0", "153.980", "DISPATCH"); err != nil {
+		if err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false); err != nil {
 			t.Fatalf("runNew: %v", err)
 		}
 		if got, want := out.String(), "DISPATCH\n"; got != want {
@@ -1441,11 +1444,30 @@ func Test_runNew(t *testing.T) {
 		}
 	})
 
+	// Verify that a frequency the scanner already has in reach is refused at the
+	// prompt rather than walked into, which is what used to time out and leave
+	// an unnamed channel behind
+	t.Run("AlreadyThere", func(t *testing.T) {
+		app, _, _ := quiet()
+		r := walk()
+		r.inputs["New Channel"] = screen{
+			title: "Input Frequency",
+			keys:  "0123456789.",
+			opens: []string{"Frequency Exists Accept? (Y/N)"},
+		}
+		app.SetDevice(device.New(fakeConn{reply: r.reply}))
+
+		err := runNew(context.Background(), app, "0", "27.055", "CH 08", false)
+		if err == nil || !strings.Contains(err.Error(), "--allow-duplicate") {
+			t.Fatalf("runNew reported %v, wanted the duplicate refused and the flag named", err)
+		}
+	})
+
 	// Verify a run with no scanner named is refused rather than attempted
 	t.Run("NoDevice", func(t *testing.T) {
 		app, _, _ := quiet()
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if !errors.Is(err, appcontext.ErrNoDevice) {
 			t.Fatalf("runNew reported %v, wanted a missing device", err)
 		}
@@ -1457,7 +1479,7 @@ func Test_runNew(t *testing.T) {
 		r := walk()
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "TGID:", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "TGID:", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "no talkgroup was given") {
 			t.Fatalf("runNew reported %v, wanted the empty talkgroup refused", err)
 		}
@@ -1474,7 +1496,7 @@ func Test_runNew(t *testing.T) {
 			return r.reply(command)
 		}}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "opening the department's menu") {
 			t.Fatalf("runNew reported %v, wanted the failed walk", err)
 		}
@@ -1487,7 +1509,7 @@ func Test_runNew(t *testing.T) {
 		r.opens["Edit Channel"] = []string{"DISPATCH", "FIREGROUND"}
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "creating the channel") {
 			t.Fatalf("runNew reported %v, wanted the missing entry", err)
 		}
@@ -1503,7 +1525,7 @@ func Test_runNew(t *testing.T) {
 		r.inputs["New Channel"] = created
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "takes a talkgroup, not a frequency") {
 			t.Fatalf("runNew reported %v, wanted the mismatch refused", err)
 		}
@@ -1522,7 +1544,7 @@ func Test_runNew(t *testing.T) {
 		r.inputs["New Channel"] = created
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "entering the frequency") {
 			t.Fatalf("runNew reported %v, wanted the refused address", err)
 		}
@@ -1538,7 +1560,7 @@ func Test_runNew(t *testing.T) {
 		r.inputs["New Channel"] = created
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "its name screen could not be opened") {
 			t.Fatalf("runNew reported %v, wanted the unopened name screen", err)
 		}
@@ -1551,7 +1573,7 @@ func Test_runNew(t *testing.T) {
 		r := walk()
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH!")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH!", false)
 		if err == nil || !strings.Contains(err.Error(), "naming it failed") {
 			t.Fatalf("runNew reported %v, wanted the refused name", err)
 		}
@@ -1564,7 +1586,7 @@ func Test_runNew(t *testing.T) {
 		r.title = "Edit Name"
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "could not leave the menus") {
 			t.Fatalf("runNew reported %v, wanted the menus reported as stuck", err)
 		}
@@ -1578,7 +1600,7 @@ func Test_runNew(t *testing.T) {
 		r.opens["Edit Channel"] = []string{"New Channel", "FIREGROUND"}
 		app.SetDevice(device.New(fakeConn{reply: r.reply}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "does not appear under") {
 			t.Fatalf("runNew reported %v, wanted the missing channel", err)
 		}
@@ -1993,7 +2015,7 @@ func Test_runNew_readBack(t *testing.T) {
 			return r.reply(command)
 		}}))
 
-		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH")
+		err := runNew(context.Background(), app, "0", "153.980", "DISPATCH", false)
 		if err == nil || !strings.Contains(err.Error(), "opening the department's menu") {
 			t.Fatalf("runNew reported %v, wanted the failed confirming read", err)
 		}
@@ -2041,6 +2063,146 @@ func Test_runRename_readBack(t *testing.T) {
 		err := runRename(context.Background(), app, "0", "DISPATCH", "NEW NAME")
 		if err == nil || !strings.Contains(err.Error(), "opening the department's menu") {
 			t.Fatalf("runRename reported %v, wanted the failed confirming read", err)
+		}
+	})
+}
+
+// Test_accepted tests the accepted function with 100% coverage.
+//
+// Coverage: 100% (5 test cases covering all branches)
+//
+// Test cases:
+//   - NoPrompt: an ordinary screen is left alone and costs one read
+//   - Refused: the prompt is answered no and the command fails saying so
+//   - Allowed: --allow-duplicate answers it yes and the command carries on
+//   - ReadError: a screen that cannot be read is reported
+//   - PressError: a no the scanner will not take says the prompt is still up
+func Test_accepted(t *testing.T) {
+	// Verify that the ordinary case, where nothing is being asked, does nothing.
+	t.Run("NoPrompt", func(t *testing.T) {
+		conn := fakeConn{reply: func(command string) (string, error) {
+			return "0,Edit Name,****", nil
+		}}
+
+		if err := accepted(context.Background(), device.New(conn), false, "CB", "27.055"); err != nil {
+			t.Fatalf("accepted() = %v, want nil", err)
+		}
+	})
+
+	// Verify the reported bug: the prompt is answered rather than walked into,
+	// and the caller is told the duplicate was refused.
+	t.Run("Refused", func(t *testing.T) {
+		var pressed []string
+		conn := fakeConn{reply: func(command string) (string, error) {
+			if strings.HasPrefix(command, "KEY,") {
+				pressed = append(pressed, command)
+				return "", nil
+			}
+			if command == "MSI" {
+				return `<MenuInfo MenuType="TypeError"/>`, nil
+			}
+			if command == "GSI" {
+				return `<ScannerInfo Mode="Scan Mode" V_Screen="scan"/>`, nil
+			}
+			return "0,Frequency Exists Accept?,****", nil
+		}}
+
+		err := accepted(context.Background(), device.New(conn), false, "CB Channels", "27.055")
+		if err == nil {
+			t.Fatal("expected an error when the frequency is already there, got none")
+		}
+		if !strings.Contains(err.Error(), "--allow-duplicate") {
+			t.Errorf("accepted() = %v, want it to name the flag that says yes", err)
+		}
+
+		want := fmt.Sprintf("KEY,%s,%s", device.KeyNo, device.KeyPress)
+		if len(pressed) == 0 || pressed[0] != want {
+			t.Errorf("pressed %v, want the no key answered first", pressed)
+		}
+	})
+
+	// Verify that somebody who asked for the duplicate gets it, and that the
+	// command carries on rather than failing.
+	t.Run("Allowed", func(t *testing.T) {
+		var pressed []string
+		conn := fakeConn{reply: func(command string) (string, error) {
+			if strings.HasPrefix(command, "KEY,") {
+				pressed = append(pressed, command)
+				return "", nil
+			}
+			return "0,Frequency Exists Accept?,****", nil
+		}}
+
+		if err := accepted(context.Background(), device.New(conn), true, "CB Channels", "27.055"); err != nil {
+			t.Fatalf("accepted() = %v, want nil", err)
+		}
+
+		want := fmt.Sprintf("KEY,%s,%s", device.KeyEnter, device.KeyPress)
+		if len(pressed) != 1 || pressed[0] != want {
+			t.Errorf("pressed %v, want the yes key and nothing else", pressed)
+		}
+	})
+
+	// Verify that a screen that cannot be read is reported rather than assumed
+	// to be free of the prompt.
+	t.Run("ReadError", func(t *testing.T) {
+		conn := fakeConn{reply: func(command string) (string, error) {
+			return "", errors.New("the port is gone")
+		}}
+
+		if err := accepted(context.Background(), device.New(conn), false, "CB", "27.055"); err == nil {
+			t.Error("expected an error when the screen cannot be read, got none")
+		}
+	})
+
+	// Verify that a no the scanner will not take leaves the reader knowing the
+	// prompt is still on screen and how to clear it by hand.
+	t.Run("PressError", func(t *testing.T) {
+		conn := fakeConn{reply: func(command string) (string, error) {
+			if strings.HasPrefix(command, "KEY,") {
+				return "", errors.New("the key was not taken")
+			}
+			return "0,Frequency Exists Accept?,****", nil
+		}}
+
+		err := accepted(context.Background(), device.New(conn), false, "CB", "27.055")
+		if err == nil {
+			t.Fatal("expected an error when the no key is refused, got none")
+		}
+		if !strings.Contains(err.Error(), "still asking") {
+			t.Errorf("accepted() = %v, want it to say the prompt is still up", err)
+		}
+	})
+}
+
+// Test_partial tests the partial function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - Some: a channel read off the menus alone is noticed
+//   - None: a list read entirely from the scanner's own list is not
+//   - Empty: a department holding nothing has nothing missing
+func Test_partial(t *testing.T) {
+	// Verify that one name-only channel is enough to say the read is not whole.
+	t.Run("Some", func(t *testing.T) {
+		if !partial([]catalog.Channel{{Name: "CH 01"}, {Name: "CH 02", Partial: true}}) {
+			t.Error("a name-only channel was not noticed")
+		}
+	})
+
+	// Verify that a list the scanner reported in full is not reported as partly
+	// unknown, which would send the command down the slow path for nothing.
+	t.Run("None", func(t *testing.T) {
+		if partial([]catalog.Channel{{Name: "CH 01"}}) {
+			t.Error("a complete list was reported as partly unknown")
+		}
+	})
+
+	// Verify that an empty department is not partly unknown either.
+	t.Run("Empty", func(t *testing.T) {
+		if partial(nil) {
+			t.Error("an empty department was reported as partly unknown")
 		}
 	})
 }

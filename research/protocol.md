@@ -496,8 +496,21 @@ Measured on the custom search banks, which are ten rows of about 108 bytes.
 Nine come back and the tenth does not, so how many rows survive depends on how
 long the names are, not on how many rows there are. Anything reading a list
 this way has to check what it got against what it expected rather than trusting
-the document to be complete. `banks` does: it reads whatever the list left out
-by walking that bank's menus.
+the document to be complete.
+
+Confirmed again on a department of forty CB channels, which are `CFREQ` rows of
+about the same size: seven came back. That one cost something, because nothing
+was checking the footer at the time. `radiocli channels` reported seven of the
+forty and said nothing about the rest, in text and in JSON alike, which reads
+exactly like a department holding seven channels. The count was only caught by
+cross-checking against `scanning`, which enumerates from a different request.
+
+Every list read now checks the footer, and the ones that have to be complete are
+finished the same way `banks` always did it: by walking that list's own menu and
+reading the names off the screen. The knob reaches every entry whether or not the
+protocol will report it. What the screen cannot supply is everything the row
+carried besides the name, so those entries are marked as partly read rather than
+filled in with guesses.
 
 ---
 

@@ -113,7 +113,7 @@ func newGoto(app *appcontext.App) *cobra.Command {
 				return err
 			}
 
-			index, err := catalog.ResolveDepartment(ctx, client, args[0])
+			index, err := navigate.ResolveDepartment(ctx, client, args[0])
 			if err != nil {
 				return err
 			}
@@ -193,7 +193,7 @@ func confirm(ctx context.Context, client *device.Scanner, system, index string) 
 		return nil
 	}
 
-	all, err := catalog.EverySystem(ctx, client)
+	all, err := navigate.EverySystem(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -220,7 +220,7 @@ func confirm(ctx context.Context, client *device.Scanner, system, index string) 
 //   - error if the departments cannot be read, or if no department has that
 //     index
 func departmentName(ctx context.Context, client *device.Scanner, index string) (string, error) {
-	all, err := catalog.EveryDepartment(ctx, client)
+	all, err := navigate.EveryDepartment(ctx, client)
 	if err != nil {
 		return "", err
 	}
@@ -273,13 +273,21 @@ func renderDepartments(app *appcontext.App, found []catalog.Department) error {
 	w := tabwriter.NewWriter(app.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tSCANNED\tQUICK KEY")
 
+	filled := 0
 	for _, d := range found {
+		if d.Partial {
+			filled++
+			fmt.Fprintf(w, "%s\t%s\t%s\n", d.Name, render.Unread, render.Unread)
+			continue
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", d.Name, render.YesNo(!d.Avoided), render.Dash(d.QuickKey))
 	}
 
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("writing the department list: %w", err)
 	}
+
+	render.Filled(app, "departments", filled)
 	return nil
 }
 
@@ -301,12 +309,12 @@ func run(ctx context.Context, app *appcontext.App, system string) error {
 		return err
 	}
 
-	index, err := catalog.ResolveSystem(ctx, client, system)
+	index, err := navigate.ResolveSystem(ctx, client, system)
 	if err != nil {
 		return err
 	}
 
-	found, err := catalog.ReadDepartments(ctx, client, index)
+	found, err := navigate.ReadDepartments(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -348,7 +356,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 
 	// Resolving first means a name the scanner does not have is reported as
 	// that, rather than as a missing flag.
-	index, err := catalog.ResolveDepartment(ctx, client, want)
+	index, err := navigate.ResolveDepartment(ctx, client, want)
 	if err != nil {
 		return err
 	}
@@ -380,7 +388,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 	}
 
 	// Read back, because the scanner is the only authority on what it holds.
-	all, err := catalog.EveryDepartment(ctx, client)
+	all, err := navigate.EveryDepartment(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -439,7 +447,7 @@ func runNew(ctx context.Context, app *appcontext.App, system, name string) error
 
 	// Read it back. The scanner is the only authority on whether this worked,
 	// and a created-then-unnamed department is worth knowing about.
-	all, err := catalog.EveryDepartment(ctx, client)
+	all, err := navigate.EveryDepartment(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -472,7 +480,7 @@ func runRename(ctx context.Context, app *appcontext.App, want, name string) erro
 		return err
 	}
 
-	index, err := catalog.ResolveDepartment(ctx, client, want)
+	index, err := navigate.ResolveDepartment(ctx, client, want)
 	if err != nil {
 		return err
 	}

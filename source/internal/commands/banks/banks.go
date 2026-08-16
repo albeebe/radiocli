@@ -15,6 +15,7 @@ package banks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -171,7 +172,7 @@ func extras(ctx context.Context, client *device.Scanner, bank int, into *report)
 //   - error if the scanner's list could not be read
 func listed(ctx context.Context, client *device.Scanner) (map[int]report, error) {
 	banks, err := catalog.ReadCustomSearchBanks(ctx, client)
-	if err != nil {
+	if err != nil && !errors.Is(err, catalog.ErrIncomplete) {
 		return nil, err
 	}
 

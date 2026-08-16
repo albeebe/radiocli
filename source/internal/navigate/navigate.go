@@ -52,9 +52,7 @@ func ToChannels(ctx context.Context, client *device.Scanner, department string) 
 //   - the index the scanner knows the department by
 //   - error if the name matches no department, or if the menu cannot be opened
 func ToDepartment(ctx context.Context, client *device.Scanner, want string) (string, error) {
-	index, err := resolve(ctx, client, want, "department", func() ([]catalog.Department, error) {
-		return catalog.EveryDepartment(ctx, client)
-	})
+	index, err := ResolveDepartment(ctx, client, want)
 	if err != nil {
 		return "", err
 	}
@@ -124,7 +122,7 @@ func ToFavorites(ctx context.Context, client *device.Scanner) error {
 //   - error if the lists cannot be read, if the name matches none of them, if
 //     the one it matches is built into the scanner, or if the walk fails
 func ToFavoritesList(ctx context.Context, client *device.Scanner, want string) (catalog.FavoritesList, error) {
-	lists, err := catalog.ReadFavorites(ctx, client)
+	lists, err := ReadFavorites(ctx, client)
 	if err != nil {
 		return catalog.FavoritesList{}, err
 	}
@@ -172,9 +170,7 @@ func ToFavoritesList(ctx context.Context, client *device.Scanner, want string) (
 //   - the index the scanner knows the site by
 //   - error if the name matches no site, or if the menu cannot be opened
 func ToSite(ctx context.Context, client *device.Scanner, want string) (string, error) {
-	index, err := resolve(ctx, client, want, "site", func() ([]catalog.Site, error) {
-		return catalog.EverySite(ctx, client)
-	})
+	index, err := ResolveSite(ctx, client, want)
 	if err != nil {
 		return "", err
 	}
@@ -246,9 +242,7 @@ func ToSites(ctx context.Context, client *device.Scanner, system string) error {
 //   - the index the scanner knows the system by
 //   - error if the name matches no system, or if the menu cannot be opened
 func ToSystem(ctx context.Context, client *device.Scanner, want string) (string, error) {
-	index, err := resolve(ctx, client, want, "system", func() ([]catalog.System, error) {
-		return catalog.EverySystem(ctx, client)
-	})
+	index, err := ResolveSystem(ctx, client, want)
 	if err != nil {
 		return "", err
 	}
@@ -280,32 +274,4 @@ func ToSystems(ctx context.Context, client *device.Scanner, list string) (catalo
 			reviewSystems, target.Name, err)
 	}
 	return target, nil
-}
-
-// resolve turns a name or an index into an index, reading the whole catalogue
-// only when a name makes that necessary.
-//
-// Parameters:
-//   - ctx: context for cancellation and timeouts, unused here because all
-//     closes over its own
-//   - client: the scanner the entries come from, unused here for the same
-//     reason
-//   - want: the entry to find, by name or by index
-//   - kind: what the entries are called in an error, such as "system"
-//   - all: reads the whole catalogue of entries, called only when want is a
-//     name
-//
-// Returns:
-//   - the index the scanner knows the entry by
-//   - error if the catalogue cannot be read, or if the name matches no entry
-func resolve[T catalog.Named](ctx context.Context, client *device.Scanner, want, kind string, all func() ([]T, error)) (string, error) {
-	if catalog.IsIndex(want) {
-		return want, nil
-	}
-
-	entries, err := all()
-	if err != nil {
-		return "", err
-	}
-	return catalog.Resolve(want, kind, entries)
 }

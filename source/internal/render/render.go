@@ -85,6 +85,32 @@ func Dash(value string) string {
 	return value
 }
 
+// Filled says that some of a listing's entries came off the scanner's menus
+// rather than out of its list, and that only their names are known.
+//
+// The note goes to stderr with the rest of the commentary, so a script reading
+// stdout is unaffected. A script that wants to know reads the partial field,
+// which is on the entries themselves.
+//
+// It is worth a whole sentence rather than a footnote on the table, because the
+// alternative is what this tool used to do: report a short list as though it
+// were the whole thing, and let somebody find out by creating forty channels and
+// being shown seven.
+//
+// Parameters:
+//   - app: the application context holding the output setting and the streams
+//   - kind: what the entries are called, plural, such as "departments"
+//   - n: how many of them are only partly known, ignored when it is zero
+func Filled(app *appcontext.App, kind string, n int) {
+	if n == 0 || app.Config.Output == appcontext.OutputJSON {
+		return
+	}
+
+	app.Notef("\nThe scanner's own list stopped short of %d of these %s, which were read off\n"+
+		"its menus instead: their names are right and the %s columns are unknown.\n",
+		n, kind, Unread)
+}
+
 // JSON writes v as indented JSON followed by a newline, which is what every
 // command's --output json path produces.
 //

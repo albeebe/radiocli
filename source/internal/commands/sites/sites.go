@@ -168,7 +168,7 @@ func confirm(ctx context.Context, client *device.Scanner, want, index string) er
 		return nil
 	}
 
-	all, err := catalog.EverySystem(ctx, client)
+	all, err := navigate.EverySystem(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -200,13 +200,21 @@ func renderSites(app *appcontext.App, found []catalog.Site) error {
 
 	w := tabwriter.NewWriter(app.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tSCANNED\tQUICK KEY")
+	filled := 0
 	for _, s := range found {
+		if s.Partial {
+			filled++
+			fmt.Fprintf(w, "%s\t%s\t%s\n", s.Name, render.Unread, render.Unread)
+			continue
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", s.Name, render.YesNo(!s.Avoided), render.Dash(s.QuickKey))
 	}
 
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("writing the site list: %w", err)
 	}
+
+	render.Filled(app, "sites", filled)
 	return nil
 }
 
@@ -228,12 +236,12 @@ func run(ctx context.Context, app *appcontext.App, want string) error {
 		return err
 	}
 
-	index, err := catalog.ResolveSystem(ctx, client, want)
+	index, err := navigate.ResolveSystem(ctx, client, want)
 	if err != nil {
 		return err
 	}
 
-	found, err := catalog.ReadSites(ctx, client, index)
+	found, err := navigate.ReadSites(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -275,7 +283,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 	// Resolve before asking about --yes, so the refusal names the site the way
 	// the scanner does, and a name it does not have is reported as that rather
 	// than as a missing flag.
-	index, err := catalog.ResolveSite(ctx, client, want)
+	index, err := navigate.ResolveSite(ctx, client, want)
 	if err != nil {
 		return err
 	}
@@ -311,7 +319,7 @@ func runDelete(ctx context.Context, app *appcontext.App, want string, yes bool) 
 	}
 
 	// Read back, because the scanner is the only authority on what it holds.
-	after, err := catalog.EverySite(ctx, client)
+	after, err := navigate.EverySite(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -345,7 +353,7 @@ func runNew(ctx context.Context, app *appcontext.App, system, name string) error
 		return err
 	}
 
-	index, err := catalog.ResolveSystem(ctx, client, system)
+	index, err := navigate.ResolveSystem(ctx, client, system)
 	if err != nil {
 		return err
 	}
@@ -375,7 +383,7 @@ func runNew(ctx context.Context, app *appcontext.App, system, name string) error
 	}
 
 	// Read back, because the scanner is the only authority on what was made.
-	found, err := catalog.ReadSites(ctx, client, index)
+	found, err := navigate.ReadSites(ctx, client, index)
 	if err != nil {
 		return err
 	}
@@ -408,7 +416,7 @@ func runRename(ctx context.Context, app *appcontext.App, want, name string) erro
 		return err
 	}
 
-	index, err := catalog.ResolveSite(ctx, client, want)
+	index, err := navigate.ResolveSite(ctx, client, want)
 	if err != nil {
 		return err
 	}
@@ -461,7 +469,7 @@ func runRename(ctx context.Context, app *appcontext.App, want, name string) erro
 //   - the name the scanner gives the site at that index
 //   - error if the sites cannot be read, or if no site has that index
 func siteName(ctx context.Context, client *device.Scanner, index string) (string, error) {
-	all, err := catalog.EverySite(ctx, client)
+	all, err := navigate.EverySite(ctx, client)
 	if err != nil {
 		return "", err
 	}
