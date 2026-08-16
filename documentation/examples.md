@@ -12,6 +12,7 @@ reads.
 ```
 radiocli devices                  # what is plugged in, and the port to use
 radiocli version                  # what this binary was built from
+radiocli update --check           # whether a newer release exists
 ```
 
 `devices` prints the port in its `PORT` column. Every command that talks to the
@@ -31,9 +32,10 @@ radiocli --device $SDS status     # confirm it is answering, and what it is doin
 
 **The lists below leave `--device $SDS` off to stay readable.** Add it to every
 command that touches the radio. The ones that never need it are `devices` and
-`audio`, which look at this computer rather than at a scanner, `version` and
-`config`, which are about the tool itself, `backup`, which reads the memory card
-instead of the serial port, and `colors palette`, which prints a built-in table.
+`audio`, which look at this computer rather than at a scanner, `version`,
+`config` and `update`, which are about the tool itself, `backup`, which reads the
+memory card instead of the serial port, and `colors palette`, which prints a
+built-in table.
 
 ## What is it doing right now
 
