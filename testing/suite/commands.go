@@ -109,6 +109,7 @@ var All = [][]string{
 	{"systems", "new"},
 	{"systems", "rename"},
 	{"tune"},
+	{"update"},
 	{"version"},
 	{"volume"},
 	{"volume", "set"},

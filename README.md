@@ -54,6 +54,17 @@ If the scanner's port later refuses with a permission error, add yourself to the
 sudo usermod -a -G dialout $USER
 ```
 
+### Updating later
+
+You only have to do the above once. From then on the tool updates itself:
+
+```
+radiocli update --check     # is there a newer one?
+radiocli update             # install it
+```
+
+It downloads the release built for your computer, checks it against the checksum published with it, and replaces itself. If you put it in `/usr/local/bin` you will need `sudo radiocli update`, and it will tell you so rather than asking for your password on its own. On a Mac there is no `xattr` step this way: the quarantine flag is something your browser attaches to a download, so a file the tool fetches for itself never gets one.
+
 ## Plugging in the scanner
 
 Connect the SDS150 to the computer with its USB cable and turn it on. The scanner briefly asks which USB mode to use; press the `.` key for Serial Port, or ignore the prompt and it picks the right mode on its own. Then ask the computer what it sees:
@@ -80,7 +91,7 @@ radiocli --device $SDS tune 162.550       # park it on one frequency
 radiocli --device $SDS scan               # back to scanning
 ```
 
-The commands that never need `--device` are `devices` and `audio`, which look at this computer rather than at a scanner, `version` and `config`, which are about the tool itself, `backup`, which reads the memory card instead of the serial port, and `colors palette`, which prints a built-in table.
+The commands that never need `--device` are `devices` and `audio`, which look at this computer rather than at a scanner, `version`, `config` and `update`, which are about the tool itself, `backup`, which reads the memory card instead of the serial port, and `colors palette`, which prints a built-in table.
 
 ## What it can do
 
@@ -91,7 +102,7 @@ The full command reference is in [documentation/commands/](documentation/command
 - **Control and tune it**: `scan`, `tune`, `weather`, `location`, `volume`, `squelch`, `beep`, `clock`.
 - **Edit the memory** at every level, with `new`, `rename`, and `delete` subcommands on `favorites`, `systems`, `departments`, `sites`, and `channels`. Deletes take everything underneath with them and require `--yes`.
 - **Drive it by hand**: `menu` reads and moves around the on-screen menus, and `key` presses front-panel keys directly. `key` is the blunt instrument: it presses what you ask and checks nothing, so prefer a command that names what it does.
-- **Manage the tool itself**: `config`, `daemon`, `backup`, and `audio`.
+- **Manage the tool itself**: `config`, `daemon`, `backup`, `audio`, and `update`, which replaces the tool with the newest release.
 
 ## Output for scripts and AI agents
 

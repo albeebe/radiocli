@@ -4,7 +4,7 @@
 Holds one package per `radiocli` command, from `battery` and `status` through to `favorites` and `tune`. Each one turns something a person types into work done on the scanner and output on the terminal.
 
 ## Why we use it?
-Thirty commands in one package would be one enormous file and a permanent merge conflict. More to the point, commands genuinely have nothing to do with each other: what `battery` does with a voltage reading has no bearing on how `channels` walks four menus deep to list a department. Giving each its own package means a command can be read start to finish without scrolling past twenty-nine others, its tests name only the thing they test, and adding one touches exactly two lines of code outside its own folder.
+Thirty-one commands in one package would be one enormous file and a permanent merge conflict. More to the point, commands genuinely have nothing to do with each other: what `battery` does with a voltage reading has no bearing on how `channels` walks four menus deep to list a department. Giving each its own package means a command can be read start to finish without scrolling past thirty others, its tests name only the thing they test, and adding one touches exactly two lines of code outside its own folder.
 
 Keeping them separate is also what stops the wiring collapsing. No command imports another. When one needs to run another, list the others, or watch the scanner while something else holds it, it is handed a function by `main.go`, which is the only place that knows the full list. The result is that a command package depends on `appcontext` and on whichever layer it needs, and on nothing horizontal, so the set can grow without every addition making every other command heavier to understand.
 
@@ -50,5 +50,5 @@ go test -cover ./... | grep -v "100.0%"
 - **cobra** - The command framework, and the `RunE` and `Annotations` fields every package here uses
 - **Command pattern** - One unit per user-visible action, which is what makes the package list and the help output the same list
 - **appcontext.OnlyReads** - The annotation that declares a command safe to run alongside another, and why anything unmarked is refused
-- **Table-driven tests** - How each command's flags, output formats and failure modes are covered without thirty near-identical test functions
+- **Table-driven tests** - How each command's flags, output formats and failure modes are covered without thirty-one near-identical test functions
 - **Separation of parsing and doing** - `New` for the command line, `run` for the work, which is what keeps the tests free of cobra

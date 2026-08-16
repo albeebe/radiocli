@@ -44,6 +44,7 @@ import (
 	"github.com/albeebe/radiocli/internal/commands/status"
 	"github.com/albeebe/radiocli/internal/commands/systems"
 	"github.com/albeebe/radiocli/internal/commands/tune"
+	"github.com/albeebe/radiocli/internal/commands/update"
 	"github.com/albeebe/radiocli/internal/commands/version"
 	"github.com/albeebe/radiocli/internal/commands/volume"
 	"github.com/albeebe/radiocli/internal/commands/weather"
@@ -81,6 +82,7 @@ var commands = []func(*appcontext.App) *cobra.Command{
 	status.New,
 	systems.New,
 	tune.New,
+	update.New,
 	version.New,
 	volume.New,
 	weather.New,
