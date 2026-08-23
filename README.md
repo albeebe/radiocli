@@ -97,7 +97,7 @@ The commands that never need `--device` are `devices` and `audio`, which look at
 
 The full command reference is in [documentation/commands/](documentation/commands/), and a task-oriented tour is in [documentation/examples.md](documentation/examples.md). The commands group roughly as follows.
 
-- **See what it is doing right now**: `status`, `scanning`, `screen`, `battery`, `backlight`, `display`, `colors`, `version`.
+- **See what it is doing right now**: `status`, `receiving`, `scanning`, `screen`, `battery`, `backlight`, `display`, `colors`, `version`.
 - **Browse the memory**, which is organized as favorites lists, then systems, then departments, then channels: `favorites`, `systems`, `departments`, `sites`, `channels`, `banks`.
 - **Control and tune it**: `scan`, `tune`, `weather`, `location`, `volume`, `squelch`, `beep`, `clock`.
 - **Edit the memory** at every level, with `new`, `rename`, and `delete` subcommands on `favorites`, `systems`, `departments`, `sites`, and `channels`. Deletes take everything underneath with them and require `--yes`.

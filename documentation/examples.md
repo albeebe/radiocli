@@ -40,11 +40,17 @@ built-in table.
 ## What is it doing right now
 
 ```
+radiocli receiving                # what it is hearing at this instant
 radiocli scanning                 # the channels being scanned   (writes)
 radiocli scanning systems         # the systems being cycled
 radiocli screen                   # the display, as text
 radiocli menu                     # the menu it is showing, if any
 ```
+
+`receiving` is the one to reach for when the scanner has stopped on something
+and you want to know what. Read its first line before the rest: a scanning radio
+still names a channel, because it answers with whichever one it happened to be
+checking, and only `receiving: yes` says it actually stopped there.
 
 `scanning systems` is the one to reach for. It is complete rather than a
 sample, and it works whether you are scanning your own lists or the full

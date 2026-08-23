@@ -35,6 +35,7 @@ import (
 	"github.com/albeebe/radiocli/internal/commands/key"
 	"github.com/albeebe/radiocli/internal/commands/location"
 	"github.com/albeebe/radiocli/internal/commands/menu"
+	"github.com/albeebe/radiocli/internal/commands/receiving"
 	"github.com/albeebe/radiocli/internal/commands/root"
 	"github.com/albeebe/radiocli/internal/commands/scan"
 	"github.com/albeebe/radiocli/internal/commands/scanning"
@@ -74,6 +75,7 @@ var commands = []func(*appcontext.App) *cobra.Command{
 	key.New,
 	menu.New,
 	location.New,
+	receiving.New,
 	scan.New,
 	scanning.New,
 	screen.New,
