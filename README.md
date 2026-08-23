@@ -99,7 +99,7 @@ The full command reference is in [documentation/commands/](documentation/command
 
 - **See what it is doing right now**: `status`, `receiving`, `scanning`, `screen`, `battery`, `backlight`, `display`, `colors`, `version`.
 - **Browse the memory**, which is organized as favorites lists, then systems, then departments, then channels: `favorites`, `systems`, `departments`, `sites`, `channels`, `banks`.
-- **Control and tune it**: `scan`, `tune`, `weather`, `location`, `volume`, `squelch`, `beep`, `clock`.
+- **Control and tune it**: `scan`, `tune`, `weather`, `location`, `volume`, `squelch`, `beep`, `headphone`, `clock`.
 - **Edit the memory** at every level, with `new`, `rename`, and `delete` subcommands on `favorites`, `systems`, `departments`, `sites`, and `channels`. Deletes take everything underneath with them and require `--yes`.
 - **Drive it by hand**: `menu` reads and moves around the on-screen menus, and `key` presses front-panel keys directly. `key` is the blunt instrument: it presses what you ask and checks nothing, so prefer a command that names what it does.
 - **Hear it and keep it**: `audio` lists the sound inputs on this computer, `audio listen` plays the scanner through one, and `audio record` writes a file per transmission with a description beside it.

@@ -172,6 +172,15 @@ jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' ~/scanner/index.jsonl
 jq -r 'select(.duration > 10) | "\(.duration)s \(.channel)"' ~/scanner/index.jsonl
 ```
 
+If recordings sound thin, hollow, or unexpectedly quiet, the scanner's headphone
+socket is wired the wrong way round. Recording works around it on its own, but
+one command fixes it for everything else too:
+
+```
+radiocli --device $SDS headphone                  # which way is it wired?
+radiocli --device $SDS headphone set in-phase     # the one to want   (writes)
+```
+
 To listen and record at the same time, or to keep using the scanner while a
 recording runs, start a daemon holding both and leave `--input` off:
 

@@ -441,7 +441,12 @@ settle until the first transmission. It judges the fold by what mixing actually
 produces rather than by comparing the two sides, because **the headphone jack on
 an SDS100 and an SDS150 is wired out of phase**: both sides are equally loud, and
 averaging them cancels most of the sound. When that is detected, `auto` takes
-one side and says so on stderr, naming the menu that fixes it on the radio.
+one side and says so on stderr.
+
+Recording therefore works whichever way the scanner is set, and you do not have
+to check first. To fix it at the source instead, which is better because it is
+then right for everything the radio is plugged into, see
+[`headphone`](headphone.md).
 
 ```
 radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --input "USB Audio CODEC" --channel left

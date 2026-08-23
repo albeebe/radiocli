@@ -32,6 +32,7 @@ import (
 	"github.com/albeebe/radiocli/internal/commands/devices"
 	"github.com/albeebe/radiocli/internal/commands/display"
 	"github.com/albeebe/radiocli/internal/commands/favorites"
+	"github.com/albeebe/radiocli/internal/commands/headphone"
 	"github.com/albeebe/radiocli/internal/commands/key"
 	"github.com/albeebe/radiocli/internal/commands/location"
 	"github.com/albeebe/radiocli/internal/commands/menu"
@@ -72,6 +73,7 @@ var commands = []func(*appcontext.App) *cobra.Command{
 	devices.New,
 	display.New,
 	favorites.New,
+	headphone.New,
 	key.New,
 	menu.New,
 	location.New,
