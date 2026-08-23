@@ -650,6 +650,46 @@ rather than assumed: the check reports which area's picker it borrowed and what
 color was there, and the test sets that area to that same color and confirms
 nothing changed.
 
+### The unit id is an element, not an attribute
+
+*2026-08-23*
+
+A live P25 call on an SDS150, caught by dumping whole `GSI` documents rather
+than the attributes expected in them:
+
+```xml
+<TGID Name="Fire Dispatch" Index="20057" TGID="TGID:10003" SvcType="Fire Dispatch" ... />
+<UnitID Name="UID:101" U_Id="UID:101" />
+<Site Name="Manchester" Index="20034" ... />
+```
+
+The transmitting radio arrives as a `UnitID` element of its own, sitting between
+`TGID` and `Site`. It is **not** an attribute of `TGID`, which is where the
+conventional element puts the same idea: `ConvFrequency` really does carry
+`TGID="TGID None" U_Id="UID None"` inline, and modelling the trunked side to
+match reads empty on every document the radio sends.
+
+Between calls the element is still there and is written bare:
+
+```xml
+<UnitID />
+```
+
+No attributes at all, rather than the `U_Id="UID None"` the conventional element
+uses. So one document spells absence two different ways depending on which half
+of it is being read.
+
+`Name` and `U_Id` carried the same value on every capture. The value takes the
+same prefixed form as the talkgroup, `UID:101`, so whatever strips `TGID:`
+strips this too.
+
+**Why it matters.** Anything reading the unit id as an attribute of the
+talkgroup gets nothing, forever, on hardware that is working perfectly. The
+symptom is a field that is simply always empty, which reads as "this system does
+not send unit ids" rather than as a bug. It survived a probe that grepped the
+document for `U_Id=` and found it, because finding the string says nothing about
+which element it hangs off.
+
 ### `GST` is strictly better than `STS`
 
 *2026-08-04*

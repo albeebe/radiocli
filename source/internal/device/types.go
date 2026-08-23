@@ -847,10 +847,13 @@ type MonitorList struct {
 // following the spelling ConvFrequency uses for the same identifiers, and were
 // confirmed against hardware on 2026-08-23 when a live P25 transmission came
 // through: Name and TGID arrived spelled as modelled, with the ID carrying the
-// same "TGID:" prefix the conventional element uses. UnitID is the one field
-// still unconfirmed in its active form, because no capture has yet caught the
-// scanner naming the transmitting radio. The raw document is in
-// ScannerInfo.XML for checking it when one does.
+// same "TGID:" prefix the conventional element uses.
+//
+// UnitID was modelled here too, and that was wrong. A trunked document does not
+// put the transmitting radio on this element at all: it sends a UnitID element
+// of its own, beside this one. The attribute is kept because the specification
+// describes it and another model may yet send it, but the element is what a
+// real SDS150 uses and Tuned reads that first.
 type Talkgroup struct {
 	// Name is the talkgroup's alpha tag.
 	Name string `xml:"Name,attr" json:"name,omitempty"`
@@ -864,7 +867,9 @@ type Talkgroup struct {
 	// ID is the talkgroup number itself.
 	ID string `xml:"TGID,attr" json:"id,omitempty"`
 
-	// UnitID is the radio heard transmitting, empty when none was decoded.
+	// UnitID is the radio heard transmitting on this talkgroup, and is empty on
+	// every document a real SDS150 has sent. See the UnitID element, which is
+	// where the scanner actually puts it.
 	UnitID string `xml:"U_Id,attr" json:"unitId,omitempty"`
 
 	// ServiceType is the category the talkgroup is filed under.
@@ -872,6 +877,32 @@ type Talkgroup struct {
 
 	// Held reports whether the scanner is parked on this talkgroup.
 	Held string `xml:"Hold,attr" json:"held,omitempty"`
+}
+
+// UnitID is the radio heard transmitting on a trunked call.
+//
+// It is an element rather than an attribute of the talkgroup, which is the
+// whole reason this type exists. Modelling it as a U_Id attribute on TGID, the
+// way the conventional element carries it, reads empty on every document the
+// scanner sends, so the transmitting radio never reached a recording.
+//
+// Captured from an SDS150 on 2026-08-23, on a live P25 call:
+//
+//	<TGID Name="Fire Dispatch" TGID="TGID:10003" ... />
+//	<UnitID Name="UID:101" U_Id="UID:101" />
+//
+// The element is always sent and is empty between calls, written as a bare
+// <UnitID /> with no attributes at all rather than as the "UID None" the
+// conventional element uses for the same idea. Both spellings of absence end up
+// empty here, since present handles one and an absent attribute is already the
+// other.
+//
+// Name and U_Id carried the same value on every capture. U_Id is read because
+// it is the one the specification names; Name on this element is the scanner's
+// own label for the same thing rather than an alpha tag for the radio.
+type UnitID struct {
+	// ID is the radio's identifier, such as "101", and is empty between calls.
+	ID string `xml:"U_Id,attr" json:"id,omitempty"`
 }
 
 // Heard is what the scanner is listening to at one instant, flattened out of
@@ -1046,6 +1077,11 @@ type ScannerInfo struct {
 	// Talkgroup is the trunked talkgroup the scanner is on, present only in
 	// trunked modes.
 	Talkgroup Talkgroup `xml:"TGID" json:"talkgroup,omitempty"`
+
+	// Unit is the radio heard transmitting on a trunked call, which the scanner
+	// sends as an element of its own beside TGID rather than as an attribute of
+	// it.
+	Unit UnitID `xml:"UnitID" json:"unit,omitempty"`
 
 	// Menu describes the menu the scanner is in, when it is in one.
 	Menu Named `xml:"MenuSummary" json:"menu"`

@@ -746,3 +746,97 @@ func TestHeard(t *testing.T) {
 		}
 	})
 }
+
+// TestUnitIDComesFromItsOwnElement covers the transmitting radio on a trunked
+// call, which the scanner reports as an element beside the talkgroup rather
+// than as an attribute of it.
+//
+// The document below is what an SDS150 sent on 2026-08-23 during a live P25
+// call, trimmed to the elements that matter. Modelling the unit as a U_Id
+// attribute on TGID, the way the conventional element carries it, read empty on
+// every real document, so no trunked recording ever named the radio.
+//
+// Coverage: 3 test cases covering the element, its absence, and the fallback
+//
+// Test cases:
+//   - Live: a call in progress reports the radio from the UnitID element
+//   - Between: the bare element the scanner sends between calls reports nothing
+//   - Attribute: a document carrying the unit the way the specification
+//     describes is still read, since another model may send one
+func TestUnitIDComesFromItsOwnElement(t *testing.T) {
+	// Verify a live P25 call names the transmitting radio.
+	t.Run("Live", func(t *testing.T) {
+		info, err := answeringXML(`<ScannerInfo Mode="Trunk Scan">` +
+			`<System Name="City of Manchester" SystemType="P25 Trunk"/>` +
+			`<Department Name="Fire"/>` +
+			`<TGID Name="Fire Dispatch" TGID="TGID:10003"/>` +
+			`<UnitID Name="UID:101" U_Id="UID:101"/>` +
+			`<Property Sig="3" Mute="Unmute"/></ScannerInfo>`).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("parsing: %v", err)
+		}
+
+		if _, value, unit := info.Tuned(); value != "10003" || unit != "101" {
+			t.Errorf("Tuned() gave talkgroup %q unit %q, want \"10003\" and \"101\"", value, unit)
+		}
+		if h := info.Heard(); h.Unit != "101" {
+			t.Errorf("Heard().Unit = %q, want \"101\"", h.Unit)
+		}
+	})
+
+	// Verify the bare element the scanner sends between calls is not mistaken
+	// for a radio. It arrives with no attributes at all rather than carrying
+	// the "UID None" the conventional element uses.
+	t.Run("Between", func(t *testing.T) {
+		info, err := answeringXML(`<ScannerInfo Mode="Trunk Scan">` +
+			`<TGID TGID="TGID: ---"/><UnitID/>` +
+			`<Property Sig="0" Mute="Mute"/></ScannerInfo>`).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("parsing: %v", err)
+		}
+
+		if h := info.Heard(); h.Unit != "" {
+			t.Errorf("Heard().Unit = %q, want it empty between calls", h.Unit)
+		}
+	})
+
+	// Verify a conventional channel reports the radio too. P25 without trunking
+	// is still P25: the document reports a frequency rather than a talkgroup,
+	// and Mod reports the demodulator rather than the programming, so nothing
+	// about such a channel looks digital from here. Reading the element only on
+	// the trunked side would drop the radio on every conventional digital
+	// channel, which is where it was first noticed.
+	t.Run("Conventional", func(t *testing.T) {
+		info, err := answeringXML(`<ScannerInfo Mode="Scan Mode">` +
+			`<System Name="PUBLIC SAFETY"/><Department Name="POLICE DEPARTMENT"/>` +
+			`<ConvFrequency Name="DISPATCH" Freq=" 155.550000MHz" Mod="NFM" TGID="TGID None" U_Id="UID None"/>` +
+			`<UnitID Name="UID:1234" U_Id="UID:1234"/>` +
+			`<Property Sig="4" Mute="Unmute"/></ScannerInfo>`).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("parsing: %v", err)
+		}
+
+		h := info.Heard()
+		if h.Unit != "1234" {
+			t.Errorf("Heard().Unit = %q, want \"1234\" from the element", h.Unit)
+		}
+		if h.Frequency != "155.550000MHz" {
+			t.Errorf("Heard().Frequency = %q, want the channel unchanged", h.Frequency)
+		}
+	})
+
+	// Verify the attribute the specification describes is still honoured, so a
+	// model that does send it is not ignored on the strength of one radio.
+	t.Run("Attribute", func(t *testing.T) {
+		info, err := answeringXML(`<ScannerInfo Mode="Trunk Scan">` +
+			`<TGID Name="Fire Dispatch" TGID="TGID:10003" U_Id="UID:77"/><UnitID/>` +
+			`<Property Sig="3" Mute="Unmute"/></ScannerInfo>`).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("parsing: %v", err)
+		}
+
+		if h := info.Heard(); h.Unit != "77" {
+			t.Errorf("Heard().Unit = %q, want \"77\" from the attribute", h.Unit)
+		}
+	})
+}

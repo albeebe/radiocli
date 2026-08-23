@@ -360,7 +360,9 @@ sound like anything.
 
 - All of this is one SDS150 on firmware 1.00.37, one cable, one sound card.
   Nothing has been checked against a second radio.
-- The unit ID on a digital trunked call has still never been seen populated.
+- The unit ID on a digital trunked call was seen populated on 2026-08-23, and
+  it is not where it was modelled. See
+  [the unit id is an element](oddities.md#the-unit-id-is-an-element-not-an-attribute).
   The talkgroup half got its confirmation on the first night of trunked
   traffic, and the confirmation cut both ways: the element arrived spelled as
   modelled, carrying the same "TGID:" prefix as the conventional one, and the
@@ -368,7 +370,12 @@ sound like anything.
   labelled "TGID:10003". The stripping was tested on its own and passed; no
   test fed a whole trunked document through and read what came out the far
   end, which is the only place that wiring can fail. Fixed, with that exact
-  test added.
+  test added. The unit id then failed the same way twice over, which is the
+  lesson: a field nothing has ever seen arrive is not modelled, it is guessed,
+  and testing the guess against a fixture built from the guess proves nothing.
+  Both halves are now confirmed on live traffic: a conventional digital channel
+  reported unit 101 and a P25 trunked call reported unit 100045, each read from
+  the element rather than the attribute.
 - Whether `A_Led` follows the channel's alert colour is inference from it reading
   `Off` the whole time. I have not set an alert colour and watched it change.
 - The 640 ms gap between two speakers is a single measurement. I am using it

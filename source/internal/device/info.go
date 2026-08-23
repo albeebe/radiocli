@@ -199,6 +199,7 @@ func (s *Scanner) ScannerInfo(ctx context.Context) (ScannerInfo, error) {
 	info.Frequency.UnitID = present(info.Frequency.UnitID)
 	info.Talkgroup.ID = present(info.Talkgroup.ID)
 	info.Talkgroup.UnitID = present(info.Talkgroup.UnitID)
+	info.Unit.ID = present(info.Unit.ID)
 
 	info.XML = doc
 	return info, nil
@@ -282,14 +283,46 @@ func (p Property) Unmuted() bool {
 //   - the radio heard transmitting, empty when none was decoded
 func (i ScannerInfo) Tuned() (name, value, unit string) {
 	if i.Talkgroup.ID != "" {
-		return i.Talkgroup.Name, i.Talkgroup.ID, i.Talkgroup.UnitID
+		// The unit comes from the element beside the talkgroup rather than
+		// from the talkgroup itself. A real SDS150 has never populated the
+		// attribute, and reading only that reported no transmitting radio on
+		// any trunked call ever recorded. The attribute is still read, because
+		// the specification describes it and another model may use it.
+		return i.Talkgroup.Name, i.Talkgroup.ID, either(i.Unit.ID, i.Talkgroup.UnitID)
 	}
 	if i.Frequency.Frequency != "" {
-		return i.Frequency.Name, i.Frequency.Frequency, i.Frequency.UnitID
+		// A conventional channel can be digital too. P25 without trunking is
+		// still P25, it still names the transmitting radio, and a channel
+		// carrying it looks like any other conventional one here: the document
+		// reports a frequency rather than a talkgroup, and Mod reports whatever
+		// the demodulator settled on rather than how the channel is programmed.
+		// So the element is read on this side as well, rather than assuming
+		// that a frequency means analog and cannot have a radio behind it.
+		return i.Frequency.Name, i.Frequency.Frequency, either(i.Frequency.UnitID, i.Unit.ID)
 	}
-	// Nothing sent either element. The Channel the specification describes is
-	// the last resort, and is empty on every firmware seen so far.
-	return i.Channel.Name, "", ""
+	// Neither element named what the scanner is on. The radio may still have
+	// decoded a unit, so it is reported rather than dropped for want of a
+	// channel to attach it to.
+	return i.Channel.Name, "", i.Unit.ID
+}
+
+// either returns the first of two readings that says anything.
+//
+// The transmitting radio arrives in one of two places depending on the document
+// and, as far as anything here knows, on the model. Rather than choose, both are
+// read and whichever is filled in is used.
+//
+// Parameters:
+//   - first: the reading to prefer
+//   - second: the reading to fall back on
+//
+// Returns:
+//   - first when it is not empty, otherwise second
+func either(first, second string) string {
+	if first != "" {
+		return first
+	}
+	return second
 }
 
 // present turns the scanner's several ways of writing an identifier into

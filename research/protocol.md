@@ -469,6 +469,7 @@ off or priority only).
 | `System` | Name, Index, Avoid, SystemType, quick key, number tag, Hold |
 | `Department` | Name, Index, Avoid, quick key, Hold |
 | `Site` | Name, Index, Avoid, quick key, Hold, Mod (Auto, NFM, FM) |
+| `UnitID` | Name and `U_Id`, both carrying the transmitting radio as `UID:101`. Sent bare, `<UnitID />`, between calls rather than carrying the `UID None` the conventional element uses. It is an element of its own and **not** an attribute of `TGID`, which is where `ConvFrequency` puts the same idea |
 
 Avoid is always one of `Off`, `T-Avoid` or `Avoid`.
 
