@@ -84,6 +84,53 @@ const (
 	// comes back.
 	floorMin = -90.0
 
+	// speechMarginDB is how far above the floor a transmission's loudest moment
+	// has to reach before it is worth a file at all.
+	//
+	// marginDB is deliberately close to the floor, because finding the exact
+	// moment audio began means catching it while it is still faint. That makes
+	// it useless for the other question: a transmission the radio reported into
+	// a quiet cable clears eight decibels on the floor's own wobble and gets
+	// written as a recording of nothing.
+	//
+	// Loudest moment rather than any moment, because the two questions are
+	// different. Measured across eighteen consecutive recordings on an SDS150
+	// through a line input, every one carrying speech peaked between 48 and 71
+	// decibels above its floor, and the one holding nothing but noise peaked at
+	// 25. Thirty-five sits in the middle of a gap twenty-three decibels wide.
+	speechMarginDB = 35.0
+
+	// floorTrusted is how quiet the floor estimate has to be before it is
+	// allowed to reject a transmission.
+	//
+	// The estimate is a low percentile of the last fifteen seconds, which is a
+	// noise floor only when most of that window was quiet. A busy channel, or a
+	// recorder started in the middle of a transmission, fills the window with
+	// speech and the estimate rises to meet it. Rejecting on that reading would
+	// throw away the real traffic that produced it, which is the opposite of
+	// what the test is for.
+	//
+	// So a high reading disables the test rather than triggering it. Measured
+	// on an SDS150 through a line input, a genuine floor sat between -62 and
+	// -80 dBFS across eighteen recordings, so anything above -45 is the window
+	// being full of audio rather than a quiet cable.
+	floorTrusted = -45.0
+
+	// tailDropDB is how far below a transmission's loudest moment a frame can
+	// be and still count as part of it.
+	//
+	// The end of a recording is the last frame that was still speech, and
+	// marginDB cannot answer that either. On a clean line input the floor sits
+	// near -80 dBFS, so eight decibels above it is -72, and hiss at -70 goes on
+	// advancing the last-heard time long after anybody stopped talking. One
+	// recording ran seven seconds for one second of speech that way.
+	//
+	// Measured against the transmission's own peak rather than the floor,
+	// because that is the level the speech in this recording actually has, and
+	// it needs no estimate to be right. Forty decibels is far below any
+	// syllable and far above the noise the same recording is sitting on.
+	tailDropDB = 40.0
+
 	// marginDB is how far above the tracked floor a frame has to be to count
 	// as signal.
 	//
@@ -446,9 +493,32 @@ type transmission struct {
 	// to be rid of.
 	firstLoud time.Time
 
-	// lastLoud is when audio was last above the floor, which is where the
-	// recording is trimmed back to when it ends.
+	// lastLoud is when audio was last loud enough to be speech, which is where
+	// the recording is trimmed back to when it ends.
+	//
+	// Judged against peak rather than against the floor. What ends a recording
+	// is somebody stopping talking, and on a quiet input the floor is so far
+	// down that hiss clears it and holds the recording open for seconds after
+	// the voice has gone.
 	lastLoud time.Time
+
+	// peak is the loudest frame heard so far, in dBFS, and is the level
+	// everything else in the transmission is judged against. It means nothing
+	// until heard is set.
+	//
+	// It only rises, so the answers it gives only get stricter as the
+	// transmission goes on. Early frames are measured against a peak that has
+	// not been reached yet, which is the forgiving direction: it keeps the
+	// beginning of a recording rather than trimming into it.
+	peak float64
+
+	// heard says peak holds a measurement rather than nothing.
+	//
+	// A separate field because there is no level that can stand for "none".
+	// Zero dBFS is not silence, it is the loudest a sample can be, and using it
+	// as the empty value makes a transmission at full scale read as one that
+	// was never heard at all.
+	heard bool
 
 	// lastRadio is when the radio was last seen receiving, and is what bounds
 	// the recording when the radio is the authority.

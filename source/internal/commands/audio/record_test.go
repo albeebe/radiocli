@@ -474,7 +474,7 @@ func Test_recordLoop(t *testing.T) {
 	// by hand. This is the path that reads the scanner for the level, so it is
 	// the one that has to work when nothing can be read.
 	t.Run("Clipping", func(t *testing.T) {
-		r, frames, _, _, cancel, done := start(t)
+		r, frames, dir, _, cancel, done := start(t)
 		defer cancel()
 
 		// A tone at 0 dBFS is every sample at full scale, which is what an
@@ -499,6 +499,9 @@ func Test_recordLoop(t *testing.T) {
 
 		if err := <-done; err != nil {
 			t.Fatalf("recording: %v", err)
+		}
+		if n := wavs(t, dir); n != 1 {
+			t.Fatalf("wrote %d recordings, want the clipped one", n)
 		}
 	})
 

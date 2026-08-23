@@ -247,7 +247,18 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 			tx.firstLoud = f.At
 			trimToOnset(tx)
 		}
-		tx.lastLoud = f.At
+		if !tx.heard || f.Level > tx.peak {
+			tx.heard, tx.peak = true, f.Level
+		}
+
+		// Where the recording ends is the last frame that was still speech,
+		// which is a question about this transmission's own level rather than
+		// about the floor. Hiss clears the floor by eight decibels on a quiet
+		// input and would hold the ending open for as long as the radio stayed
+		// keyed.
+		if f.Level > tx.peak-tailDropDB {
+			tx.lastLoud = f.At
+		}
 	}
 
 	// The radio naming a channel for a transmission that opened on audio alone
@@ -285,6 +296,18 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 	//
 	// The second condition is the safety valve: something has to give before
 	// pending outgrows the buffer it is sized against.
+	// Long enough is not the whole test. A transmission the radio reported into
+	// a quiet cable clears the floor on its own wobble and runs for as long as
+	// the radio says it is receiving, so length alone writes a file of noise.
+	// Its loudest moment has to be loud enough to be somebody talking.
+	case !g.hasSpeech(tx):
+		// Nothing heard yet that is worth a file. What is held still rolls, so
+		// a transmission that never produces speech cannot grow without bound.
+		if len(tx.pending) > maxRingFrames {
+			tx.pending = tx.pending[1:]
+			tx.info.Start = tx.pending[0].At
+		}
+
 	case tx.lastLoud.Sub(tx.firstLoud)+frameDuration >= g.opts.MinDuration ||
 		len(tx.pending) >= maxRingFrames:
 		tx.confirmed = true
@@ -292,10 +315,17 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 	}
 
 	if tx.confirmed {
-		// Once confirmed, audio is handed out as it ages past Hang. What is
-		// held back is exactly what might still have to be trimmed off the end,
-		// so trailing quiet is never written and then regretted.
-		out = append(out, g.release(f.At.Add(-g.opts.Hang))...)
+		// Once confirmed, audio is handed out as it ages past Hang, and never
+		// past the last speech. The second bound is what makes trimming the end
+		// possible at all: a frame handed over has been written, so quiet that
+		// might turn out to be the tail has to be kept back until either more
+		// speech arrives and releases it, or the transmission ends and it is
+		// dropped.
+		cutoff := f.At.Add(-g.opts.Hang)
+		if end := tx.lastLoud.Add(padDuration); end.Before(cutoff) {
+			cutoff = end
+		}
+		out = append(out, g.release(cutoff)...)
 	}
 
 	// The ordinary ending. With a radio to ask, it is the radio going quiet
@@ -313,6 +343,40 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 	}
 
 	return out
+}
+
+// hasSpeech reports whether the transmission has held anything loud enough to
+// be somebody talking.
+//
+// It is the difference between a recording and a file of noise. The floor is
+// where the input sits with nothing coming through, and a transmission the
+// radio reported into a quiet cable never rises meaningfully above it, so the
+// loudest moment is what settles whether there was ever a voice.
+//
+// Measured against the floor rather than an absolute level, because how loud
+// speech lands depends on the cable and the sound card and nothing here can
+// know either.
+//
+// A floor that is not quiet is not answered against at all. The estimate only
+// means "where the noise is" when most of the window it was taken from was
+// noise, and a busy channel fills that window with speech instead. Reading a
+// high estimate as a high noise floor would reject the traffic that raised it.
+//
+// Parameters:
+//   - tx: the transmission being assembled
+//
+// Returns:
+//   - true if the loudest frame so far is far enough above the floor, or if
+//     the floor is too high to be judging anything by
+func (g *Gate) hasSpeech(tx *transmission) bool {
+	if !g.floor.ready() {
+		return false
+	}
+	floor := g.floor.level()
+	if floor > floorTrusted {
+		return true
+	}
+	return tx.heard && tx.peak > floor+speechMarginDB
 }
 
 // counts reports whether audio arriving now belongs to the transmission.

@@ -941,3 +941,122 @@ func TestTheTailIsBoundedByTheRadio(t *testing.T) {
 			over, radioSlack+padDuration)
 	}
 }
+
+// Test_hasSpeech tests the hasSpeech method with 100% coverage.
+//
+// It is what separates a recording from a file of noise. The radio reporting
+// activity is not proof that any sound arrived: a lead in the wrong socket, or
+// a channel the scanner opened and nothing came through, both clear the eight
+// decibel margin on the floor's own wobble and would otherwise be written as
+// recordings.
+//
+// Coverage: 100% (4 test cases covering every branch)
+//
+// Test cases:
+//   - NoFloor: nothing measured yet is not evidence of speech
+//   - Quiet: a transmission that never rose far above a quiet floor is refused
+//   - Speech: one that did is accepted
+//   - FloorNotQuiet: a floor too high to be a noise floor refuses nothing,
+//     since the audio that raised it is the traffic being asked about
+func Test_hasSpeech(t *testing.T) {
+	// gateWith returns a gate whose floor has been fed level throughout.
+	gateWith := func(level float64) *Gate {
+		g := New(Options{RequireRadio: true})
+		for i := 0; i < floorFrames; i++ {
+			g.floor.add(level)
+		}
+		return g
+	}
+
+	// Verify a gate that has measured nothing says no. Treating an unmeasured
+	// floor as permission would confirm a recording on the first frame the
+	// card handed over.
+	t.Run("NoFloor", func(t *testing.T) {
+		g := New(Options{RequireRadio: true})
+
+		if g.hasSpeech(&transmission{heard: true, peak: -10}) {
+			t.Error("a gate with no floor yet found speech")
+		}
+	})
+
+	// Verify a transmission that never rose far above a genuinely quiet floor
+	// is refused. Measured on a real recording: a floor of -64.7 dBFS and a
+	// loudest moment of -40.0, which is noise rather than a voice.
+	t.Run("Quiet", func(t *testing.T) {
+		g := gateWith(-64.7)
+
+		if g.hasSpeech(&transmission{heard: true, peak: -40}) {
+			t.Error("noise 25 dB above the floor was taken for speech")
+		}
+	})
+
+	// Verify a transmission that did rise is accepted. Every recording holding
+	// speech in the same measurement peaked between 48 and 71 dB above its
+	// floor.
+	t.Run("Speech", func(t *testing.T) {
+		g := gateWith(-70)
+
+		if !g.hasSpeech(&transmission{heard: true, peak: -8}) {
+			t.Error("speech 62 dB above the floor was not recognised")
+		}
+	})
+
+	// Verify a floor too high to be a noise floor refuses nothing. A busy
+	// channel fills the window the estimate is taken from with speech, and
+	// reading that as a high noise floor would throw away the traffic that
+	// raised it.
+	t.Run("FloorNotQuiet", func(t *testing.T) {
+		g := gateWith(-30)
+
+		if !g.hasSpeech(&transmission{heard: true, peak: -20}) {
+			t.Error("a floor full of audio was used to reject a transmission")
+		}
+	})
+}
+
+// TestFullScaleAudioIsHeard covers a transmission whose level reads exactly
+// zero dBFS, which is the loudest a sample can be rather than the absence of
+// one.
+//
+// It exists because the first version of the peak tracking used zero as the
+// value meaning "nothing measured yet". That is wrong for a level: an
+// overloaded input delivers frames at exactly zero dBFS, and a transmission
+// made of them read as one that had never been heard, so it was refused a file
+// for being too quiet.
+func TestFullScaleAudioIsHeard(t *testing.T) {
+	g := New(Options{RequireRadio: true, Hang: 200 * time.Millisecond,
+		MinDuration: 100 * time.Millisecond})
+
+	at := time.Date(2026, 8, 23, 16, 0, 0, 0, time.UTC)
+	next := func(level float64, n int) {
+		for i := 0; i < n; i++ {
+			g.Offer(audiofeed.Frame{Seq: uint32(i), PCM: make([]byte, audiofeed.MonoFrameBytes),
+				Level: level, At: at})
+			at = at.Add(frameDuration)
+		}
+	}
+
+	// A quiet stretch first, so the floor is a floor.
+	next(-70, floorFrames)
+
+	g.Activity(at, Activity{On: true, Key: "DISPATCH"})
+	before := at
+	next(0, 50)
+
+	tx := g.tx
+	if tx == nil {
+		t.Fatal("full scale audio opened no transmission")
+	}
+	if !tx.heard {
+		t.Error("full scale audio was recorded as never heard")
+	}
+	if tx.peak != 0 {
+		t.Errorf("the peak is %v, want 0 dBFS", tx.peak)
+	}
+	if !g.hasSpeech(tx) {
+		t.Error("full scale audio was not recognised as speech")
+	}
+	if !tx.lastLoud.After(before) {
+		t.Error("full scale audio never advanced the last-heard time")
+	}
+}
