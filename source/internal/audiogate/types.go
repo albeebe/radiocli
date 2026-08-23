@@ -108,13 +108,21 @@ const (
 	// radioSlack is how long after the radio was last seen receiving its audio
 	// still counts as part of the transmission.
 	//
-	// It covers the gap between polls, since the radio is asked several times a
-	// second rather than continuously, so the moment it stopped is only known
-	// to within one interval. Without it a recording loses up to that much off
-	// its end every time. It is deliberately short: everything it lets through
-	// is audio nothing has confirmed, so it buys back the tail of a real
-	// transmission without being long enough for a noise floor to matter.
-	radioSlack = 400 * time.Millisecond
+	// It covers the gap between polls, since the radio is asked repeatedly
+	// rather than continuously, so the moment it stopped is only known to
+	// within one interval. Without it a recording loses up to that much off its
+	// end every time.
+	//
+	// It has to stay small next to the minimum length, and that is what sets
+	// it rather than taste. Everything it lets through is audio nothing has
+	// confirmed, so a scanner whose idle noise sits above the floor spends this
+	// long adding itself to the transmission it just finished. At four hundred
+	// milliseconds against a minimum of five hundred, a two hundred millisecond
+	// blip reached the minimum on noise alone and was kept, which is the
+	// recording-the-hiss failure arriving by a new route. Two hundred leaves
+	// the blip short, and is still two polls at the rate the radio is now
+	// asked.
+	radioSlack = 200 * time.Millisecond
 
 	// padDuration is how much audio is kept before the detected onset.
 	//
@@ -147,10 +155,10 @@ const floorWindow = 15 * time.Second
 // Not the minimum, which was the first thing tried and was wrong. Measured on a
 // USB line input with a squelched scanner on it, the noise sat at -78 dBFS with
 // a spread of about three decibels, and the quietest single frame in fifteen
-// seconds was -87. A floor taken from that one frame puts the trigger level
-// nine decibels below where the noise actually is, so the noise itself reads as
-// signal and the recorder writes the hiss between transmissions as though it
-// were traffic. That is exactly the failure this is all here to avoid, and it
+// seconds was -87. A floor taken from that one frame sits nine decibels below
+// where the noise actually is, which puts the trigger, eight decibels above it,
+// at -79: a decibel under the noise itself. So the noise reads as signal and the
+// recorder writes the hiss between transmissions as though it were traffic. That is exactly the failure this is all here to avoid, and it
 // came from estimating a distribution by its most extreme sample.
 //
 // A tenth is low enough to sit inside the quiet part of a window that also
@@ -190,10 +198,34 @@ const (
 // real value in its help rather than a zero standing in for "whatever this
 // package decides". A default nobody can see is one a reader has to guess at.
 const (
-	// DefaultHang is how long quiet has to last before a transmission is
-	// called finished. Two seconds is long enough to carry a speaker drawing
-	// breath mid-sentence, which is the pause that must not split a recording.
-	DefaultHang = 2 * time.Second
+	// DefaultHang is how long the transmission has to be gone before it is
+	// called finished.
+	//
+	// Two seconds at first, sized to carry a speaker drawing breath
+	// mid-sentence. That was the right number for the wrong question. A breath
+	// is a pause in the audio, and with RequireRadio set the audio has no vote:
+	// what ends a transmission is the radio's mute closing, and a mute closes
+	// when the carrier drops rather than when a speaker stops talking. Somebody
+	// pausing mid-sentence is still keyed up, so nothing here can split them.
+	//
+	// What this actually has to survive is the carrier itself flickering, a
+	// mobile unit going behind a hill for a moment, which is a far shorter
+	// event. What it has to be shorter than is the gap between one person
+	// unkeying and the next answering. Measured on an SDS150, a dispatcher and
+	// a cruiser left 640 milliseconds of closed mute between them. Half a
+	// second sits under that and well over any dropout worth bridging.
+	DefaultHang = 500 * time.Millisecond
+
+	// DefaultQuietHang is DefaultHang for a gate with no radio to ask.
+	//
+	// Without RequireRadio there is no carrier to follow and the audio going
+	// quiet is the only ending there is, so the breath mid-sentence is back and
+	// the number has to clear it. Two seconds does. This is a worse way to find
+	// the end of a transmission and the difference is not a preference: one
+	// number is measuring the transmitter and the other is guessing from the
+	// speaker, and they cannot share a value because they are not measuring the
+	// same thing.
+	DefaultQuietHang = 2 * time.Second
 
 	// DefaultMaxDuration is when a transmission is split rather than allowed
 	// to grow without bound. Five minutes is far longer than any voice
@@ -201,10 +233,18 @@ const (
 	// one enormous file.
 	DefaultMaxDuration = 5 * time.Minute
 
-	// DefaultMinDuration is the shortest recording worth keeping. Below a
-	// second a transmission is a click, a squelch tail or a control channel
-	// burst rather than anything anybody wants to listen to.
-	DefaultMinDuration = time.Second
+	// DefaultMinDuration is the shortest recording worth keeping. Below this a
+	// transmission is a click, a squelch tail or a control channel burst rather
+	// than anything anybody wants to listen to.
+	//
+	// A second while an exchange was one recording, because the short half of
+	// it rode along inside the long half and nothing was lost by setting the
+	// floor above it. Cutting on the keyup takes that away: "ten four" is its
+	// own recording now, it runs well under a second, and a floor of a second
+	// does not merely fail to separate it but deletes it. Half a second keeps
+	// the acknowledgements and still discards the bursts, which are shorter
+	// again by an order of magnitude.
+	DefaultMinDuration = 500 * time.Millisecond
 )
 
 // Activity is what the radio says it is doing, as of the moment it was asked.
@@ -250,9 +290,16 @@ type Kind string
 // the only things about the gate a caller chooses, because they are the only
 // things a person has an opinion about.
 type Options struct {
-	// Hang is how long the audio must stay quiet, with the radio no longer
-	// receiving, before a transmission is called finished. It is what stops a
-	// pause in speech from becoming two recordings.
+	// Hang is how long the transmission must be gone before it is called
+	// finished, and what "gone" means depends on RequireRadio.
+	//
+	// With a radio to ask it is the radio's mute staying shut, and because a
+	// mute follows the carrier this is what separates one speaker from the
+	// next: it does not shut for a pause in speech, so a pause cannot split a
+	// recording however long the hang. Without a radio it is the audio staying
+	// quiet, and then a pause is all there is to go on and the hang has to be
+	// long enough to carry one. The two want very different values. See
+	// DefaultHang and DefaultQuietHang.
 	Hang time.Duration
 
 	// MaxDuration is how long one recording may run before it is split.

@@ -86,12 +86,24 @@ const recordQueue = 2000 / audiofeed.FrameMS
 // samplePeriod is how often the scanner is asked what it is hearing while a
 // recording is running.
 //
-// Three times a second. It does not need to be fast, and that is the point of
+// Labelling a recording does not need this to be fast, and that is the point of
 // the design rather than a compromise: the audio is buffered, so the boundaries
-// of a recording never depend on when the radio was asked. A sample only has to
-// land somewhere inside a transmission to identify it, and at this rate a
-// transmission of any length worth keeping is covered many times over.
-const samplePeriod = 333 * time.Millisecond
+// of a recording never depend on when the radio was asked, and a sample only
+// has to land somewhere inside a transmission to identify it.
+//
+// Separating one transmission from the next does need it. The scanner has no
+// keyup event to subscribe to, so the only way to see one is to catch the
+// moment its Mute closes, and that moment can be brief. Two consecutive
+// transmissions on the same channel, measured off an SDS150, ran 60.39s to
+// 61.92s and 62.56s to 63.64s: a gap of 640 milliseconds with the mute shut.
+// Asked three times a second, that is two polls, which is not enough to tell a
+// closed squelch from a reply that happened to land between questions, and both
+// halves of the exchange end up in one file.
+//
+// A tenth of a second puts six polls inside the shortest gap seen, and costs
+// nothing worth counting: the same radio answered GSI 81 times a second when
+// asked flat out, so this is an eighth of what it can do.
+const samplePeriod = 100 * time.Millisecond
 
 // The mismatch check: how much disagreement between the radio and the sound
 // card is enough to say the input is not the scanner.

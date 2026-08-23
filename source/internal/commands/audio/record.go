@@ -70,7 +70,7 @@ func newRecord(app *appcontext.App) *cobra.Command {
 	cmd.Flags().StringVar(&opts.template, "template", recordings.DefaultTemplate,
 		"how each recording is named, below the destination")
 	cmd.Flags().DurationVar(&opts.hang, "hang", audiogate.DefaultHang,
-		"how long the audio must stay quiet before a transmission is finished")
+		"how long the scanner must stop receiving before a transmission is finished")
 	cmd.Flags().DurationVar(&opts.minDuration, "min-duration", audiogate.DefaultMinDuration,
 		"discard any transmission shorter than this")
 	cmd.Flags().DurationVar(&opts.maxDuration, "max-duration", audiogate.DefaultMaxDuration,
@@ -615,8 +615,10 @@ func poll(ctx context.Context, sample func(context.Context) (device.Heard, error
 			return
 		default:
 			// The recorder is busy with a frame. Dropping this reading costs
-			// nothing, because another arrives in a third of a second and the
-			// boundaries of a recording never depended on it.
+			// nothing, because another arrives a tenth of a second later
+			// saying the same thing: what a recording is cut against is the
+			// time the radio was last seen receiving, not any single reading,
+			// so losing one moves nothing.
 		}
 	}
 }

@@ -380,6 +380,14 @@ folder, which is created if it is not there. It runs until you stop it with
 Ctrl-C, and a transmission in progress at that moment is finished properly
 rather than lost.
 
+**Where one recording ends and the next begins is the scanner's squelch.** A
+dispatcher and the unit answering are one continuous sound with a pause in it,
+and so is one person pausing mid-sentence, so software that cuts on silence
+cannot tell those apart and gets both wrong. The scanner's squelch can: it
+follows the carrier rather than the voice, so it stays open through a breath and
+shuts when somebody unkeys. That is what puts the two halves of an exchange in
+separate files, each labelled with what it was.
+
 **Where a recording starts is found in the audio, not taken from the radio.**
 The scanner tells this command what it is receiving over the USB cable, and that
 news always arrives a little after the sound itself, which is why other software
@@ -403,8 +411,8 @@ radiocli audio record [destination] [flags]
 | `--input` | No | none | Sound input to open directly. Without it the audio comes from a daemon. |
 | `--channel` | No | `auto` | Which side of the cable the scanner is on: `auto`, `left`, `right` or `mix`. |
 | `--template` | No | `{date}/{time}_{system}_{department}_{channel}` | How each recording is named, below the destination. |
-| `--hang` | No | `2s` | How long the audio must stay quiet before a transmission is called finished. |
-| `--min-duration` | No | `1s` | Discard any transmission shorter than this. |
+| `--hang` | No | `500ms` | How long the scanner must stop receiving before a transmission is called finished. |
+| `--min-duration` | No | `500ms` | Discard any transmission shorter than this. |
 | `--max-duration` | No | `5m` | Split any transmission longer than this. |
 
 ### `[destination]`
@@ -504,13 +512,23 @@ given the same name.
 
 ### `--hang`
 
-How long the audio must stay quiet, with the scanner no longer receiving, before
-a transmission is treated as finished. It is what stops a speaker drawing breath
-mid-sentence from becoming two recordings. Raise it if single transmissions are
-arriving as several files; lower it if separate transmissions are being joined.
+How long the scanner has to stop receiving before a transmission is treated as
+finished. This is what puts a dispatcher and the unit answering into separate
+files instead of one, and the reason it can be this short is that the boundary
+is the scanner's squelch rather than the sound. A squelch follows the carrier,
+so it stays open through a speaker drawing breath mid-sentence and shuts the
+moment they let go of the key. A pause in the middle of somebody talking cannot
+split a recording no matter how long it lasts.
+
+What the hang is really allowing for, then, is the carrier itself flickering,
+a mobile unit passing behind a hill for a moment. Raise it if a single unit
+driving through bad coverage is arriving as several files. Lower it if two
+people are still being joined, though there is not much room below the default:
+a dispatcher and a cruiser on a Marlinton channel left 640 milliseconds between
+them, and the hang has to fit inside that.
 
 ```
-radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --hang 4s
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --hang 1s
 ```
 
 ### `--min-duration`
@@ -520,8 +538,13 @@ discarded before any file is created, so nothing has to be cleaned up
 afterwards. It exists because a squelch tail or a control channel burst is not
 something anybody wants to listen to.
 
+Do not raise this much above the default without meaning to. Recordings are cut
+at the keyup, so a short reply is a file of its own rather than something riding
+along inside the dispatcher's, and anything set above its length deletes it
+instead of merging it. A unit answering "ten four" runs well under a second.
+
 ```
-radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --min-duration 2s
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --min-duration 1s
 ```
 
 ### `--max-duration`
@@ -662,7 +685,7 @@ the same object printed by `--output json`, so there is one shape to learn.
 | `talkgroup` | string | The talkgroup number on a trunked system. Absent on a conventional system. |
 | `unit` | string | The radio heard transmitting, when the scanner decoded one. |
 | `modulation` | string | How the scanner was demodulating, such as `NFM`. |
-| `reason` | string | Why the recording ended: `hang` when the channel went quiet, `split` when it reached `--max-duration`, `channel` when the scanner moved to another channel, `stopped` when you stopped the command. |
+| `reason` | string | Why the recording ended: `hang` when the scanner stopped receiving, `split` when it reached `--max-duration`, `channel` when the scanner moved to another channel, `stopped` when you stopped the command. |
 | `samples` | number | How many times the scanner was asked what it was hearing while this was being recorded. Always present. |
 | `channels` | array of strings | Every distinct channel seen during the recording. Present only when there was more than one. |
 | `dropped` | number | Frames of audio the sound card produced that never arrived. Present only when some were lost. Each frame is 20 ms. |

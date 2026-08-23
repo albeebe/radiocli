@@ -163,14 +163,21 @@ func quick() Options {
 func TestNewFillsInDefaults(t *testing.T) {
 	g := New(Options{})
 
-	if g.opts.Hang != DefaultHang {
-		t.Errorf("Hang is %v, want %v", g.opts.Hang, DefaultHang)
+	// With no radio to ask, the hang is the one measured off the audio.
+	if g.opts.Hang != DefaultQuietHang {
+		t.Errorf("Hang is %v, want %v", g.opts.Hang, DefaultQuietHang)
 	}
 	if g.opts.MinDuration != DefaultMinDuration {
 		t.Errorf("MinDuration is %v, want %v", g.opts.MinDuration, DefaultMinDuration)
 	}
 	if g.opts.MaxDuration != DefaultMaxDuration {
 		t.Errorf("MaxDuration is %v, want %v", g.opts.MaxDuration, DefaultMaxDuration)
+	}
+
+	// And that a gate following the radio gets the shorter one instead, since
+	// what it is waiting out is a carrier rather than a pause in speech.
+	if g := New(Options{RequireRadio: true}); g.opts.Hang != DefaultHang {
+		t.Errorf("Hang with a radio is %v, want %v", g.opts.Hang, DefaultHang)
 	}
 
 	// And that a caller who does have an opinion keeps it.
@@ -351,6 +358,52 @@ func TestShortTransmissionIsDiscarded(t *testing.T) {
 
 // TestPauseShorterThanHangDoesNotSplit checks the setting that exists so a
 // speaker drawing breath does not become two recordings.
+// TestTwoKeyupsOnOneChannelAreTwoRecordings drives the exchange that started
+// all of this: a dispatcher and a unit answering, on the same channel, with the
+// scanner's mute shut between them.
+//
+// The gap is the one measured off the radio, 640 milliseconds, which is shorter
+// than the hang used before the mute was understood to be a keyup and longer
+// than the one used now. Nothing about the audio distinguishes it from a pause
+// in the middle of one transmission. Only the radio does.
+func TestTwoKeyupsOnOneChannelAreTwoRecordings(t *testing.T) {
+	d := newDriver(Options{RequireRadio: true})
+
+	d.feed(50, quietLevel)
+
+	// The dispatcher, a second and a half of it.
+	d.radio(true, "marlinton")
+	evs := d.feed(75, loudLevel)
+
+	// Unkeys. The mute shuts, and the channel is held open by the scanner's
+	// own delay, so the radio still names the same channel when it comes back.
+	d.radio(false, "")
+	evs = append(evs, d.feed(32, quietLevel)...) // 640ms.
+
+	// The unit answering, on the same channel.
+	d.radio(true, "marlinton")
+	evs = append(evs, d.feed(55, loudLevel)...)
+
+	d.radio(false, "")
+	evs = append(evs, d.feed(200, quietLevel)...)
+
+	starts := only(evs, KindStart)
+	if len(starts) != 2 {
+		t.Fatalf("got %d recordings, want 2: the two speakers were not separated", len(starts))
+	}
+
+	// And the boundary is the keyup rather than anything the audio suggested,
+	// so the second recording begins after the gap and not inside it.
+	ends := only(evs, KindEnd)
+	if len(ends) != 2 {
+		t.Fatalf("got %d endings, want 2", len(ends))
+	}
+	if !starts[1].Start.After(ends[0].End) {
+		t.Errorf("the second recording starts at %v, before the first ended at %v",
+			starts[1].Start, ends[0].End)
+	}
+}
+
 func TestPauseShorterThanHangDoesNotSplit(t *testing.T) {
 	d := newDriver(Options{}) // A two second hang.
 
@@ -716,7 +769,7 @@ func TestLongTransmissionIsHandedOutAsItGoes(t *testing.T) {
 	}
 	// What is still held back is the hang time's worth, and no more.
 	held := len(d.g.tx.pending)
-	if want := int(DefaultHang/frameGap) + padFrames + 2; held > want {
+	if want := int(DefaultQuietHang/frameGap) + padFrames + 2; held > want {
 		t.Errorf("holding %d frames mid-transmission, want no more than about %d", held, want)
 	}
 }

@@ -41,10 +41,15 @@
 // file boundaries never depend on when it arrived.
 //
 // The one thing the audio genuinely cannot do is tell two transmissions apart
-// when they follow each other closely on different channels. To the sound card
-// that is one event. The radio knows better, so a change of Activity.Key cuts
-// the recording, and the audio is overruled on the one question it is not
-// equipped to answer.
+// when they follow each other closely. To the sound card a dispatcher and the
+// unit answering are one event with a pause in it, and so is one person pausing
+// mid-sentence; nothing in the waveform separates those cases.
+//
+// The radio does, through its mute, which follows the carrier rather than the
+// speech: it stays open through a breath and shuts the moment somebody unkeys.
+// So a mute that closes for longer than Options.Hang ends a recording, and a
+// change of Activity.Key ends one too. On both questions the audio is overruled,
+// because on both it is not equipped to answer.
 //
 // # The noise floor
 //
@@ -85,7 +90,12 @@ import (
 //   - *Gate ready to be offered frames
 func New(opts Options) *Gate {
 	if opts.Hang <= 0 {
+		// The default depends on what the gate is being asked to watch, because
+		// the hang means a different thing in each mode. See DefaultQuietHang.
 		opts.Hang = DefaultHang
+		if !opts.RequireRadio {
+			opts.Hang = DefaultQuietHang
+		}
 	}
 	if opts.MaxDuration <= 0 {
 		opts.MaxDuration = DefaultMaxDuration
@@ -293,6 +303,11 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 	// above the floor after the radio has stopped is the input's own noise, and
 	// letting it hold a recording open is how sixteen seconds of hiss gets
 	// written as though it were traffic.
+	//
+	// This is also what separates one speaker from the next. The mute closing
+	// is the only keyup the scanner offers, and it is a real one: it follows
+	// the carrier, so it shuts between two people on the same channel and does
+	// not shut for a pause in the middle of one of them.
 	if g.ended(tx, f, loud) {
 		out = append(out, g.close(ReasonHang)...)
 	}
@@ -327,6 +342,16 @@ func (g *Gate) counts(tx *transmission, f audiofeed.Frame) bool {
 }
 
 // ended reports whether the open transmission is over.
+//
+// With the radio as the authority, this is the whole of it: the mute closed and
+// has stayed closed for the hang time. Because the mute follows the carrier
+// rather than the speech, that boundary is the keyup boundary, and a dispatcher
+// and the unit answering land in separate recordings without the audio being
+// asked to guess where one of them stopped. It is worth being clear about what
+// is not being done here, since it is the obvious idea and it is wrong: a
+// silence inside the audio is not a boundary, because somebody pausing
+// mid-sentence is still transmitting and cutting there invents a split that
+// never happened.
 //
 // Parameters:
 //   - tx: the transmission being assembled
