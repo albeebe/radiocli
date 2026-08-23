@@ -98,7 +98,7 @@ func dialAudio(t *testing.T, port string, d daemon) *broker.AudioStream {
 	return stream
 }
 
-// fakeCapture is an open sound card that never was, so feedDirect can be run
+// fakeCapture is an open sound card that never was, so outputDirect can be run
 // without opening one and without the microphone permission prompt that opening
 // one raises.
 type fakeCapture struct {
@@ -209,20 +209,20 @@ func sockets(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 }
 
-// Test_newFeed tests the newFeed function with 100% coverage.
+// Test_newOutput tests the newOutput function with 100% coverage.
 //
 // Coverage: 100% (2 test cases covering the command and the closure it holds)
 //
 // Test cases:
 //   - Wiring: the command carries its name and its four flags, with defaults
-//   - Runs: executing the command reaches runFeed, which refuses it in a daemon
-func Test_newFeed(t *testing.T) {
+//   - Runs: executing the command reaches runOutput, which refuses it in a daemon
+func Test_newOutput(t *testing.T) {
 	// Verify that the command and its flags are described the way the tool wires them
 	t.Run("Wiring", func(t *testing.T) {
-		cmd := newFeed(appcontext.New())
+		cmd := newOutput(appcontext.New())
 
-		if cmd.Use != "feed" {
-			t.Errorf("the command is %q, wanted %q", cmd.Use, "feed")
+		if cmd.Use != "output" {
+			t.Errorf("the command is %q, wanted %q", cmd.Use, "output")
 		}
 
 		defaults := map[string]string{
@@ -243,13 +243,13 @@ func Test_newFeed(t *testing.T) {
 		}
 	})
 
-	// Verify that running the command reaches runFeed, which is what the
-	// closure newFeed hands cobra exists to do
+	// Verify that running the command reaches runOutput, which is what the
+	// closure newOutput hands cobra exists to do
 	t.Run("Runs", func(t *testing.T) {
 		app, _, _ := newApp()
 		app.InDaemon = true
 
-		cmd := newFeed(app)
+		cmd := newOutput(app)
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 
@@ -297,7 +297,7 @@ func Test_announce(t *testing.T) {
 	})
 }
 
-// Test_feedDirect tests the feedDirect function with 100% coverage.
+// Test_outputDirect tests the outputDirect function with 100% coverage.
 //
 // Coverage: 100% (3 test cases covering the recording and both failures)
 //
@@ -305,7 +305,7 @@ func Test_announce(t *testing.T) {
 //   - Success: the capture is announced and the audio is written until stopped
 //   - StartError: a sound input that cannot be opened is reported
 //   - WriteError: a failure once the audio is flowing is reported
-func Test_feedDirect(t *testing.T) {
+func Test_outputDirect(t *testing.T) {
 	// Verify that a capture which opened is announced and then written out
 	t.Run("Success", func(t *testing.T) {
 		app, _, notes := newApp()
@@ -314,7 +314,7 @@ func Test_feedDirect(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		err := feedDirect(ctx, app, "Cubilux CB5 Line In", formatPCM, defaultBitrate, audiofeed.ChannelMix)
+		err := outputDirect(ctx, app, "Cubilux CB5 Line In", formatPCM, defaultBitrate, audiofeed.ChannelMix)
 		if err != nil {
 			t.Fatalf("listening: %v", err)
 		}
@@ -328,7 +328,7 @@ func Test_feedDirect(t *testing.T) {
 		app, _, _ := newApp()
 		fakeStart(t, "", errors.New("the sound input is gone"))
 
-		err := feedDirect(context.Background(), app, "Nothing", formatPCM, defaultBitrate, audiofeed.ChannelMix)
+		err := outputDirect(context.Background(), app, "Nothing", formatPCM, defaultBitrate, audiofeed.ChannelMix)
 		if err == nil || !strings.Contains(err.Error(), "the sound input is gone") {
 			t.Errorf("the failure is %v, wanted the sound card's own error", err)
 		}
@@ -339,14 +339,14 @@ func Test_feedDirect(t *testing.T) {
 		app, _, _ := newApp()
 		fakeStart(t, "Cubilux CB5 Line In", nil)
 
-		err := feedDirect(context.Background(), app, "Cubilux CB5 Line In", formatOpus, 1, audiofeed.ChannelMix)
+		err := outputDirect(context.Background(), app, "Cubilux CB5 Line In", formatOpus, 1, audiofeed.ChannelMix)
 		if err == nil {
 			t.Error("the recording succeeded, wanted the encoder to have refused the rate")
 		}
 	})
 }
 
-// Test_feedViaDaemon tests the feedViaDaemon function with 100% coverage.
+// Test_outputViaDaemon tests the outputViaDaemon function with 100% coverage.
 //
 // Coverage: 100% (4 test cases covering the relay and every way it is refused)
 //
@@ -355,7 +355,7 @@ func Test_feedDirect(t *testing.T) {
 //   - NoDevice: not naming a scanner is refused with what to do instead
 //   - NoDaemon: nothing holding the scanner is answered with how to start one
 //   - DialError: any other refusal is passed back as it came
-func Test_feedViaDaemon(t *testing.T) {
+func Test_outputViaDaemon(t *testing.T) {
 	// Verify that a daemon holding the audio is announced and relayed
 	t.Run("Success", func(t *testing.T) {
 		sockets(t)
@@ -373,7 +373,7 @@ func Test_feedViaDaemon(t *testing.T) {
 		}
 		d.serve(t, "/dev/tty.usbmodem1")
 
-		err := feedViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
+		err := outputViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
 		if err == nil || !strings.Contains(err.Error(), "the daemon stopped sending audio") {
 			t.Fatalf("the failure is %v, wanted the daemon hanging up to be reported", err)
 		}
@@ -389,7 +389,7 @@ func Test_feedViaDaemon(t *testing.T) {
 	t.Run("NoDevice", func(t *testing.T) {
 		app, _, _ := newApp()
 
-		err := feedViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
+		err := outputViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
 		if err == nil || !errors.Is(err, appcontext.ErrNoDevice) {
 			t.Fatalf("the failure is %v, wanted it to be ErrNoDevice", err)
 		}
@@ -404,7 +404,7 @@ func Test_feedViaDaemon(t *testing.T) {
 		app, _, _ := newApp()
 		app.Config.Device = "/dev/tty.usbmodem9"
 
-		err := feedViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
+		err := outputViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
 		if err == nil || !errors.Is(err, broker.ErrNoDaemon) {
 			t.Fatalf("the failure is %v, wanted it to be ErrNoDaemon", err)
 		}
@@ -425,7 +425,7 @@ func Test_feedViaDaemon(t *testing.T) {
 		}
 		d.serve(t, "/dev/tty.usbmodem1")
 
-		err := feedViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
+		err := outputViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
 		if err == nil || !strings.Contains(err.Error(), "speaks protocol") {
 			t.Errorf("the failure is %v, wanted the protocol mismatch", err)
 		}
@@ -698,7 +698,7 @@ func Test_report(t *testing.T) {
 	})
 }
 
-// Test_runFeed tests the runFeed function with 100% coverage.
+// Test_runOutput tests the runOutput function with 100% coverage.
 //
 // Coverage: 100% (7 test cases covering every check and both ways to feed)
 //
@@ -710,13 +710,13 @@ func Test_report(t *testing.T) {
 //   - Direct: naming an input opens it here
 //   - ViaDaemon: naming no input takes the audio from a daemon
 //   - DefaultFormat: leaving the format empty writes raw samples
-func Test_runFeed(t *testing.T) {
+func Test_runOutput(t *testing.T) {
 	// Verify that a command which never ends is refused inside a daemon
 	t.Run("InDaemon", func(t *testing.T) {
 		app, _, _ := newApp()
 		app.InDaemon = true
 
-		err := runFeed(context.Background(), app, feedOptions{})
+		err := runOutput(context.Background(), app, outputOptions{})
 		if err == nil || !strings.Contains(err.Error(), "cannot be run inside a daemon") {
 			t.Errorf("the failure is %v, wanted the daemon to have refused it", err)
 		}
@@ -726,7 +726,7 @@ func Test_runFeed(t *testing.T) {
 	t.Run("BadFormat", func(t *testing.T) {
 		app, _, _ := newApp()
 
-		err := runFeed(context.Background(), app, feedOptions{format: "flac"})
+		err := runOutput(context.Background(), app, outputOptions{format: "flac"})
 		if err == nil || !strings.Contains(err.Error(), `no audio format called "flac"`) {
 			t.Errorf("the failure is %v, wanted the format named back", err)
 		}
@@ -736,7 +736,7 @@ func Test_runFeed(t *testing.T) {
 	t.Run("BadChannel", func(t *testing.T) {
 		app, _, _ := newApp()
 
-		err := runFeed(context.Background(), app, feedOptions{
+		err := runOutput(context.Background(), app, outputOptions{
 			format: formatPCM, channel: "sideways",
 		})
 		if err == nil {
@@ -748,7 +748,7 @@ func Test_runFeed(t *testing.T) {
 	t.Run("BadBitrate", func(t *testing.T) {
 		app, _, _ := newApp()
 
-		err := runFeed(context.Background(), app, feedOptions{
+		err := runOutput(context.Background(), app, outputOptions{
 			format: formatOpus, channel: audiofeed.ChannelMix, bitrate: 1,
 		})
 		if err == nil || !strings.Contains(err.Error(), "outside what the encoder accepts") {
@@ -764,7 +764,7 @@ func Test_runFeed(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		err := runFeed(ctx, app, feedOptions{
+		err := runOutput(ctx, app, outputOptions{
 			input: "Cubilux CB5 Line In", format: formatPCM,
 			channel: audiofeed.ChannelMix, bitrate: defaultBitrate,
 		})
@@ -780,7 +780,7 @@ func Test_runFeed(t *testing.T) {
 	t.Run("ViaDaemon", func(t *testing.T) {
 		app, _, _ := newApp()
 
-		err := runFeed(context.Background(), app, feedOptions{
+		err := runOutput(context.Background(), app, outputOptions{
 			format: formatPCM, channel: audiofeed.ChannelMix, bitrate: defaultBitrate,
 		})
 		if err == nil || !errors.Is(err, appcontext.ErrNoDevice) {
@@ -792,7 +792,7 @@ func Test_runFeed(t *testing.T) {
 	t.Run("DefaultFormat", func(t *testing.T) {
 		app, _, _ := newApp()
 
-		err := runFeed(context.Background(), app, feedOptions{format: "  "})
+		err := runOutput(context.Background(), app, outputOptions{format: "  "})
 		if err == nil || !errors.Is(err, appcontext.ErrNoDevice) {
 			t.Errorf("the failure is %v, wanted an empty format to have been accepted", err)
 		}
@@ -816,7 +816,7 @@ func Test_write(t *testing.T) {
 	feed := func(t *testing.T) (*audiofeed.Feed, *audiofeed.Sub) {
 		t.Helper()
 		f := audiofeed.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-		sub := f.Subscribe(feedQueue)
+		sub := f.Subscribe(outputQueue)
 		t.Cleanup(sub.Close)
 		return f, sub
 	}
@@ -919,7 +919,7 @@ func Test_write(t *testing.T) {
 
 		for i := 0; i < 32; i++ {
 			f := audiofeed.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-			sub := f.Subscribe(feedQueue)
+			sub := f.Subscribe(outputQueue)
 			sub.Close()
 
 			if err := write(context.Background(), app, sub, formatPCM, defaultBitrate); err != nil {

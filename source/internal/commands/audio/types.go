@@ -34,14 +34,14 @@ const (
 	formatPCM = "pcm"
 )
 
-// feedQueue is how many frames may be waiting to be written before the oldest
+// outputQueue is how many frames may be waiting to be written before the oldest
 // are dropped.
 //
 // One second. Generous compared with what a remote listener gets, because what is on the
 // other end of this is usually a pipe into a player on the same machine, and a
 // player that stalls for a moment should catch up rather than lose audio. It is
 // still bounded, because the sound card cannot be asked to wait.
-const feedQueue = 1000 / audiofeed.FrameMS
+const outputQueue = 1000 / audiofeed.FrameMS
 
 // The two numbers that decide whether a recording was overloaded on the way in.
 //
@@ -132,7 +132,7 @@ var startCapture = func(opts audiofeed.Options, out audiofeed.Publisher) (captur
 	return audiofeed.Start(opts, out)
 }
 
-// capture is the part of an open sound card that feedDirect uses: it says
+// capture is the part of an open sound card that outputDirect uses: it says
 // what it is recording from, and it can be closed. It is an interface rather
 // than *audiofeed.Capture so that startCapture can be faked.
 type capture interface {
@@ -144,8 +144,8 @@ type capture interface {
 	Source() string
 }
 
-// feedOptions is what the flags asked for.
-type feedOptions struct {
+// outputOptions is what the flags asked for.
+type outputOptions struct {
 	input   string // Sound input to open directly, empty to take the audio from a daemon
 	format  string // Audio format to write, as --format gave it
 	bitrate int    // Bits per second, for --format opus

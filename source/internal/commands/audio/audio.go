@@ -3,12 +3,12 @@
 // Created: 8/2/2026
 
 // Package audio implements the "audio" command, which lists the sound inputs
-// this computer can record from, and "audio feed", which records from one.
+// this computer can record from, and "audio output", which records from one.
 //
 // The bare command only looks, and that separation is the point: listing opens
 // nothing, so it never raises the microphone permission prompt, and a picker can
 // be shown without the operating system interrupting about a device nobody has
-// chosen. Feeding the audio out is a different verb because it is a different
+// chosen. Putting the audio out is a different verb because it is a different
 // act.
 package audio
 
@@ -29,7 +29,7 @@ import (
 //     writes its output through
 //
 // Returns:
-//   - the "audio" command, with "audio feed" and "audio record" already
+//   - the "audio" command, with "audio output" and "audio record" already
 //     attached to it
 func New(app *appcontext.App) *cobra.Command {
 	cmd := &cobra.Command{
@@ -40,7 +40,7 @@ func New(app *appcontext.App) *cobra.Command {
 			"so which input carries it is something only you can know.\n\n" +
 			"It only looks. Nothing here opens an input, which is why it never asks for\n" +
 			"permission to use the microphone.\n\n" +
-			"Run \"radiocli audio feed\" to hear one, or \"radiocli audio record\" to\n" +
+			"Run \"radiocli audio output\" to hear one, or \"radiocli audio record\" to\n" +
 			"record the scanner's transmissions to files.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -48,7 +48,7 @@ func New(app *appcontext.App) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newFeed(app), newRecord(app))
+	cmd.AddCommand(newOutput(app), newRecord(app))
 	return cmd
 }
 

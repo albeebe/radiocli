@@ -21,15 +21,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newFeed returns the "audio feed" command bound to app.
+// newOutput returns the "audio output" command bound to app.
 //
 // Parameters:
 //   - app: the application context the command reads its configuration and
 //     writes its output through
 //
 // Returns:
-//   - the "audio feed" command, with its flags already registered
-func newFeed(app *appcontext.App) *cobra.Command {
+//   - the "audio output" command, with its flags already registered
+func newOutput(app *appcontext.App) *cobra.Command {
 	var (
 		input   string
 		format  string
@@ -38,9 +38,9 @@ func newFeed(app *appcontext.App) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "feed",
+		Use:   "output",
 		Short: "Write the scanner's audio to standard output",
-		Long: "Feed writes the audio arriving on a sound input to standard output, as it\n" +
+		Long: "Output writes the audio arriving on a sound input to standard output, as it\n" +
 			"arrives, until you stop it.\n\n" +
 			"By default the audio is raw samples: signed 16-bit little-endian mono at\n" +
 			"48000 Hz, with no header and no framing, which is what a player expects to be\n" +
@@ -52,7 +52,7 @@ func newFeed(app *appcontext.App) *cobra.Command {
 			"what this computer can record from.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFeed(cmd.Context(), app, feedOptions{
+			return runOutput(cmd.Context(), app, outputOptions{
 				input:   input,
 				format:  format,
 				bitrate: bitrate,
@@ -100,7 +100,7 @@ func announce(app *appcontext.App, source, format string, bitrate int) {
 	}
 }
 
-// feedDirect opens the sound card itself and writes what it hears.
+// outputDirect opens the sound card itself and writes what it hears.
 //
 // Opening the card here means this process holds it, so nothing else can. That
 // is the right thing for checking a cable and the wrong thing for anything
@@ -117,9 +117,9 @@ func announce(app *appcontext.App, source, format string, bitrate int) {
 // Returns:
 //   - error if the sound input cannot be opened, if the encoder cannot be
 //     built, or if writing the audio out fails; nil once ctx is cancelled
-func feedDirect(ctx context.Context, app *appcontext.App, input, format string, bitrate int, channel string) error {
+func outputDirect(ctx context.Context, app *appcontext.App, input, format string, bitrate int, channel string) error {
 	feed := audiofeed.New(app.Log)
-	sub := feed.Subscribe(feedQueue)
+	sub := feed.Subscribe(outputQueue)
 	defer sub.Close()
 
 	capture, err := startCapture(audiofeed.Options{
@@ -137,7 +137,7 @@ func feedDirect(ctx context.Context, app *appcontext.App, input, format string, 
 	return write(ctx, app, sub, format, bitrate)
 }
 
-// feedViaDaemon takes the audio from whichever daemon is holding this
+// outputViaDaemon takes the audio from whichever daemon is holding this
 // scanner's sound input.
 //
 // This is the one command in the tool that does not try the scanner for itself
@@ -158,7 +158,7 @@ func feedDirect(ctx context.Context, app *appcontext.App, input, format string, 
 // Returns:
 //   - error if no device was named, if no daemon is holding that device, or if
 //     the relay itself fails; nil once ctx is cancelled
-func feedViaDaemon(ctx context.Context, app *appcontext.App, format string, bitrate int) error {
+func outputViaDaemon(ctx context.Context, app *appcontext.App, format string, bitrate int) error {
 	if app.Config.Device == "" {
 		return fmt.Errorf("%w: name one with --device, or pass --input to open a sound "+
 			"input directly", appcontext.ErrNoDevice)
@@ -315,7 +315,7 @@ func report(app *appcontext.App, ev audiofeed.Event) {
 	}
 }
 
-// runFeed checks what was asked for and starts writing.
+// runOutput checks what was asked for and starts writing.
 //
 // Parameters:
 //   - ctx: context that ends the recording when it is cancelled
@@ -326,14 +326,14 @@ func report(app *appcontext.App, ev audiofeed.Event) {
 //   - error if the command was run inside a daemon, if the format, the channel
 //     or the bitrate is not one this accepts, or if the recording itself fails;
 //     nil once ctx is cancelled
-func runFeed(ctx context.Context, app *appcontext.App, opts feedOptions) error {
+func runOutput(ctx context.Context, app *appcontext.App, opts outputOptions) error {
 	// A daemon lends a command its streams for as long as the command runs, on
 	// the reasonable assumption that a command finishes. This one does not, so
 	// inside a daemon it would hold those streams forever and pour audio down
 	// the socket of whichever client happened to ask. Refused here rather than
 	// merely left undocumented, because a client can send any command line.
 	if app.InDaemon {
-		return errors.New("\"audio feed\" runs until it is stopped, so it cannot be run " +
+		return errors.New("\"audio output\" runs until it is stopped, so it cannot be run " +
 			"inside a daemon:\nrun it in a terminal of its own instead")
 	}
 
@@ -360,9 +360,9 @@ func runFeed(ctx context.Context, app *appcontext.App, opts feedOptions) error {
 	// one the audio comes from the daemon, which is the way that lets more than
 	// one thing listen at once.
 	if opts.input != "" {
-		return feedDirect(ctx, app, opts.input, format, opts.bitrate, channel)
+		return outputDirect(ctx, app, opts.input, format, opts.bitrate, channel)
 	}
-	return feedViaDaemon(ctx, app, format, opts.bitrate)
+	return outputViaDaemon(ctx, app, format, opts.bitrate)
 }
 
 // write moves frames from the feed to stdout until ctx is cancelled.

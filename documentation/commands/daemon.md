@@ -198,11 +198,11 @@ Nothing has opened the input yet. It is opened by the first listener, and two of
 them share it:
 
 ```
-$ radiocli audio feed --device /dev/cu.usbmodem00000000000011 | ffplay -f s16le -ar 48000 -ac 1 -i -
+$ radiocli audio output --device /dev/cu.usbmodem00000000000011 | ffplay -f s16le -ar 48000 -ac 1 -i -
 ```
 
 ```
-$ radiocli audio feed --device /dev/cu.usbmodem00000000000011 --format opus > /tmp/scanner.opus
+$ radiocli audio output --device /dev/cu.usbmodem00000000000011 --format opus > /tmp/scanner.opus
 ```
 
 Commands keep working while that audio is playing, and the audio keeps playing

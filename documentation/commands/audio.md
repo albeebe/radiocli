@@ -17,13 +17,13 @@ and it does not touch the scanner at all, so it works with no scanner attached
 and while another `radiocli` is busy with one. Finding nothing is a complete
 answer rather than a failure, so the command still succeeds and prints advice on
 what to check. To record from one of these inputs rather than merely list them,
-run [`audio feed`](#audio-feed).
+run [`audio output`](#audio-output).
 
 ## Usage
 
 ```
 radiocli audio [flags]
-radiocli audio feed [flags]
+radiocli audio output [flags]
 ```
 
 ## Parameters
@@ -172,18 +172,18 @@ the command prints advice to stderr and exits with status `0`.
 All three exit with status `1`.
 
 This command never asks your operating system for permission to use the
-microphone, because listing the inputs does not require it. `audio feed` does,
+microphone, because listing the inputs does not require it. `audio output` does,
 because opening an input requires it.
 
 ---
 
-# audio feed
+# audio output
 
 Writes the scanner's audio to standard output, as it arrives, until you stop it.
 
 ## Overview
 
-`audio feed` records from a sound input and writes what it hears to stdout, so
+`audio output` records from a sound input and writes what it hears to stdout, so
 it can be piped straight into a player or into a file. By default it writes raw
 samples: signed 16-bit little-endian mono at 48000 Hz, with no header and no
 framing at all, which is what a player expects to be handed on a pipe. The exact
@@ -207,7 +207,7 @@ does.
 ## Usage
 
 ```
-radiocli audio feed [flags]
+radiocli audio output [flags]
 ```
 
 ## Parameters
@@ -275,7 +275,7 @@ document, and nothing here talks to the scanner.
 Playing the scanner's audio, with a daemon holding the input:
 
 ```
-$ radiocli audio feed --device /dev/cu.usbmodem00000000000011 | ffplay -f s16le -ar 48000 -ac 1 -i -
+$ radiocli audio output --device /dev/cu.usbmodem00000000000011 | ffplay -f s16le -ar 48000 -ac 1 -i -
 Recording from "Cubilux CB5 Line In": signed 16-bit little-endian mono at 48000 Hz.
 Play it with:  ffplay -f s16le -ar 48000 -ac 1 -i -
            or: play -t raw -e signed -b 16 -c 1 -r 48000 -
@@ -286,27 +286,27 @@ The same audio to a second listener at the same time, compressed. One daemon,
 one open sound input, two listeners:
 
 ```
-$ radiocli audio feed --device /dev/cu.usbmodem00000000000011 --format opus > /tmp/scanner.opus
+$ radiocli audio output --device /dev/cu.usbmodem00000000000011 --format opus > /tmp/scanner.opus
 ```
 
 Checking a cable with no daemon and no scanner:
 
 ```
-$ radiocli audio feed --input "Cubilux CB5 Line In" | ffplay -f s16le -ar 48000 -ac 1 -i -
+$ radiocli audio output --input "Cubilux CB5 Line In" | ffplay -f s16le -ar 48000 -ac 1 -i -
 ```
 
 Recording to a file, which is raw samples and needs the format given when it is
 read back:
 
 ```
-$ radiocli audio feed --device /dev/cu.usbmodem00000000000011 > /tmp/scanner.raw
+$ radiocli audio output --device /dev/cu.usbmodem00000000000011 > /tmp/scanner.raw
 $ ffmpeg -f s16le -ar 48000 -ac 1 -i /tmp/scanner.raw /tmp/scanner.wav
 ```
 
 Without a daemon:
 
 ```
-$ radiocli audio feed --device /dev/cu.usbmodem00000000000011
+$ radiocli audio output --device /dev/cu.usbmodem00000000000011
 error: no radiocli daemon is running for this scanner.
 Audio comes from a daemon, because a sound input can only be open once and
 sharing it is what the daemon is for. Start one with:
@@ -335,7 +335,7 @@ of this is hearing the radio at the moment it says something.
 | `error: this daemon is not holding a sound input, ...` | A daemon is running, but it was started without `--audio`. | Stop it and start it again with `--audio`. |
 | `error: no sound input by that name: "..."` | `--input`, or the daemon's `--audio`, named something not attached. | Run `radiocli audio` to see the names. |
 | `error: more than one sound input by that name: ...` | Two identical interfaces report one name and cannot be told apart. | Unplug one, or rename it in your computer's sound settings. |
-| `error: "audio feed" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. A daemon lends a command its output for the length of the command, which only works because commands end. |
+| `error: "audio output" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. A daemon lends a command its output for the length of the command, which only works because commands end. |
 | `error: there is no audio format called "..."` | `--format` was given something other than `pcm` or `opus`. | Pass `--format pcm` or `--format opus`. |
 | `error: a bitrate of N is outside what the encoder accepts` | `--bitrate` was outside 6000 to 510000. | Pass something in range; 32000 is a good starting point. |
 | `error: this copy of radiocli was built without audio support` | The build has cgo switched off, so it cannot open a sound input. | Rebuild with `CGO_ENABLED=1`. Only opening an input needs this; a build like that can still receive audio from a daemon. |

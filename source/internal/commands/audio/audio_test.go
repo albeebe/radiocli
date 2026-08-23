@@ -69,7 +69,7 @@ func newApp() (*appcontext.App, *bytes.Buffer, *bytes.Buffer) {
 // Coverage: 100% (2 test cases covering the command and the closure it holds)
 //
 // Test cases:
-//   - Wiring: the command carries its name and the feed subcommand
+//   - Wiring: the command carries its name and the output subcommand
 //   - Runs: executing the command lists the sound inputs
 func TestNew(t *testing.T) {
 	// Verify that the command is described the way the tool wires it
@@ -82,12 +82,12 @@ func TestNew(t *testing.T) {
 
 		var found bool
 		for _, sub := range cmd.Commands() {
-			if sub.Use == "feed" {
+			if sub.Use == "output" {
 				found = true
 			}
 		}
 		if !found {
-			t.Error("the command has no feed subcommand, wanted one")
+			t.Error("the command has no output subcommand, wanted one")
 		}
 	})
 
