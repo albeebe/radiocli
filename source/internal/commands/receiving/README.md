@@ -10,7 +10,7 @@ The command exists to make one distinction, and everything about its shape follo
 
 What it answers with is the mute state rather than the signal strength, and those two disagree at the moment that matters most. A document captured on the first poll of a real transmission read `Mute="Unmute"` with no signal bars at all, and the very next one showed five bars on the same unchanged signal. Anything waiting for bars therefore misses the opening of every transmission, which is the part hardest to get back. The bars are still reported, because they are a genuine measure of how strong the signal is once there is one.
 
-It presses no keys and moves nothing, so it carries `appcontext.OnlyReads` and can be run while another command has the radio, including several times a second for as long as you like. That is not incidental: it is what lets `audio record` use this as its label source through a daemon, asking over and over while a recording runs.
+It presses no keys and moves nothing, so it carries `appcontext.OnlyReads`: a daemon holding the radio runs it alongside whatever else is running instead of queueing it, including several times a second for as long as you like. That is not incidental: it is what lets `audio record` use this as its label source through a daemon, asking over and over while a recording runs.
 
 ## How we use it?
 ```go

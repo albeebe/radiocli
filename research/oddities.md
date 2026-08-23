@@ -322,9 +322,9 @@ Comparing the spectrum of one side against the fold, on the same source:
 
 The fold guts the low end, because the low frequencies are the most alike
 between the two sides and cancel the most completely. What is left is a thin,
-reedy voice with its body removed, which is reported by listeners as sounding
-like a kazoo and is easy to mistake for a fault in the radio or for the
-artefacts of a digital voice codec.
+reedy voice with its body removed, like a guy talking through a kazoo, and it
+is easy to mistake for a fault in the radio or for the artefacts of a digital
+voice codec.
 
 The cause is the jack itself, which is wired out of phase. Uniden addressed it
 in firmware rather than in hardware, by adding **Menu > Settings > Headphone L/R

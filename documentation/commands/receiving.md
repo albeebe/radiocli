@@ -15,9 +15,11 @@ answers with whichever channel it happened to be checking at the instant it was
 asked, and that reply is indistinguishable from one about a real transmission
 unless you look at `receiving` first. When `receiving` is `no`, the command says
 so on stderr as well. The command presses no keys and changes nothing on the
-scanner or on your computer, so it is safe to run repeatedly and safe to run
-while another `radiocli` command has the scanner. It needs a scanner, so name
-one with `--device`.
+scanner or on your computer, so it is safe to run repeatedly. When a
+[`daemon`](daemon.md) holds the scanner it runs alongside whatever else is
+running rather than waiting for it; a scanner held by an ordinary command is
+reported as busy, like any other command. It needs a scanner, so name one with
+`--device`.
 
 ## Usage
 

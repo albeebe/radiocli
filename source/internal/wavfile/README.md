@@ -10,7 +10,7 @@ A recording is a different thing from a stream, and the difference is time. Some
 
 Opus was the obvious alternative and is deliberately not offered. The encoder this tool carries is a pure Go port pinned to one commit of a port that was still being written, whose audio quality can move between commits even when its API does not, and it cannot decode at all. Compressing an archive with it would produce recordings whose fidelity depended on which build happened to make them, and nothing in the tool able to read them back. That trade is the right one for a live stream, where a listener on a phone is the constraint. It is the wrong one for the copy being kept.
 
-The cost is size, and it is smaller than it looks. An hour of audio is about 330 MB against roughly 15 MB of Opus, but the recorder only ever writes transmissions, and a scanner is silent most of the time. The silence between them costs nothing, because none of it is written.
+The cost is size, and it is smaller than it looks. An hour of audio is about 345 MB against roughly 15 MB of Opus, but the recorder only ever writes transmissions, and a scanner is silent most of the time. The silence between them costs nothing, because none of it is written.
 
 Keeping this in its own package means the format lives in one place. The two length fields in a WAV header cannot be known until the audio stops, so they are written last by seeking back over them, and a file closed without that step holds every sample while still declaring it holds none. That is the kind of detail that should be got right once rather than in whichever command happens to need a file next.
 

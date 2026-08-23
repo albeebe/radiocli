@@ -183,7 +183,7 @@ specifically so a mono receiver summing them gets full audio. Sixty-five years
 of consumer gear has been expected to survive being folded down. This jack does
 not, which is why it got a firmware fix rather than a line in the manual.
 
-## What sounded like a codec artifact was arithmetic
+## What sounded like a codec artefact was arithmetic
 
 The symptom was a thin, reedy buzz in the speaker's voice, there only while
 somebody was talking. Sounded like a guy talking through a kazoo.
@@ -207,7 +207,7 @@ are most alike, so it cancels hardest, and what survives is the high-frequency
 residue where they differ. That is a voice with the body taken out of it. That
 is a kazoo.
 
-The lesson is not about phase. It is that "this is a known artifact of X" needs
+The lesson is not about phase. It is that "this is a known artefact of X" needs
 X to actually be present, and checking would have cost me one look at the
 channel.
 
@@ -274,7 +274,7 @@ to -999. Not a receive indicator in either direction.
 **`A_Led` is not one either.** The spec presents it as `Blue` while receiving and
 `Off` otherwise, and one captured document backs that up. Through both
 transmissions above it read `Off` on every single document, including the ones
-with the mute open. Best guess is it follows the channel's own alert color.
+with the mute open. Best guess is it follows the channel's own alert colour.
 Either way I am not building on it.
 
 **Nothing identifies the speaker on analog.** An analog conventional channel
@@ -365,8 +365,8 @@ sound like anything.
   from one captured while a digital unit was actually transmitting. No digital
   traffic came through during any watch that would have confirmed the active
   form.
-- Whether `A_Led` follows the channel's alert color is inference from it reading
-  `Off` the whole time. I have not set an alert color and watched it change.
+- Whether `A_Led` follows the channel's alert colour is inference from it reading
+  `Off` the whole time. I have not set an alert colour and watched it change.
 - The 640 ms gap between two speakers is a single measurement. I am using it
   like a lower bound and it is really just the shortest one I have seen. Eight
   more minutes of polling that night caught no traffic at all to add to it.
