@@ -338,6 +338,28 @@ picks the one option that destroys the signal. The fold has to be judged by what
 it produces: measure what mixing would give, and refuse to mix when it comes out
 quieter than either side on its own. That is what `audiofeed`'s chooser does.
 
+### `Mod` reports the demodulator, not the programming
+
+*2026-08-23*
+
+A conventional channel programmed with modulation `Auto` was reported by `GSI`
+as `Mod="NFM"`. The programming was read straight off the radio's own menus,
+Set Modulation showing `Auto` highlighted, minutes after eight documents from
+the same channel had all said NFM.
+
+So the attribute is the demodulator's current state, not the channel's setting.
+On an Auto channel carrying P25, the two disagree exactly when it is
+interesting: digital bursts the auto-detector fails to classify fall back to
+NFM analog, come out of the speaker as a constant-level buzz with no words in
+it, and are reported as an ordinary NFM stop. Nothing in the document says the
+scanner tried and failed to decode; the recording of modem noise labelled as
+narrowband FM is the only evidence.
+
+**Why it matters.** Anything using `Mod` to answer "what is this channel"
+gets a different answer depending on what happened to be transmitting at the
+moment it asked. It answers "what is the radio doing right now", and there is
+no field that reports the programmed value.
+
 ### Mass storage mode is a one-way door
 
 *2026-08-05*
