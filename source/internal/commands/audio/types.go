@@ -43,36 +43,33 @@ const (
 // still bounded, because the sound card cannot be asked to wait.
 const listenQueue = 1000 / audiofeed.FrameMS
 
-// listSources lists the sound inputs this computer can record from. It is a
-// var so tests can substitute a fake and never enumerate a real sound card.
-var listSources = audioin.Sources
+// meterEvery is how many frames go by between level readings under --verbose.
+//
+// About one every two seconds. Fast enough to watch somebody move a volume
+// knob, slow enough that a night of it is readable.
+const meterEvery = 2000 / audiofeed.FrameMS
 
-// startCapture opens the sound card and begins publishing frames into out. It
-// is a var so tests can substitute a fake and never open a real sound card,
-// which on macOS is what raises the microphone permission prompt.
-var startCapture = func(opts audiofeed.Options, out audiofeed.Publisher) (capture, error) {
-	return audiofeed.Start(opts, out)
-}
+// The mismatch check: how much disagreement between the radio and the sound
+// card is enough to say the input is not the scanner.
+const (
+	// mismatchLimit is how many times the two must disagree before it is
+	// mentioned. High enough that the ordinary overlap at the edges of a
+	// transmission cannot reach it, since the radio and the audio are never
+	// going to agree to the millisecond.
+	mismatchLimit = 150
 
-// capture is the part of an open sound card that listenDirect uses: it says
-// what it is recording from, and it can be closed. It is an interface rather
-// than *audiofeed.Capture so that startCapture can be faked.
-type capture interface {
-	// Close stops recording and waits for the last frame to be published.
-	Close()
+	// mismatchWindow is how long one kind of disagreement must persist to
+	// count as continuous rather than momentary.
+	mismatchWindow = 30 * time.Second
+)
 
-	// Source is what the operating system calls the input this is recording
-	// from.
-	Source() string
-}
-
-// listenOptions is what the flags asked for.
-type listenOptions struct {
-	input   string // Sound input to open directly, empty to take the audio from a daemon
-	format  string // Audio format to write, as --format gave it
-	bitrate int    // Bits per second, for --format opus
-	channel string // Which side of the cable the scanner is on, as --channel gave it
-}
+// mismatchMargin is how far above the noise floor the mismatch check counts a
+// frame as carrying sound.
+//
+// Wider than the gate's own margin on purpose. This is not deciding what to
+// record, it is deciding whether to tell somebody their cable is wrong, and a
+// false accusation is worse than a slow one.
+const mismatchMargin = 12.0
 
 // recordQueue is how many frames may be waiting for the recorder before the
 // oldest are dropped.
@@ -105,19 +102,77 @@ const recordQueue = 2000 / audiofeed.FrameMS
 // asked flat out, so this is an eighth of what it can do.
 const samplePeriod = 100 * time.Millisecond
 
-// The mismatch check: how much disagreement between the radio and the sound
-// card is enough to say the input is not the scanner.
-const (
-	// mismatchLimit is how many times the two must disagree before it is
-	// mentioned. High enough that the ordinary overlap at the edges of a
-	// transmission cannot reach it, since the radio and the audio are never
-	// going to agree to the millisecond.
-	mismatchLimit = 150
+// listSources lists the sound inputs this computer can record from. It is a
+// var so tests can substitute a fake and never enumerate a real sound card.
+var listSources = audioin.Sources
 
-	// mismatchWindow is how long one kind of disagreement must persist to
-	// count as continuous rather than momentary.
-	mismatchWindow = 30 * time.Second
-)
+// startCapture opens the sound card and begins publishing frames into out. It
+// is a var so tests can substitute a fake and never open a real sound card,
+// which on macOS is what raises the microphone permission prompt.
+var startCapture = func(opts audiofeed.Options, out audiofeed.Publisher) (capture, error) {
+	return audiofeed.Start(opts, out)
+}
+
+// capture is the part of an open sound card that listenDirect uses: it says
+// what it is recording from, and it can be closed. It is an interface rather
+// than *audiofeed.Capture so that startCapture can be faked.
+type capture interface {
+	// Close stops recording and waits for the last frame to be published.
+	Close()
+
+	// Source is what the operating system calls the input this is recording
+	// from.
+	Source() string
+}
+
+// listenOptions is what the flags asked for.
+type listenOptions struct {
+	input   string // Sound input to open directly, empty to take the audio from a daemon
+	format  string // Audio format to write, as --format gave it
+	bitrate int    // Bits per second, for --format opus
+	channel string // Which side of the cable the scanner is on, as --channel gave it
+}
+
+// meter reports how loud the audio is against where the noise floor sits, so a
+// cable problem can be seen rather than guessed at.
+type meter struct {
+	// seen is how many frames have gone by since the last reading, and peak is
+	// the loudest of them.
+	seen int
+	peak float64
+}
+
+// mismatch watches the radio against the sound card and notices when they
+// disagree for long enough to mean the input is not the scanner.
+//
+// This check is only possible because the radio is required, and it is worth
+// having because getting the input wrong is the single largest source of
+// trouble in this corner of the hobby. Two failures look identical from the
+// outside, produce nothing anybody wants, and give no clue which has happened:
+//
+//   - The radio is receiving and the audio stays at the noise floor, which is a
+//     lead in the wrong socket, a lead that is not plugged in, or the scanner's
+//     volume at zero.
+//   - The audio carries steady sound while the radio says it is muted, which is
+//     a microphone, and this is recording the room.
+//
+// Both are counted rather than reported the first time they happen, because the
+// radio and the sound card are never going to agree to the millisecond and the
+// edges of every transmission disagree briefly.
+type mismatch struct {
+	// silent counts frames where the radio was receiving and nothing came
+	// through, and noisy counts frames where sound arrived with the radio
+	// muted.
+	silent, noisy int
+
+	// since is when the current run of disagreement began, so a complaint is
+	// made about something continuous rather than something that added up over
+	// an evening.
+	since time.Time
+
+	// told stops the same advice being repeated for as long as the fault lasts.
+	told bool
+}
 
 // recordOptions is what the flags asked for.
 type recordOptions struct {
@@ -128,29 +183,6 @@ type recordOptions struct {
 	hang        time.Duration // Quiet time before a transmission is called finished
 	minDuration time.Duration // Shortest recording worth keeping
 	maxDuration time.Duration // Longest a recording may run before it is split
-}
-
-// mismatchMargin is how far above the noise floor the mismatch check counts a
-// frame as carrying sound.
-//
-// Wider than the gate's own margin on purpose. This is not deciding what to
-// record, it is deciding whether to tell somebody their cable is wrong, and a
-// false accusation is worse than a slow one.
-const mismatchMargin = 12.0
-
-// meterEvery is how many frames go by between level readings under --verbose.
-//
-// About one every two seconds. Fast enough to watch somebody move a volume
-// knob, slow enough that a night of it is readable.
-const meterEvery = 2000 / audiofeed.FrameMS
-
-// meter reports how loud the audio is against where the noise floor sits, so a
-// cable problem can be seen rather than guessed at.
-type meter struct {
-	// seen is how many frames have gone by since the last reading, and peak is
-	// the loudest of them.
-	seen int
-	peak float64
 }
 
 // recorder is the state one run of "audio record" carries: what it is writing

@@ -147,6 +147,11 @@ func (c *chooser) louder() string {
 	return ChannelRight
 }
 
+// decided reports the choice, once there is one.
+//
+// Returns:
+//   - the settled channel mode, empty until there is one
+//   - whether the choice has been made
 func (c *chooser) decided() (string, bool) {
 	return c.settled, c.settled != ""
 }

@@ -79,6 +79,20 @@ func newRecord(app *appcontext.App) *cobra.Command {
 	return cmd
 }
 
+// abandon throws away a recording that cannot be finished.
+//
+// It is only reached when something has already gone wrong, and the file it
+// removes is one with an incomplete header that nothing would play. Whatever it
+// reports is dropped, because there is a real failure on its way to the caller
+// already and replacing it with a complaint about the clearing up would bury
+// the thing worth reading.
+func (r *recorder) abandon() {
+	if r.open != nil {
+		_ = r.open.Abandon()
+		r.open = nil
+	}
+}
+
 // announceRecording says what is about to be recorded and where it is going.
 //
 // Parameters:
@@ -89,6 +103,111 @@ func announceRecording(app *appcontext.App, source, dir string) {
 	app.Notef("Recording from %q into %s\n"+
 		"One file per transmission, with a description beside it. Press Ctrl-C to stop.\n",
 		source, dir)
+}
+
+// apply acts on what the gate said.
+//
+// Parameters:
+//   - events: what the gate produced, in the order they should be acted on
+//
+// Returns:
+//   - error if a recording cannot be opened, written or filed
+func (r *recorder) apply(events []audiogate.Event) error {
+	for _, ev := range events {
+		if err := r.one(ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// audioViaDaemon takes a copy of the audio a daemon is already holding.
+//
+// Parameters:
+//   - ctx: context that ends the audio when it is cancelled
+//   - app: the application context holding the device setting
+//
+// Returns:
+//   - a channel of frames, closed when the daemon stops sending
+//   - the name of the sound input the daemon is recording from
+//   - a function closing the stream, which is never nil
+//   - error if there is no daemon or it will not send audio
+func audioViaDaemon(ctx context.Context, app *appcontext.App) (
+	<-chan audiofeed.Frame, string, func(), error) {
+
+	stream, err := broker.DialAudio(app.Config.Device, formatPCM, 0)
+	if err != nil {
+		if errors.Is(err, broker.ErrNoDaemon) {
+			return nil, "", nil, fmt.Errorf("%w.\n"+
+				"Audio comes from a daemon, because a sound input can only be open once and\n"+
+				"sharing it is what the daemon is for. Start one with:\n"+
+				"  radiocli daemon --device %s --audio \"<sound input>\"\n"+
+				"Or pass --input to open a sound input directly, without sharing it",
+				err, app.Config.Device)
+		}
+		return nil, "", nil, err
+	}
+
+	frames := make(chan audiofeed.Frame, recordQueue)
+	go func() {
+		defer close(frames)
+		// The daemon sends samples with no level and no timestamp, so both are
+		// worked out here. The level is measured with the same function the
+		// capture uses, because a gate tuned against one definition of loudness
+		// must not behave differently depending on where its audio came from.
+		for {
+			seq, audio, event, err := stream.Next()
+			if err != nil {
+				return
+			}
+			if event != nil {
+				relayEvent(app, event)
+				continue
+			}
+
+			select {
+			case frames <- audiofeed.Frame{
+				Seq:   seq,
+				PCM:   audio,
+				Level: audiofeed.LevelOf(audio),
+				At:    time.Now(),
+			}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return frames, stream.Info().Source, func() { stream.Close() }, nil
+}
+
+// contains reports whether values already holds want.
+//
+// Parameters:
+//   - values: what has been collected so far
+//   - want: the value to look for
+//
+// Returns:
+//   - true if want is already there
+func contains(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// count adds one to a tally and starts the clock if it was not running.
+//
+// Parameters:
+//   - tally: the counter to add to
+//   - at: when the frame it came from was captured
+func (m *mismatch) count(tally *int, at time.Time) {
+	if m.since.IsZero() {
+		m.since = at
+	}
+	*tally++
 }
 
 // entryFrom turns a finished transmission and the labels seen during it into
@@ -141,21 +260,24 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 	return e
 }
 
-// contains reports whether values already holds want.
+// key builds the identity the gate compares one transmission against the next
+// with.
+//
+// It is every part of where the channel sits rather than the channel name
+// alone, because two departments can each have a channel called Dispatch and
+// treating those as one transmission would join two calls into a single file.
 //
 // Parameters:
-//   - values: what has been collected so far
-//   - want: the value to look for
+//   - h: what the scanner is hearing
 //
 // Returns:
-//   - true if want is already there
-func contains(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
+//   - an opaque identity, empty when the scanner is on nothing
+func key(h device.Heard) string {
+	if !h.Receiving {
+		return ""
 	}
-	return false
+	return strings.Join([]string{h.System, h.Department, h.Site, h.Channel,
+		h.Frequency, h.Talkgroup}, "\x00")
 }
 
 // newSampler returns something that can be asked what the scanner is hearing.
@@ -218,81 +340,116 @@ func newSampler(ctx context.Context, app *appcontext.App) (func(context.Context)
 	}, func() { daemon.Close() }, nil
 }
 
-// runRecord records transmissions until ctx is cancelled.
+// observe folds one frame into the check and says something when it is sure.
 //
 // Parameters:
-//   - ctx: context that ends the recording when it is cancelled
-//   - app: the application context holding the streams, the logger and the
-//     scanner connection
-//   - opts: what the flags asked for
+//   - app: the application context whose Stderr receives the advice
+//   - frame: the audio frame just measured
+//   - heard: the most recent reading of the radio
+//   - floor: the noise floor the gate has settled on, in dBFS
+func (m *mismatch) observe(app *appcontext.App, frame audiofeed.Frame, heard device.Heard, floor float64) {
+	loud := frame.Level > floor+mismatchMargin
+
+	switch {
+	case heard.Receiving && !loud:
+		m.count(&m.silent, frame.At)
+	case !heard.Receiving && loud:
+		m.count(&m.noisy, frame.At)
+	default:
+		// They agree, so whatever was being counted was momentary.
+		m.silent, m.noisy, m.since = 0, 0, time.Time{}
+		m.told = false
+		return
+	}
+
+	if m.told || time.Since(m.since) < mismatchWindow {
+		return
+	}
+
+	switch {
+	case m.silent >= mismatchLimit:
+		m.told = true
+		app.Notef("The scanner says it is receiving and nothing is arriving on the audio input.\n" +
+			"Check the cable is in the scanner's headphone or record socket and in the input\n" +
+			"you named, and check the scanner's volume is not at zero.\n")
+	case m.noisy >= mismatchLimit:
+		m.told = true
+		app.Notef("Sound is arriving while the scanner says it is receiving nothing.\n" +
+			"The input named is probably not the scanner. Run \"radiocli audio\" to see what\n" +
+			"else this computer can record from.\n")
+	}
+}
+
+// observe folds one frame into the meter and logs a reading when enough have
+// gone by.
+//
+// The two numbers together are what diagnoses a cable, and having them saved
+// this feature from shipping broken: an input whose noise sat at -78 dBFS was
+// being triggered by its own hiss, and the reason was visible the moment the
+// floor and the level were printed next to each other. A level barely above the
+// floor is a lead in the wrong socket or a scanner turned down; a floor pinned
+// near the top of its range is a microphone.
+//
+// Parameters:
+//   - app: the application context whose logger receives the reading
+//   - frame: the audio frame just measured
+//   - floor: the noise floor the gate has settled on, in dBFS
+func (m *meter) observe(app *appcontext.App, frame audiofeed.Frame, floor float64) {
+	if m.seen == 0 || frame.Level > m.peak {
+		m.peak = frame.Level
+	}
+	m.seen++
+
+	if m.seen < meterEvery {
+		return
+	}
+	app.Log.Debug("audio", "peak", math.Round(m.peak*10)/10, "floor", math.Round(floor*10)/10)
+	m.seen, m.peak = 0, 0
+}
+
+// one acts on a single thing the gate said.
+//
+// Parameters:
+//   - ev: what the gate said
 //
 // Returns:
-//   - error if the scanner or the audio cannot be reached, if the destination
-//     cannot be prepared, or if a recording cannot be written; nil once ctx is
-//     cancelled
-func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) error {
-	// A daemon lends a command its streams for as long as the command runs, on
-	// the reasonable assumption that a command finishes. This one does not, so
-	// inside a daemon it would hold those streams forever. Refused here rather
-	// than merely left undocumented, because a client can send any command line.
-	if app.InDaemon {
-		return errors.New("\"audio record\" runs until it is stopped, so it cannot be run " +
-			"inside a daemon:\nrun it in a terminal of its own instead")
-	}
+//   - error if the recording cannot be opened, written or filed
+func (r *recorder) one(ev audiogate.Event) error {
+	switch ev.Kind {
+	case audiogate.KindStart:
+		// The gate only says this once a transmission has outlived the minimum
+		// length, so a file opened here never has to be deleted again.
+		open, err := r.library.Begin()
+		if err != nil {
+			return err
+		}
+		r.open = open
+		return nil
 
-	// The radio is required, and is checked before anything is opened. This
-	// command records a scanner rather than a sound card, and without the radio
-	// there is nothing to label a recording with and no way to tell the
-	// scanner's audio from a microphone in the room.
-	if app.Config.Device == "" {
-		return fmt.Errorf("%w: \"audio record\" needs the scanner as well as its audio, so that "+
-			"every recording is labelled and so that the input can be checked against the "+
-			"radio.\nName one with --device, from the PORT column of \"radiocli devices\"",
-			appcontext.ErrNoDevice)
-	}
+	case audiogate.KindAudio:
+		if r.open == nil {
+			// Audio with nothing open cannot happen: the gate emits a start
+			// before any frame of a transmission. Guarded rather than trusted,
+			// because the alternative is a nil dereference in the middle of a
+			// night's recording.
+			return nil
+		}
+		return r.open.Write(ev.Frame.PCM)
 
-	channel, err := audiofeed.ParseChannel(opts.channel)
-	if err != nil {
-		return err
-	}
+	default:
+		if r.open == nil {
+			return nil
+		}
+		open := r.open
+		r.open = nil
 
-	// Everything a typo can be caught by is caught before anything is opened,
-	// so a mistake costs a second rather than a night's recording, and a run
-	// that is never going to happen leaves no folder behind.
-	if err := recordings.ValidateTemplate(opts.template); err != nil {
-		return err
+		filed, err := open.Close(entryFrom(ev.Tx, r.seen))
+		r.seen = nil
+		if err != nil {
+			return err
+		}
+		return reportRecording(r.app, filed)
 	}
-
-	sample, closeSampler, err := newSampler(ctx, app)
-	if err != nil {
-		return err
-	}
-	defer closeSampler()
-
-	destination := opts.destination
-	if destination == "" {
-		destination = "recordings"
-	}
-	library, err := recordings.New(destination, opts.template)
-	if err != nil {
-		return err
-	}
-	defer library.Close()
-
-	if left, err := library.Sweep(); err == nil && len(left) > 0 {
-		app.Notef("%d recording(s) in %s were left unfinished by an earlier run and will not "+
-			"play. They are the hidden files beginning %q, and can be deleted.\n",
-			len(left), library.Dir(), ".partial-")
-	}
-
-	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
-	if err != nil {
-		return err
-	}
-	defer closeAudio()
-
-	announceRecording(app, source, library.Dir())
-	return recordLoop(ctx, app, library, frames, sample, opts)
 }
 
 // openAudio starts the audio arriving, either from a sound card this process
@@ -340,64 +497,51 @@ func openAudio(ctx context.Context, app *appcontext.App, input, channel string) 
 	}, nil
 }
 
-// audioViaDaemon takes a copy of the audio a daemon is already holding.
+// poll asks the scanner what it is hearing, over and over, until ctx ends.
 //
 // Parameters:
-//   - ctx: context that ends the audio when it is cancelled
-//   - app: the application context holding the device setting
-//
-// Returns:
-//   - a channel of frames, closed when the daemon stops sending
-//   - the name of the sound input the daemon is recording from
-//   - a function closing the stream, which is never nil
-//   - error if there is no daemon or it will not send audio
-func audioViaDaemon(ctx context.Context, app *appcontext.App) (
-	<-chan audiofeed.Frame, string, func(), error) {
+//   - ctx: context that stops the polling when it is cancelled
+//   - sample: reads what the scanner is hearing
+//   - heard: where readings are sent
+//   - failures: where a scanner that stopped answering is reported. It must
+//     have room for one, which is all this ever sends, so that reporting a
+//     failure on the way out cannot block on a recorder that has already gone
+func poll(ctx context.Context, sample func(context.Context) (device.Heard, error),
+	heard chan<- device.Heard, failures chan<- error) {
 
-	stream, err := broker.DialAudio(app.Config.Device, formatPCM, 0)
-	if err != nil {
-		if errors.Is(err, broker.ErrNoDaemon) {
-			return nil, "", nil, fmt.Errorf("%w.\n"+
-				"Audio comes from a daemon, because a sound input can only be open once and\n"+
-				"sharing it is what the daemon is for. Start one with:\n"+
-				"  radiocli daemon --device %s --audio \"<sound input>\"\n"+
-				"Or pass --input to open a sound input directly, without sharing it",
-				err, app.Config.Device)
+	tick := time.NewTicker(samplePeriod)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
 		}
-		return nil, "", nil, err
+
+		h, err := sample(ctx)
+		if err != nil {
+			// A cancelled run is the tool being stopped rather than the radio
+			// going away, and reporting it would end the recording with an
+			// error on every ordinary Ctrl-C.
+			if ctx.Err() == nil {
+				failures <- err
+			}
+			return
+		}
+
+		select {
+		case heard <- h:
+		case <-ctx.Done():
+			return
+		default:
+			// The recorder is busy with a frame. Dropping this reading costs
+			// nothing, because another arrives a tenth of a second later
+			// saying the same thing: what a recording is cut against is the
+			// time the radio was last seen receiving, not any single reading,
+			// so losing one moves nothing.
+		}
 	}
-
-	frames := make(chan audiofeed.Frame, recordQueue)
-	go func() {
-		defer close(frames)
-		// The daemon sends samples with no level and no timestamp, so both are
-		// worked out here. The level is measured with the same function the
-		// capture uses, because a gate tuned against one definition of loudness
-		// must not behave differently depending on where its audio came from.
-		for {
-			seq, audio, event, err := stream.Next()
-			if err != nil {
-				return
-			}
-			if event != nil {
-				relayEvent(app, event)
-				continue
-			}
-
-			select {
-			case frames <- audiofeed.Frame{
-				Seq:   seq,
-				PCM:   audio,
-				Level: audiofeed.LevelOf(audio),
-				At:    time.Now(),
-			}:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return frames, stream.Info().Source, func() { stream.Close() }, nil
 }
 
 // recordLoop drives the gate with the audio arriving and files what it says.
@@ -481,148 +625,6 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 	}
 }
 
-// abandon throws away a recording that cannot be finished.
-//
-// It is only reached when something has already gone wrong, and the file it
-// removes is one with an incomplete header that nothing would play. Whatever it
-// reports is dropped, because there is a real failure on its way to the caller
-// already and replacing it with a complaint about the clearing up would bury
-// the thing worth reading.
-func (r *recorder) abandon() {
-	if r.open != nil {
-		_ = r.open.Abandon()
-		r.open = nil
-	}
-}
-
-// apply acts on what the gate said.
-//
-// Parameters:
-//   - events: what the gate produced, in the order they should be acted on
-//
-// Returns:
-//   - error if a recording cannot be opened, written or filed
-func (r *recorder) apply(events []audiogate.Event) error {
-	for _, ev := range events {
-		if err := r.one(ev); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// one acts on a single thing the gate said.
-//
-// Parameters:
-//   - ev: what the gate said
-//
-// Returns:
-//   - error if the recording cannot be opened, written or filed
-func (r *recorder) one(ev audiogate.Event) error {
-	switch ev.Kind {
-	case audiogate.KindStart:
-		// The gate only says this once a transmission has outlived the minimum
-		// length, so a file opened here never has to be deleted again.
-		open, err := r.library.Begin()
-		if err != nil {
-			return err
-		}
-		r.open = open
-		return nil
-
-	case audiogate.KindAudio:
-		if r.open == nil {
-			// Audio with nothing open cannot happen: the gate emits a start
-			// before any frame of a transmission. Guarded rather than trusted,
-			// because the alternative is a nil dereference in the middle of a
-			// night's recording.
-			return nil
-		}
-		return r.open.Write(ev.Frame.PCM)
-
-	default:
-		if r.open == nil {
-			return nil
-		}
-		open := r.open
-		r.open = nil
-
-		filed, err := open.Close(entryFrom(ev.Tx, r.seen))
-		r.seen = nil
-		if err != nil {
-			return err
-		}
-		return reportRecording(r.app, filed)
-	}
-}
-
-// key builds the identity the gate compares one transmission against the next
-// with.
-//
-// It is every part of where the channel sits rather than the channel name
-// alone, because two departments can each have a channel called Dispatch and
-// treating those as one transmission would join two calls into a single file.
-//
-// Parameters:
-//   - h: what the scanner is hearing
-//
-// Returns:
-//   - an opaque identity, empty when the scanner is on nothing
-func key(h device.Heard) string {
-	if !h.Receiving {
-		return ""
-	}
-	return strings.Join([]string{h.System, h.Department, h.Site, h.Channel,
-		h.Frequency, h.Talkgroup}, "\x00")
-}
-
-// poll asks the scanner what it is hearing, over and over, until ctx ends.
-//
-// Parameters:
-//   - ctx: context that stops the polling when it is cancelled
-//   - sample: reads what the scanner is hearing
-//   - heard: where readings are sent
-//   - failures: where a scanner that stopped answering is reported. It must
-//     have room for one, which is all this ever sends, so that reporting a
-//     failure on the way out cannot block on a recorder that has already gone
-func poll(ctx context.Context, sample func(context.Context) (device.Heard, error),
-	heard chan<- device.Heard, failures chan<- error) {
-
-	tick := time.NewTicker(samplePeriod)
-	defer tick.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-
-		h, err := sample(ctx)
-		if err != nil {
-			// A cancelled run is the tool being stopped rather than the radio
-			// going away, and reporting it would end the recording with an
-			// error on every ordinary Ctrl-C.
-			if ctx.Err() == nil {
-				failures <- err
-			}
-			return
-		}
-
-		select {
-		case heard <- h:
-		case <-ctx.Done():
-			return
-		default:
-			// The recorder is busy with a frame. Dropping this reading costs
-			// nothing, because another arrives a tenth of a second later
-			// saying the same thing: what a recording is cut against is the
-			// time the radio was last seen receiving, not any single reading,
-			// so losing one moves nothing.
-		}
-	}
-}
-
 // reportRecording prints one finished recording.
 //
 // The audio goes to files, so stdout is free for this, which is what makes the
@@ -646,113 +648,79 @@ func reportRecording(app *appcontext.App, e recordings.Entry) error {
 	return nil
 }
 
-// mismatch watches the radio against the sound card and notices when they
-// disagree for long enough to mean the input is not the scanner.
-//
-// This check is only possible because the radio is required, and it is worth
-// having because getting the input wrong is the single largest source of
-// trouble in this corner of the hobby. Two failures look identical from the
-// outside, produce nothing anybody wants, and give no clue which has happened:
-//
-//   - The radio is receiving and the audio stays at the noise floor, which is a
-//     lead in the wrong socket, a lead that is not plugged in, or the scanner's
-//     volume at zero.
-//   - The audio carries steady sound while the radio says it is muted, which is
-//     a microphone, and this is recording the room.
-//
-// Both are counted rather than reported the first time they happen, because the
-// radio and the sound card are never going to agree to the millisecond and the
-// edges of every transmission disagree briefly.
-type mismatch struct {
-	// silent counts frames where the radio was receiving and nothing came
-	// through, and noisy counts frames where sound arrived with the radio
-	// muted.
-	silent, noisy int
-
-	// since is when the current run of disagreement began, so a complaint is
-	// made about something continuous rather than something that added up over
-	// an evening.
-	since time.Time
-
-	// told stops the same advice being repeated for as long as the fault lasts.
-	told bool
-}
-
-// observe folds one frame into the check and says something when it is sure.
+// runRecord records transmissions until ctx is cancelled.
 //
 // Parameters:
-//   - app: the application context whose Stderr receives the advice
-//   - frame: the audio frame just measured
-//   - heard: the most recent reading of the radio
-//   - floor: the noise floor the gate has settled on, in dBFS
-func (m *mismatch) observe(app *appcontext.App, frame audiofeed.Frame, heard device.Heard, floor float64) {
-	loud := frame.Level > floor+mismatchMargin
-
-	switch {
-	case heard.Receiving && !loud:
-		m.count(&m.silent, frame.At)
-	case !heard.Receiving && loud:
-		m.count(&m.noisy, frame.At)
-	default:
-		// They agree, so whatever was being counted was momentary.
-		m.silent, m.noisy, m.since = 0, 0, time.Time{}
-		m.told = false
-		return
-	}
-
-	if m.told || time.Since(m.since) < mismatchWindow {
-		return
-	}
-
-	switch {
-	case m.silent >= mismatchLimit:
-		m.told = true
-		app.Notef("The scanner says it is receiving and nothing is arriving on the audio input.\n" +
-			"Check the cable is in the scanner's headphone or record socket and in the input\n" +
-			"you named, and check the scanner's volume is not at zero.\n")
-	case m.noisy >= mismatchLimit:
-		m.told = true
-		app.Notef("Sound is arriving while the scanner says it is receiving nothing.\n" +
-			"The input named is probably not the scanner. Run \"radiocli audio\" to see what\n" +
-			"else this computer can record from.\n")
-	}
-}
-
-// count adds one to a tally and starts the clock if it was not running.
+//   - ctx: context that ends the recording when it is cancelled
+//   - app: the application context holding the streams, the logger and the
+//     scanner connection
+//   - opts: what the flags asked for
 //
-// Parameters:
-//   - tally: the counter to add to
-//   - at: when the frame it came from was captured
-func (m *mismatch) count(tally *int, at time.Time) {
-	if m.since.IsZero() {
-		m.since = at
+// Returns:
+//   - error if the scanner or the audio cannot be reached, if the destination
+//     cannot be prepared, or if a recording cannot be written; nil once ctx is
+//     cancelled
+func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) error {
+	// A daemon lends a command its streams for as long as the command runs, on
+	// the reasonable assumption that a command finishes. This one does not, so
+	// inside a daemon it would hold those streams forever. Refused here rather
+	// than merely left undocumented, because a client can send any command line.
+	if app.InDaemon {
+		return errors.New("\"audio record\" runs until it is stopped, so it cannot be run " +
+			"inside a daemon:\nrun it in a terminal of its own instead")
 	}
-	*tally++
-}
 
-// observe folds one frame into the meter and logs a reading when enough have
-// gone by.
-//
-// The two numbers together are what diagnoses a cable, and having them saved
-// this feature from shipping broken: an input whose noise sat at -78 dBFS was
-// being triggered by its own hiss, and the reason was visible the moment the
-// floor and the level were printed next to each other. A level barely above the
-// floor is a lead in the wrong socket or a scanner turned down; a floor pinned
-// near the top of its range is a microphone.
-//
-// Parameters:
-//   - app: the application context whose logger receives the reading
-//   - frame: the audio frame just measured
-//   - floor: the noise floor the gate has settled on, in dBFS
-func (m *meter) observe(app *appcontext.App, frame audiofeed.Frame, floor float64) {
-	if m.seen == 0 || frame.Level > m.peak {
-		m.peak = frame.Level
+	// The radio is required, and is checked before anything is opened. This
+	// command records a scanner rather than a sound card, and without the radio
+	// there is nothing to label a recording with and no way to tell the
+	// scanner's audio from a microphone in the room.
+	if app.Config.Device == "" {
+		return fmt.Errorf("%w: \"audio record\" needs the scanner as well as its audio, so that "+
+			"every recording is labelled and so that the input can be checked against the "+
+			"radio.\nName one with --device, from the PORT column of \"radiocli devices\"",
+			appcontext.ErrNoDevice)
 	}
-	m.seen++
 
-	if m.seen < meterEvery {
-		return
+	channel, err := audiofeed.ParseChannel(opts.channel)
+	if err != nil {
+		return err
 	}
-	app.Log.Debug("audio", "peak", math.Round(m.peak*10)/10, "floor", math.Round(floor*10)/10)
-	m.seen, m.peak = 0, 0
+
+	// Everything a typo can be caught by is caught before anything is opened,
+	// so a mistake costs a second rather than a night's recording, and a run
+	// that is never going to happen leaves no folder behind.
+	if err := recordings.ValidateTemplate(opts.template); err != nil {
+		return err
+	}
+
+	sample, closeSampler, err := newSampler(ctx, app)
+	if err != nil {
+		return err
+	}
+	defer closeSampler()
+
+	destination := opts.destination
+	if destination == "" {
+		destination = "recordings"
+	}
+	library, err := recordings.New(destination, opts.template)
+	if err != nil {
+		return err
+	}
+	defer library.Close()
+
+	if left, err := library.Sweep(); err == nil && len(left) > 0 {
+		app.Notef("%d recording(s) in %s were left unfinished by an earlier run and will not "+
+			"play. They are the hidden files beginning %q, and can be deleted.\n",
+			len(left), library.Dir(), ".partial-")
+	}
+
+	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
+	if err != nil {
+		return err
+	}
+	defer closeAudio()
+
+	announceRecording(app, source, library.Dir())
+	return recordLoop(ctx, app, library, frames, sample, opts)
 }

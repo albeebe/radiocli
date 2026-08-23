@@ -114,24 +114,6 @@ func newSet(app *appcontext.App) *cobra.Command {
 	}
 }
 
-// lookup finds a setting by the value this command spells it with.
-//
-// Parameters:
-//   - value: the value as it was typed, matched without regard to case
-//
-// Returns:
-//   - the setting
-//   - true if there is one by that name
-func lookup(value string) (phase, bool) {
-	value = strings.ToLower(strings.TrimSpace(value))
-	for _, p := range phases {
-		if p.value == value {
-			return p, true
-		}
-	}
-	return phase{}, false
-}
-
 // byEntry finds a setting by the scanner's own wording for it.
 //
 // Parameters:
@@ -144,6 +126,24 @@ func byEntry(entry string) (phase, bool) {
 	entry = strings.TrimSpace(entry)
 	for _, p := range phases {
 		if strings.EqualFold(p.entry, entry) {
+			return p, true
+		}
+	}
+	return phase{}, false
+}
+
+// lookup finds a setting by the value this command spells it with.
+//
+// Parameters:
+//   - value: the value as it was typed, matched without regard to case
+//
+// Returns:
+//   - the setting
+//   - true if there is one by that name
+func lookup(value string) (phase, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, p := range phases {
+		if p.value == value {
 			return p, true
 		}
 	}
@@ -192,6 +192,28 @@ func read(ctx context.Context, client *device.Scanner) (phase, error) {
 	return got, nil
 }
 
+// renderPhase writes the setting, and says what an inverted one costs.
+//
+// Parameters:
+//   - app: the application context the output is written through
+//   - p: the setting the scanner is on
+//
+// Returns:
+//   - error if the JSON could not be written
+func renderPhase(app *appcontext.App, p phase) error {
+	if app.Config.Output == appcontext.OutputJSON {
+		return render.JSON(app.Stdout, report{Phase: p.value})
+	}
+
+	app.Printf("headphone: %s\n", p.value)
+	if p.value == Invert {
+		app.Notef("\nThe two sides of the jack are inverted, so anything that combines them\n" +
+			"into one cancels most of the sound. Run \"radiocli headphone set " + InPhase +
+			"\"\nto correct it.\n")
+	}
+	return nil
+}
+
 // runReport reads the setting and renders it.
 //
 // Parameters:
@@ -216,28 +238,6 @@ func runReport(ctx context.Context, app *appcontext.App) error {
 	}
 
 	return renderPhase(app, got)
-}
-
-// renderPhase writes the setting, and says what an inverted one costs.
-//
-// Parameters:
-//   - app: the application context the output is written through
-//   - p: the setting the scanner is on
-//
-// Returns:
-//   - error if the JSON could not be written
-func renderPhase(app *appcontext.App, p phase) error {
-	if app.Config.Output == appcontext.OutputJSON {
-		return render.JSON(app.Stdout, report{Phase: p.value})
-	}
-
-	app.Printf("headphone: %s\n", p.value)
-	if p.value == Invert {
-		app.Notef("\nThe two sides of the jack are inverted, so anything that combines them\n" +
-			"into one cancels most of the sound. Run \"radiocli headphone set " + InPhase +
-			"\"\nto correct it.\n")
-	}
-	return nil
 }
 
 // runSet changes the setting and reports what the scanner holds afterwards.
