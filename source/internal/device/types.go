@@ -843,13 +843,14 @@ type MonitorList struct {
 
 // Talkgroup is the trunked talkgroup the scanner is on.
 //
-// **Unverified against hardware.** Every other element modelled here was read
-// off a real SDS150, but the radio tested is on a conventional system, which
-// never sends this one. The attribute names come from the protocol
-// specification and follow the spelling ConvFrequency uses for the same two
-// identifiers, which is the best evidence available without a trunked system to
-// point the radio at. Anything relying on these fields should confirm them
-// first, and the raw document is in ScannerInfo.XML for that.
+// The attribute names were first taken from the protocol specification,
+// following the spelling ConvFrequency uses for the same identifiers, and were
+// confirmed against hardware on 2026-08-23 when a live P25 transmission came
+// through: Name and TGID arrived spelled as modelled, with the ID carrying the
+// same "TGID:" prefix the conventional element uses. UnitID is the one field
+// still unconfirmed in its active form, because no capture has yet caught the
+// scanner naming the transmitting radio. The raw document is in
+// ScannerInfo.XML for checking it when one does.
 type Talkgroup struct {
 	// Name is the talkgroup's alpha tag.
 	Name string `xml:"Name,attr" json:"name,omitempty"`

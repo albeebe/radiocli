@@ -360,11 +360,15 @@ sound like anything.
 
 - All of this is one SDS150 on firmware 1.00.37, one cable, one sound card.
   Nothing has been checked against a second radio.
-- The unit ID fields on a digital trunked call are modelled from the
-  specification and from documents captured while the scanner was waiting, not
-  from one captured while a digital unit was actually transmitting. No digital
-  traffic came through during any watch that would have confirmed the active
-  form.
+- The unit ID on a digital trunked call has still never been seen populated.
+  The talkgroup half got its confirmation on the first night of trunked
+  traffic, and the confirmation cut both ways: the element arrived spelled as
+  modelled, carrying the same "TGID:" prefix as the conventional one, and the
+  code that should have stripped it did not, so the night's recordings were
+  labelled "TGID:10003". The stripping was tested on its own and passed; no
+  test fed a whole trunked document through and read what came out the far
+  end, which is the only place that wiring can fail. Fixed, with that exact
+  test added.
 - Whether `A_Led` follows the channel's alert colour is inference from it reading
   `Off` the whole time. I have not set an alert colour and watched it change.
 - The 640 ms gap between two speakers is a single measurement. I am using it

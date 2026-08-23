@@ -539,6 +539,82 @@ func TestSetMenuValue(t *testing.T) {
 	})
 }
 
+// TestScannerInfoReadsATrunkedTalkgroup tests the elements a trunked system
+// reports, with 100% coverage of the tidying done to them.
+//
+// The receiving document follows a real P25 capture from 2026-08-23, with the
+// names changed. It exists because the first version of the tidying cleaned
+// the conventional element's identifiers and missed the trunked element's, so
+// a real recording was labelled "TGID:10003" rather than "10003". The helper
+// that strips the prefix was fully tested on its own; what no test did was
+// hand a whole trunked document to ScannerInfo and read the result, which is
+// the only place the wiring between the two can fail.
+//
+// Coverage: 100% (2 test cases covering both trunked spellings)
+//
+// Test cases:
+//   - Receiving: the talkgroup reads as the bare number, through Heard
+//   - Waiting: the "TGID: ---" a trunked scanner writes while it scans reads
+//     as no talkgroup at all
+func TestScannerInfoReadsATrunkedTalkgroup(t *testing.T) {
+	const receiving = `<ScannerInfo Mode="Scan Mode" V_Screen="trunk_scan">` +
+		`<MonitorList Name="Full Database" Index="4294967295" ListType="FullDb" DB_Counter="6"/>` +
+		`<System Name="Cass" Index="20" Avoid="Off" SystemType="P25 Standard" Hold="Off"/>` +
+		`<Department Name="Fire" Index="21" Avoid="Off" Hold="Off"/>` +
+		`<TGID Name="Fire Dispatch" Index="4294967295" Avoid="Off" TGID="TGID:10003"` +
+		` SetSlot="Slot Any" RecSlot="Slot None" N_Tag="None" Hold="Off" P_Ch="Off" LVL="0" U_Id="UID None"/>` +
+		`<Site Name="Cass" Index="20034" Avoid="Off" Hold="Off" Mod="NFM"/>` +
+		`<SiteFrequency Freq=" 859.487500MHz" IFX="Off" SAS="NAC 8A1h" SAD="None"/>` +
+		`<Property F="Off" VOL="13" SQL="5" Sig="5" Att="Off" Rec="Off" KeyLock="Off"` +
+		` P25Status="None" Mute="Unmute" Backlight="100" A_Led="Off" Dir="Up" Rssi="-87"/>` +
+		`</ScannerInfo>`
+
+	// Verify the talkgroup arrives as the number, all the way out at Heard,
+	// which is what labels a recording.
+	t.Run("Receiving", func(t *testing.T) {
+		info, err := answeringXML(receiving).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("reading the scanner info: %v", err)
+		}
+		if info.Talkgroup.ID != "10003" {
+			t.Errorf("got talkgroup ID %q, want the scanner's prefix stripped", info.Talkgroup.ID)
+		}
+		h := info.Heard()
+		if h.Talkgroup != "10003" || h.Frequency != "" {
+			t.Errorf("got talkgroup %q and frequency %q, want the bare number and no frequency",
+				h.Talkgroup, h.Frequency)
+		}
+		if h.Channel != "Fire Dispatch" || h.Site != "Cass" {
+			t.Errorf("got channel %q at site %q, want the talkgroup's name and its site", h.Channel, h.Site)
+		}
+		if h.Unit != "" {
+			t.Errorf("got unit %q, want none: the scanner wrote UID None", h.Unit)
+		}
+	})
+
+	// Verify the spelling a trunked scanner writes while working through its
+	// lists does not read as a talkgroup. It did once: "TGID: ---" is not
+	// empty, so the raw value passed the is-this-trunked test and was reported
+	// as though the scanner had decoded it.
+	t.Run("Waiting", func(t *testing.T) {
+		waiting := strings.Replace(receiving, `Name="Fire Dispatch" `, ``, 1)
+		waiting = strings.Replace(waiting, `TGID="TGID:10003"`, `TGID="TGID: ---"`, 1)
+		waiting = strings.Replace(waiting, `Mute="Unmute"`, `Mute="Mute"`, 1)
+
+		info, err := answeringXML(waiting).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("reading the scanner info: %v", err)
+		}
+		if info.Talkgroup.ID != "" {
+			t.Errorf("got talkgroup ID %q, want empty while the scanner is only waiting", info.Talkgroup.ID)
+		}
+		h := info.Heard()
+		if h.Talkgroup != "" {
+			t.Errorf("got talkgroup %q, want none: nothing has been decoded", h.Talkgroup)
+		}
+	})
+}
+
 // TestScannerInfoReadsEitherMenuSpelling covers both spellings of the menu
 // attributes, because the scanner uses one on some screens and the other on
 // others.

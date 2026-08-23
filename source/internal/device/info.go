@@ -186,12 +186,18 @@ func (s *Scanner) ScannerInfo(ctx context.Context) (ScannerInfo, error) {
 	info.Weather = Weather{Mode: parsed.WxMode.Mode, Channel: parsed.WxChannel}
 
 	// The scanner writes a frequency with a leading space, and writes the words
-	// "TGID None" and "UID None" rather than leaving an identifier out. Both are
-	// tidied here so that everything above this sees an absent value as empty,
-	// which is the one spelling worth having.
+	// "TGID None" and "UID None" rather than leaving an identifier out. All of
+	// it is tidied here so that everything above this sees an absent value as
+	// empty and a present one as the bare number, which are the two spellings
+	// worth having. The trunked TGID element carries the same prefixed forms as
+	// the conventional one: a live P25 capture arrived as TGID="TGID:10003",
+	// and the first version of this block missed it, so a night of trunked
+	// recordings was labelled with the scanner's spelling rather than the
+	// number.
 	info.Frequency.Frequency = strings.TrimSpace(info.Frequency.Frequency)
 	info.Frequency.Talkgroup = present(info.Frequency.Talkgroup)
 	info.Frequency.UnitID = present(info.Frequency.UnitID)
+	info.Talkgroup.ID = present(info.Talkgroup.ID)
 	info.Talkgroup.UnitID = present(info.Talkgroup.UnitID)
 
 	info.XML = doc
