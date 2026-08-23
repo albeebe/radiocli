@@ -150,7 +150,7 @@ radiocli audio                    # the sound inputs on this computer
 With the cable in, you can listen:
 
 ```
-radiocli audio listen --input "USB Audio CODEC" | ffplay -f s16le -ar 48000 -ac 1 -i -
+radiocli audio feed --input "USB Audio CODEC" | ffplay -f s16le -ar 48000 -ac 1 -i -
 ```
 
 Or keep what it hears, one file per transmission:

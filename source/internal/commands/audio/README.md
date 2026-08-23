@@ -1,7 +1,7 @@
 # audio
 
 ## What this does?
-This package is the `audio` command: it lists every sound input this computer can record from, its `audio listen` subcommand writes the sound arriving on one of them to standard output, and its `audio record` subcommand keeps that sound as one file per transmission. It is how the scanner's audio gets off the radio and into a player, a recording, or another program.
+This package is the `audio` command: it lists every sound input this computer can record from, its `audio feed` subcommand writes the sound arriving on one of them to standard output, and its `audio record` subcommand keeps that sound as one file per transmission. It is how the scanner's audio gets off the radio and into a player, a recording, or another program.
 
 ## Why we use it?
 The scanner's audio does not travel over the USB cable this tool controls it with. It leaves the radio as an ordinary sound signal on a cable and arrives at whatever the other end of that cable is plugged into, so which input carries it is something only the person who ran the cable can know. Before anything can listen, there has to be a way to see the choices and name one, and that has to be possible without the operating system interrupting to ask about a microphone nobody has chosen yet.
@@ -34,14 +34,14 @@ radiocli audio
 radiocli audio -o json
 
 # Play the scanner through a daemon that is already holding the input.
-radiocli --device $SDS audio listen | ffplay -f s16le -ar 48000 -ac 1 -i -
+radiocli --device $SDS audio feed | ffplay -f s16le -ar 48000 -ac 1 -i -
 
 # Open a sound input directly, without sharing it, and record a WAV.
-radiocli audio listen --input "USB Audio CODEC" --channel left | \
+radiocli audio feed --input "USB Audio CODEC" --channel left | \
   sox -t raw -e signed -b 16 -c 1 -r 48000 - scanner.wav
 
 # Compressed, for a program rather than a player.
-radiocli --device $SDS audio listen --format opus --bitrate 48000 > stream.raw
+radiocli --device $SDS audio feed --format opus --bitrate 48000 > stream.raw
 
 # Keep what it hears: one WAV per transmission, described and indexed.
 radiocli --device $SDS audio record ~/scanner --input "USB Audio CODEC"
@@ -61,7 +61,7 @@ go test -cover ./... | grep -v "100.0%"
 ```
 
 ## Further reading
-- **Cobra commands** - The command is a `*cobra.Command` built by `New`, and `audio listen` is a subcommand attached to it, which is how every command in this tool is wired into the tree
+- **Cobra commands** - The command is a `*cobra.Command` built by `New`, and `audio feed` is a subcommand attached to it, which is how every command in this tool is wired into the tree
 - **Raw PCM audio** - Signed 16-bit little-endian mono at 48000 Hz has no header at all, so the rate, the width and the channel count have to be told to a player rather than discovered by it
 - **Opus and CELT** - The encoder here is CELT only, which is why the comfortable bitrate for a voice channel is higher than the numbers usually quoted for Opus
 - **Standard output versus standard error** - The audio owns stdout, so every message the command has for a person goes to stderr, which is what keeps a pipe into a player clean

@@ -90,7 +90,7 @@ type App struct {
 	//
 	// It exists for one command. A daemon runs commands in its own process and
 	// lends them its streams for the duration, which works because every
-	// command finishes. One does not: "audio listen" runs until it is stopped,
+	// command finishes. One does not: "audio feed" runs until it is stopped,
 	// and inside a daemon it would hold the streams forever and send every
 	// other client's output down its own socket. Since a page can type any
 	// command line, that has to be refused rather than merely not documented.

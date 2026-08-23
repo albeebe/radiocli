@@ -57,7 +57,7 @@
 // knob moves them. What they cannot prove is that anything else can read them,
 // which is the part that matters, since the decoder at the far end is somebody
 // else's and not this library's. That check is done by hand: take the packets from
-// "radiocli audio listen --format opus", put them in an Ogg container, and play
+// "radiocli audio feed --format opus", put them in an Ogg container, and play
 // the result with something that has nothing to do with this code. It was done
 // at the pinned commit and the audio came back correct.
 //
