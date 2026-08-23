@@ -951,6 +951,15 @@ type Heard struct {
 	// Modulation is how the scanner is demodulating, such as "NFM".
 	Modulation string `json:"modulation,omitempty"`
 
+	// Digital is the digital format being decoded, such as "P25" or "DMR", and
+	// is empty when the transmission is analog.
+	//
+	// It answers the question Modulation looks like it should and does not.
+	// A channel programmed Auto and carrying P25 reports its modulation as
+	// "NFM", because that is what the demodulator settled on, so nothing else
+	// here distinguishes a digital transmission from an analog one.
+	Digital string `json:"digital,omitempty"`
+
 	// Signal is the number of bars the scanner is showing, from "0" to "5".
 	Signal string `json:"signal,omitempty"`
 
@@ -1014,6 +1023,25 @@ type Property struct {
 	// which writes to the memory card inside it and has nothing to do with
 	// anything this tool records. See SetRecording.
 	Recording string `xml:"Rec,attr" json:"recording,omitempty"`
+
+	// Digital is the digital format the scanner is decoding right now, and is
+	// "None" when what is coming in is analog or when nothing is.
+	//
+	// The scanner calls the attribute P25Status, which undersells it: the
+	// values run to DMR and NXDN as well, so it is the decoder's answer rather
+	// than a question about P25 specifically. Named for what it reports.
+	//
+	// This is the only field that says whether a transmission was digital.
+	// Modulation cannot: it is the demodulator's state, so an Auto channel
+	// carrying P25 still reads "NFM".
+	//
+	// It describes the transmission rather than the channel, which is not a
+	// distinction worth drawing until it bites. Measured on 2026-08-23, one
+	// conventional frequency read "None" across 84 polls of live audio and
+	// "P25" a quarter of an hour later. A channel can carry both, so asking
+	// "is this frequency digital" has no answer and only the reading taken
+	// during a given transmission means anything.
+	Digital string `xml:"P25Status,attr" json:"digital,omitempty"`
 }
 
 // Scanner is a connected scanner, with one method per command it understands.

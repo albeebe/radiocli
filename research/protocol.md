@@ -448,7 +448,7 @@ enough.
 | `Att` | Off, On, G-Att |
 | `Rec` | Off, On |
 | `KeyLock` | Off, On |
-| `P25Status` | None, Data, P25, DMR, CAP, CON, DT3, XPT, NX9, NX4, ND9, ND4, IDS, NXD |
+| `P25Status` | None, Data, P25, DMR, CAP, CON, DT3, XPT, NX9, NX4, ND9, ND4, IDS, NXD. The only field that says whether what is coming in right now is digital, and the values run past P25 despite the name. `Mod` cannot answer it, since it reports the demodulator rather than the programming. It describes the transmission, not the channel: one conventional frequency was measured reading `None` across 84 polls of live audio and `P25` a quarter of an hour later, so a channel can carry both and only the reading taken during a given transmission means anything |
 | `Mute` | Unmute, Mute |
 | `A_Led` | Off, Blue, Red, Magenta, Green, Cyan, Yellow, White |
 | `Dir` | Up, Down |

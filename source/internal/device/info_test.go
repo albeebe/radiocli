@@ -840,3 +840,82 @@ func TestUnitIDComesFromItsOwnElement(t *testing.T) {
 		}
 	})
 }
+
+// TestDecoding tests the Decoding method with 100% coverage.
+//
+// It is the only field that says whether a transmission was digital.
+// Modulation cannot: it reports the demodulator's state, so a channel
+// programmed Auto and carrying P25 reads "NFM" exactly like an analog one.
+// Measured on 2026-08-23, a conventional analog channel and a trunked P25 call
+// differed here and nowhere else that mattered.
+//
+// Coverage: 100% (5 test cases covering every branch)
+//
+// Test cases:
+//   - P25: a digital format is reported as it was written
+//   - DMR: the values run past P25, which is why the field is not named for it
+//   - None: the scanner's word for analog becomes empty
+//   - Absent: an attribute the document never sent is empty too
+//   - Spaced: surrounding whitespace does not make "None" look like a format
+func TestDecoding(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"P25", "P25", "P25"},
+		{"DMR", "DMR", "DMR"},
+		{"None", "None", ""},
+		{"Absent", "", ""},
+		{"Spaced", "  None  ", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := (Property{Digital: c.in}).Decoding(); got != c.want {
+				t.Errorf("Decoding() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestHeardCarriesTheDigitalFormat covers the format reaching Heard, using the
+// two documents that were captured minutes apart on 2026-08-23: an analog
+// conventional channel and a trunked P25 call.
+func TestHeardCarriesTheDigitalFormat(t *testing.T) {
+	// Verify an analog conventional channel reports no format. Note the
+	// modulation says NFM on both of these, which is the whole reason this
+	// field is needed.
+	t.Run("Analog", func(t *testing.T) {
+		info, err := answeringXML(`<ScannerInfo Mode="Scan Mode">` +
+			`<ConvFrequency Name="DISPATCH" Freq=" 155.550000MHz" Mod="NFM" U_Id="UID None"/>` +
+			`<Property Sig="0" Mute="Unmute" P25Status="None"/></ScannerInfo>`).
+			ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("parsing: %v", err)
+		}
+
+		h := info.Heard()
+		if h.Digital != "" {
+			t.Errorf("Heard().Digital = %q, want it empty for analog", h.Digital)
+		}
+		if h.Modulation != "NFM" {
+			t.Errorf("Heard().Modulation = %q, want NFM regardless", h.Modulation)
+		}
+	})
+
+	// Verify a P25 call reports the format alongside the radio it came from.
+	t.Run("Digital", func(t *testing.T) {
+		info, err := answeringXML(`<ScannerInfo Mode="Trunk Scan">` +
+			`<TGID Name="Fire Dispatch" TGID="TGID:10003"/>` +
+			`<UnitID Name="UID:101" U_Id="UID:101"/>` +
+			`<Property Sig="3" Mute="Unmute" P25Status="P25"/></ScannerInfo>`).
+			ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("parsing: %v", err)
+		}
+
+		h := info.Heard()
+		if h.Digital != "P25" || h.Unit != "101" {
+			t.Errorf("Heard() gave digital %q unit %q, want \"P25\" and \"101\"", h.Digital, h.Unit)
+		}
+	})
+}

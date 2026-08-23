@@ -728,11 +728,24 @@ The `.json` file beside each recording is the same object printed by
 | `talkgroup` | string | The talkgroup number on a trunked system. Absent on a conventional system. |
 | `unit` | string | The radio heard transmitting, when the scanner decoded one. |
 | `modulation` | string | How the scanner was demodulating, such as `NFM`. |
+| `digital` | string | The digital format the transmission carried, such as `P25` or `DMR`. Absent when it was analog. |
 | `reason` | string | Why the recording ended: `hang` when the scanner stopped receiving, `split` when it reached `--max-duration`, `channel` when the scanner moved to another channel, `stopped` when you stopped the command. |
 | `samples` | number | How many times the scanner was asked what it was hearing while this was being recorded. Always present. |
 | `channels` | array of strings | Every distinct channel seen during the recording. Present only when there was more than one. |
 | `dropped` | number | Frames of audio the sound card produced that never arrived. Present only when some were lost. Each frame is 20 ms. |
 | `normalized` | boolean | The audio was scaled up after the transmission ended so its loudest sample sits just under full scale. Present unless `--normalize=false` turned that off. |
+
+**`digital` is how you tell a digital recording from an analog one.**
+`modulation` cannot answer it. It reports the demodulator's state, so a channel
+programmed `Auto` and carrying P25 is written down as `NFM` like anything else.
+The other tempting clue, whether `unit` was filled in, is absence used as
+evidence: a digital transmission the scanner joined late names no radio at all
+and looks identical to an analog one.
+
+**It is per recording, and that is the point.** One conventional police channel
+was measured carrying analog traffic and P25 traffic fifteen minutes apart, both
+labelled `NFM`. Two recordings of the same frequency can honestly disagree here,
+so the field belongs beside the audio rather than anywhere above it.
 
 **`samples` is how much the label is worth.** A transmission of any ordinary
 length is covered many times over, because the scanner is asked three times a

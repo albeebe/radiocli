@@ -135,6 +135,7 @@ Under `--output json` the command prints one object. Every field except
 | `talkgroup` | string | The talkgroup number on a trunked system. Absent on a conventional system. |
 | `unit` | string | The radio heard transmitting, when the scanner decoded one. |
 | `modulation` | string | How the scanner is demodulating, such as `NFM`. |
+| `digital` | string | The digital format being decoded, such as `P25` or `DMR`. Absent when the transmission is analog. |
 | `signal` | string | The number of signal bars, from `0` to `5`. A string because the scanner reports it as one. |
 | `rssi` | string | The received signal strength in the scanner's own units. Reads `-999` when nothing is coming in, which means the scanner has nothing to report rather than a measurement of -999. |
 | `mode` | string | What the scanner is doing, in its own words, such as `Scan Mode`. Always present. |
@@ -144,6 +145,18 @@ its audio gate at the start of a transmission and its signal reading catches up
 a moment later, so `signal` reads `0` on the first reading of a transmission
 that is already audible. Use `receiving` to tell whether something is coming in,
 and `signal` to tell how strong it is once it has.
+
+**`digital` is the field that says whether a transmission is digital.**
+`modulation` looks like it should and does not: it reports what the demodulator
+settled on, so a channel programmed `Auto` and carrying P25 reads `NFM` exactly
+like an analog one. The scanner sends its own word `None` for analog, which becomes
+an absent field here.
+
+**It describes the transmission, not the channel.** A frequency can carry both:
+one conventional police channel was measured reading `None` through several
+transmissions and `P25` a quarter of an hour later. So this answers "was what I
+just heard digital", and there is no such thing as asking whether a frequency
+is.
 
 **`unit` is empty more often than you would expect.** It is empty on every
 analog channel, because there is no unit ID to decode, and empty on a digital

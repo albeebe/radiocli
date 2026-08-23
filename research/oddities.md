@@ -650,6 +650,45 @@ rather than assumed: the check reports which area's picker it borrowed and what
 color was there, and the test sets that area to that same color and confirms
 nothing changed.
 
+### One conventional frequency carries analog and P25 traffic
+
+*2026-08-23*
+
+Merrimack police dispatch, 155.550 MHz, a plain conventional channel in a
+favorites list. Watched for five minutes while it was passing audio:
+
+```
+155.550000MHz: 291 polls on this frequency, 84 while passing audio,
+               0 carried a UnitID element
+```
+
+`P25Status="None"` throughout, and no `UnitID` element in any document. Read as
+a property of the channel, that says analog, and it is what I concluded.
+
+Fifteen minutes later, the same frequency, recorded through the ordinary path:
+
+```json
+"frequency": "155.550000MHz",
+"modulation": "NFM",
+"digital": "P25"
+```
+
+So the channel carries both. `Mod` reads `NFM` either way, because it is the
+demodulator and a decoded P25 signal leaves it there.
+
+**Why it matters.** "Is this frequency digital" is not a question with an
+answer, and any amount of sampling that treats it as one will eventually
+sample the wrong side and be confident about it. Eighty-four consecutive polls
+of live audio all said analog, which is a large enough sample to feel
+conclusive and was not. The reading only describes the transmission it was
+taken during, so it has to be recorded per transmission and cannot be cached
+against a channel.
+
+There is a second trap in it. A digital transmission with no unit id looks
+exactly like an analog one if the unit id is what you are inferring from,
+because a call the scanner joins after the grant names no radio at all. Both
+19:10 recordings above are P25 and neither carries a unit.
+
 ### The unit id is an element, not an attribute
 
 *2026-08-23*

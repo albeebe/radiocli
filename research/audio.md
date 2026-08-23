@@ -376,6 +376,10 @@ sound like anything.
   Both halves are now confirmed on live traffic: a conventional digital channel
   reported unit 101 and a P25 trunked call reported unit 100045, each read from
   the element rather than the attribute.
+- Which of the local channels are digital is not settled and may not be a
+  settled thing. 155.550 was measured analog through eighty-four consecutive
+  polls of live audio and P25 fifteen minutes later. See
+  [one conventional frequency carries analog and P25 traffic](oddities.md#one-conventional-frequency-carries-analog-and-p25-traffic).
 - Whether `A_Led` follows the channel's alert colour is inference from it reading
   `Off` the whole time. I have not set an alert colour and watched it change.
 - The 640 ms gap between two speakers is a single measurement. I am using it

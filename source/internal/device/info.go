@@ -205,6 +205,22 @@ func (s *Scanner) ScannerInfo(ctx context.Context) (ScannerInfo, error) {
 	return info, nil
 }
 
+// Decoding reports the digital format the scanner is decoding, or empty when
+// the transmission is analog.
+//
+// The scanner writes "None" rather than leaving the attribute out, in the same
+// spirit as the "UID None" the unit id uses, so absent is turned into empty
+// here and everything above sees one spelling of nothing.
+//
+// Returns:
+//   - the format, such as "P25" or "DMR", or empty for analog
+func (p Property) Decoding() string {
+	if v := strings.TrimSpace(p.Digital); v != "" && !strings.EqualFold(v, "None") {
+		return v
+	}
+	return ""
+}
+
 // Receiving reports whether a signal is actually coming in.
 //
 // The number of bars is the reading to trust. The raw strength figure is
@@ -235,6 +251,7 @@ func (i ScannerInfo) Heard() Heard {
 		Channel:    name,
 		Unit:       unit,
 		Modulation: i.Frequency.Modulation,
+		Digital:    i.Property.Decoding(),
 		Signal:     i.Property.Signal,
 		RSSI:       i.Property.RSSI,
 		Mode:       i.Mode,

@@ -198,6 +198,21 @@ type Entry struct {
 	// Modulation is how the scanner was demodulating, such as "NFM".
 	Modulation string `json:"modulation,omitempty"`
 
+	// Digital is the digital format the transmission was carrying, such as
+	// "P25" or "DMR", and is absent when it was analog.
+	//
+	// It is the only field that answers whether a recording is of a digital
+	// transmission. Modulation cannot: it reports the demodulator's state, so
+	// a channel programmed Auto and carrying P25 says "NFM" like any analog
+	// one. Without this, the only clue is whether a unit id happened to be
+	// caught, which is absence used as evidence and wrong as often as not.
+	//
+	// It is per recording rather than per channel, and that is the point. One
+	// frequency was measured carrying analog traffic and P25 traffic fifteen
+	// minutes apart, so the answer genuinely differs from one transmission to
+	// the next and nothing above a recording can be asked for it.
+	Digital string `json:"digital,omitempty"`
+
 	// Reason is why the recording ended: "hang" for the ordinary case, "split"
 	// for one that reached the maximum length, "channel" for one cut because
 	// the scanner moved, and "stopped" for one interrupted by shutting down.

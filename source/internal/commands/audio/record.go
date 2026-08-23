@@ -244,6 +244,14 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 			e.Channel, e.Frequency, e.Talkgroup = h.Channel, h.Frequency, h.Talkgroup
 			e.Modulation = h.Modulation
 		}
+
+		// Taken from wherever it appears rather than from the labelling
+		// reading, for the same reason the unit id is: the scanner reports the
+		// format once it has decoded one, which is a moment into the
+		// transmission rather than at the start of it.
+		if e.Digital == "" {
+			e.Digital = h.Digital
+		}
 		// The unit id is taken from wherever it appears rather than from the
 		// first reading, because the scanner decodes it a moment into a
 		// transmission and reports nothing there until it has.
