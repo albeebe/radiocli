@@ -286,21 +286,44 @@ func (i ScannerInfo) Tuned() (name, value, unit string) {
 	return i.Channel.Name, "", ""
 }
 
-// present turns the scanner's way of writing "there is none" into an empty
-// string.
+// present turns the scanner's several ways of writing an identifier into
+// either the identifier or nothing.
 //
-// The radio fills an unused identifier in with the words "TGID None" or
-// "UID None" rather than omitting the attribute, so anything comparing against
-// empty is quietly wrong about every frame.
+// The radio does not simply leave a talkgroup or a unit id out when it has not
+// decoded one, and it does not write them plainly when it has. Read off an
+// SDS150 on firmware 1.00.37:
+//
+//	TGID="TGID None"     conventional channel, nothing decoded
+//	TGID="TGID: ---"     trunked, waiting
+//	TGID="TGID:10003"    trunked, receiving
+//	U_Id="UID None"      nothing decoded
+//
+// So every value carries the name of the field in front of it, absence is
+// spelled two different ways depending on the mode, and the separator is a
+// space in one and a colon in the other. Anything comparing against the empty
+// string is wrong about all four, and anything stripping only the word "None"
+// reports a talkgroup of "TGID: ---" while the scanner sits there waiting.
+//
+// The active form of the unit id was not observed, since no digital traffic
+// came through while this was being written. It is handled by the same rules
+// rather than by a pattern guessed for it.
 //
 // Parameters:
 //   - value: the attribute as the scanner wrote it
 //
 // Returns:
-//   - the value, or empty if it is one of the scanner's ways of saying none
+//   - the identifier alone, or empty if the scanner has not decoded one
 func present(value string) string {
 	value = strings.TrimSpace(value)
-	if strings.HasSuffix(value, "None") {
+
+	// "TGID:10003" and "TGID: ---" both put the field name in front.
+	if _, after, found := strings.Cut(value, ":"); found {
+		value = strings.TrimSpace(after)
+	}
+
+	// "TGID None" and "UID None" say it the other way round, and a run of
+	// dashes is how the trunked side writes the same thing.
+	if value == "" || strings.HasSuffix(value, "None") || strings.Trim(value, "-") == "" {
 		return ""
 	}
 	return value

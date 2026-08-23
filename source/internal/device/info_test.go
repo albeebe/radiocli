@@ -418,6 +418,38 @@ func TestScannerInfoReadsAConventionalChannel(t *testing.T) {
 	})
 }
 
+// TestPresent tests the present function with 100% coverage.
+//
+// Every input here is a form read off an SDS150 on firmware 1.00.37, except the
+// active unit id, which no traffic came through to demonstrate while this was
+// written and which follows the same rules as the talkgroup beside it.
+//
+// The trunked spellings are the reason this exists in its current shape. A
+// version that stripped only the word "None" reported a talkgroup of
+// "TGID: ---" for as long as a trunked scanner sat waiting, and passed the
+// prefix through as part of the number when one finally arrived.
+//
+// Coverage: 100% (all branches)
+func TestPresent(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		{"conventional with nothing decoded", "TGID None", ""},
+		{"unit with nothing decoded", "UID None", ""},
+		{"trunked and waiting", "TGID: ---", ""},
+		{"trunked and receiving", "TGID:10003", "10003"},
+		{"trunked with a space", "TGID: 10003", "10003"},
+		{"a unit id", "UID:1234", "1234"},
+		{"dashes on their own", "---", ""},
+		{"nothing at all", "   ", ""},
+		{"a bare value", "10003", "10003"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := present(c.in); got != c.want {
+				t.Errorf("present(%q) is %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 // TestTuned tests the Tuned method with 100% coverage.
 //
 // Coverage: 100% (3 test cases covering all branches)

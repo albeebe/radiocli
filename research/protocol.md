@@ -275,10 +275,36 @@ carries its own `Name`, and a talkgroup arrives as `TGID`. Anything reading "the
 channel" has to look in whichever of those two turned up, and code that reads a
 `Channel` element gets an empty string forever without ever failing.
 
-**An absent identifier is written out rather than omitted.** `TGID="TGID None"`
-and `U_Id="UID None"` are how the radio says it decoded neither, so a comparison
-against the empty string is quietly wrong about every document. `Freq` also
-carries a leading space.
+**An absent identifier is written out rather than omitted, in more than one
+way.** Four forms were seen for the same two fields:
+
+```
+TGID="TGID None"     conventional channel, nothing decoded
+TGID="TGID: ---"     trunked, waiting
+TGID="TGID:10003"    trunked, receiving
+U_Id="UID None"      nothing decoded
+```
+
+Every value carries the name of the field in front of it, absence is spelled two
+different ways depending on the mode, and the separator is a space in one and a
+colon in the other. Code comparing against the empty string is wrong about all
+four, and code stripping only the word `None` reports a talkgroup of `TGID: ---`
+for as long as a trunked scanner sits waiting. `Freq` also carries a leading
+space.
+
+A trunked document, from the same radio on the full database:
+
+```xml
+<MonitorList Name="Full Database" Index="4294967295" ListType="FullDb" Q_Key="None" N_Tag="None" DB_Counter="6" />
+<TGID Index="4294967295" Avoid="Off" TGID="TGID: ---" SetSlot="Slot Any" RecSlot="Slot None" N_Tag="None" Hold="Off" P_Ch="Off" LVL="0" />
+<Site Name="Manchester" Index="20034" Avoid="Off" Q_Key="None" Hold="Off" Mod="NFM" />
+<SiteFrequency Freq=" 859.487500MHz" IFX="Off" SAS="NAC 8A1h" SAD="None" />
+```
+
+Note that the `TGID` element carries no `Name` while it is waiting, and gains
+one once the scanner stops on a talkgroup. The index of the full database, and
+of a talkgroup within it, is `4294967295`, which is the same all-ones value the
+protocol uses elsewhere to mean "not one of the numbered entries".
 
 **`Mute` opens before `Sig` catches up.** These two consecutive documents are
 the same transmission, a third of a second apart:
