@@ -354,3 +354,356 @@ sound input has a noise floor a few counts wide even with nothing plugged into
 it, so perfect digital zero means something took the audio away rather than that
 the radio is quiet. On macOS that is almost always the microphone permission
 having been refused, which otherwise presents as a cable that does not work.
+
+---
+
+# audio record
+
+Writes one file per transmission, with a description of what it is beside it,
+until you stop it. Run it when you want to keep what the scanner hears rather
+than only listen to it.
+
+## Overview
+
+`audio record` listens to the scanner and writes a separate WAV file every time
+it hears a transmission, together with a JSON file of the same name describing
+what that transmission was: the system, the department, the channel, and the
+frequency or talkgroup behind it. Every recording is also appended as one line
+to `index.jsonl` at the top of the destination, which is what makes a night's
+recordings searchable with ordinary tools rather than something to scroll
+through. It records a scanner rather than a sound card, so `--device` is
+required as well as the audio: naming the radio is what lets every file be
+labelled, and it is what lets the command check that the input really is the
+scanner rather than a microphone picking up the room. Nothing on the scanner is
+changed and no key is pressed; everything written goes under the destination
+folder, which is created if it is not there. It runs until you stop it with
+Ctrl-C, and a transmission in progress at that moment is finished properly
+rather than lost.
+
+**Where a recording starts is found in the audio, not taken from the radio.**
+The scanner tells this command what it is receiving over the USB cable, and that
+news always arrives a little after the sound itself, which is why other software
+either clips the start of every transmission or pads every file with silence to
+avoid it. This command keeps the last ten seconds of audio buffered and decides
+nothing in real time, so when the radio says it is receiving, the audio from
+before that is still there to look at. The recording then begins where the sound
+actually rose out of the noise, and ends where it fell back into it.
+
+## Usage
+
+```
+radiocli audio record [destination] [flags]
+```
+
+## Parameters
+
+| Parameter | Required | Default | Description |
+| --------- | -------- | ------- | ----------- |
+| `[destination]` | No | `recordings` | The folder to write recordings into, created if it does not exist. |
+| `--input` | No | none | Sound input to open directly. Without it the audio comes from a daemon. |
+| `--channel` | No | `auto` | Which side of the cable the scanner is on: `auto`, `left`, `right` or `mix`. |
+| `--template` | No | `{date}/{time}_{system}_{department}_{channel}` | How each recording is named, below the destination. |
+| `--hang` | No | `2s` | How long the audio must stay quiet before a transmission is called finished. |
+| `--min-duration` | No | `1s` | Discard any transmission shorter than this. |
+| `--max-duration` | No | `5m` | Split any transmission longer than this. |
+
+### `[destination]`
+
+The folder recordings are written into, created along with any parent folders if
+it is not already there. Leaving it off writes into a folder called `recordings`
+below the current directory.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner
+```
+
+### `--input`
+
+Names a sound input to open directly, as [`audio`](#audio) lists them. Without
+it, the audio comes from a `radiocli daemon` that was started with `--audio`,
+which is the way that lets several things hear the scanner at once. A sound
+input can only be open once, so passing `--input` takes it for this process
+alone and nothing else can listen while the recording runs.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --input "USB Audio CODEC"
+```
+
+### `--channel`
+
+Which side of the audio cable carries the scanner. `auto` listens to both for a
+few seconds and decides, `left` and `right` take one side and ignore the other,
+and `mix` averages the two. `auto` is right unless you know the cable. This has
+no effect when the audio comes from a daemon, because the daemon has already
+folded it.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --input "USB Audio CODEC" --channel left
+```
+
+### `--template`
+
+Sets the path each recording is written to, relative to the destination and
+without an extension. A `/` in the template creates a folder. The description
+file always takes the same name with `.json` instead of `.wav`, whatever the
+template says, so the two always travel together.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --template "{date}/{channel}/{time}"
+```
+
+The tokens are:
+
+| Token | Example | Description |
+| ----- | ------- | ----------- |
+| `{date}` | `2026-08-22` | The date the transmission started, in the computer's local time. |
+| `{time}` | `19-54-03` | The time it started, 24-hour, with hyphens because `:` is not allowed in a filename on Windows. |
+| `{datetime}` | `2026-08-22T19-54-03` | The date and time joined. |
+| `{epoch}` | `1787793243` | The start time as whole seconds since 1970. |
+| `{list}` | `Pocahontas-County` | The favorites list or database the channel was found in. |
+| `{system}` | `PUBLIC-SAFETY` | The system the channel belongs to. |
+| `{department}` | `POLICE-DEPARTMENT` | The department the channel belongs to. |
+| `{site}` | `Bald-Knob` | The trunked site. Empty on a conventional system. |
+| `{channel}` | `MARLINTON-DISPATCH` | The channel's alpha tag. |
+| `{frequency}` | `155.550000MHz` | What the scanner was tuned to on a conventional system. Empty on a trunked one. |
+| `{talkgroup}` | `24944` | The talkgroup number on a trunked system. Empty on a conventional one. |
+| `{tuned}` | `24944` | Whichever of `{talkgroup}` and `{frequency}` applies. |
+| `{unit}` | `32` | The radio heard transmitting, when the scanner decoded one. |
+| `{modulation}` | `NFM` | How the scanner was demodulating. |
+| `{duration}` | `4.8` | How long the recording is, in seconds, to one decimal place. |
+
+Six rules apply to every template:
+
+- **An unknown token is refused when the command starts**, before anything is
+  opened, and the message lists every token there is. A typo costs a second
+  rather than a night's recording.
+- **A token the scanner did not fill in disappears, along with the separator
+  next to it.** An unlabelled recording is named `19-54-03.wav`, not
+  `19-54-03___.wav`.
+- **Every value is reduced to letters, digits, dot, dash and underscore.**
+  A channel called `FIRE/EMS` becomes `FIRE-EMS` and cannot create a folder.
+- **`{{` and `}}` are a literal `{` and `}`.**
+- **Two recordings that would get the same name are numbered**, `-2`, `-3` and
+  so on. Nothing is overwritten.
+- **The path is shortened if it would be too long**, by trimming the longest
+  part of it first, so it stays under the limits Windows enforces.
+
+A template with no tokens in it is refused, because every recording would be
+given the same name.
+
+### `--hang`
+
+How long the audio must stay quiet, with the scanner no longer receiving, before
+a transmission is treated as finished. It is what stops a speaker drawing breath
+mid-sentence from becoming two recordings. Raise it if single transmissions are
+arriving as several files; lower it if separate transmissions are being joined.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --hang 4s
+```
+
+### `--min-duration`
+
+The shortest recording worth keeping. A transmission shorter than this is
+discarded before any file is created, so nothing has to be cleaned up
+afterwards. It exists because a squelch tail or a control channel burst is not
+something anybody wants to listen to.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --min-duration 2s
+```
+
+### `--max-duration`
+
+How long one recording may run before it is split and a new one started. The
+audio carries on across the split with nothing lost at the join. It exists so a
+stuck microphone cannot produce one enormous file.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --max-duration 2m
+```
+
+### Global flags that change this command
+
+- `--device` is **required**, and names the scanner. Get the value from the
+  `port` column of [`devices`](devices.md). Without it the command refuses to
+  start, because it would have nothing to label recordings with and no way to
+  check the input against the radio.
+- `-o`, `--output` selects whether each finished recording is printed as a line
+  or as a JSON object.
+- `-v`, `--verbose` prints a level reading to stderr every two seconds, which is
+  what diagnoses a cable:
+
+  ```
+  time=2026-08-22T22:47:07.448-04:00 level=DEBUG msg=audio peak=-74.7 floor=-79
+  ```
+
+  `floor` is where the recorder has measured the noise on the input, and `peak`
+  is the loudest audio in the last two seconds, both in dBFS. A transmission
+  reads about 40 dB above the floor. A `peak` that never rises more than a few
+  decibels above `floor` means nothing is arriving: check the cable and the
+  scanner's volume. A `floor` pinned at `-30` means the input is not a squelched
+  scanner at all.
+
+`--pace` has no effect here. This command presses no keys.
+
+## Examples
+
+Recording with the audio cable plugged straight into this computer:
+
+```
+$ radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --input "USB Audio CODEC"
+Recording from "USB Audio CODEC" into /Users/you/scanner
+One file per transmission, with a description beside it. Press Ctrl-C to stop.
+19:54:03    4.8s  PUBLIC SAFETY POLICE DEPARTMENT MARLINTON DISPATCH
+19:54:31    2.1s  PUBLIC SAFETY FIRE RESCUE FIREGROUND 2
+```
+
+Each line is one finished transmission: when it started, how long it is, and
+what it was.
+
+Recording while a daemon holds both the scanner and its audio, so other commands
+can still use the radio:
+
+```
+$ radiocli daemon --device /dev/cu.usbmodem00000000000011 --audio "USB Audio CODEC" &
+$ radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner
+Recording from "USB Audio CODEC" into /Users/you/scanner
+One file per transmission, with a description beside it. Press Ctrl-C to stop.
+```
+
+The readings that label each recording go through the daemon without taking a
+turn, so they never make anything else wait. See [`daemon`](daemon.md).
+
+Printing each transmission as JSON, which is the form to read from a script or
+an agent:
+
+```
+$ radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner -o json
+{
+  "file": "2026-08-22/19-54-03_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav",
+  "start": "2026-08-22T19:54:03.390720-04:00",
+  "end": "2026-08-22T19:54:08.190720-04:00",
+  "duration": 4.8,
+  "list": "Pocahontas County",
+  "system": "PUBLIC SAFETY",
+  "department": "POLICE DEPARTMENT",
+  "channel": "MARLINTON DISPATCH",
+  "frequency": "155.550000MHz",
+  "modulation": "NFM",
+  "reason": "hang",
+  "samples": 14
+}
+```
+
+Finding every recording of one channel afterwards:
+
+```
+$ jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' ~/scanner/index.jsonl
+2026-08-22/19-54-03_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav
+2026-08-22/20-11-47_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav
+```
+
+Finding everything over ten seconds long from one evening:
+
+```
+$ jq -r 'select(.duration > 10 and (.start | startswith("2026-08-22T20"))) | "\(.duration)s \(.channel)"' ~/scanner/index.jsonl
+14.2s FIREGROUND 2
+```
+
+## Output
+
+Recordings go to the destination folder. One line per finished transmission goes
+to stdout. Everything else, including the opening message and any warning about
+the input, goes to stderr, so `2>/dev/null` leaves stdout holding only the
+transmissions.
+
+The destination looks like this:
+
+```
+scanner/
+  index.jsonl
+  2026-08-22/
+    19-54-03_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav
+    19-54-03_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.json
+```
+
+Every WAV is signed 16-bit little-endian mono at 48000 Hz, which any player
+opens. There is no compressed option: a recording is an archive, and WAV has no
+codec in it to fall out of date.
+
+`index.jsonl` holds one JSON object per line, one per recording, appended as each
+finishes. Each line is the same object as the `.json` file beside the audio, and
+the same object printed by `--output json`, so there is one shape to learn.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `file` | string | Where the audio is, relative to the destination. Always present. |
+| `start` | string | When the audio began, RFC 3339 with the computer's offset. Always present. |
+| `end` | string | When the audio ended. Always present. |
+| `duration` | number | How long the audio is, in seconds, measured from the file rather than from the clock. Always present. |
+| `list` | string | The favorites list or database the channel was found in. |
+| `system` | string | The system the channel belongs to. |
+| `department` | string | The department the channel belongs to. |
+| `site` | string | The trunked site. Absent on a conventional system. |
+| `channel` | string | The channel's alpha tag. |
+| `frequency` | string | What the scanner was tuned to on a conventional system, carrying its unit. Absent on a trunked system. |
+| `talkgroup` | string | The talkgroup number on a trunked system. Absent on a conventional system. |
+| `unit` | string | The radio heard transmitting, when the scanner decoded one. |
+| `modulation` | string | How the scanner was demodulating, such as `NFM`. |
+| `reason` | string | Why the recording ended: `hang` when the channel went quiet, `split` when it reached `--max-duration`, `channel` when the scanner moved to another channel, `stopped` when you stopped the command. |
+| `samples` | number | How many times the scanner was asked what it was hearing while this was being recorded. Always present. |
+| `channels` | array of strings | Every distinct channel seen during the recording. Present only when there was more than one. |
+| `dropped` | number | Frames of audio the sound card produced that never arrived. Present only when some were lost. Each frame is 20 ms. |
+
+**`samples` is how much the label is worth.** A transmission of any ordinary
+length is covered many times over, because the scanner is asked three times a
+second. A `samples` of `0` means the transmission was over before the scanner
+could be asked once, and the fields naming a channel are left empty rather than
+guessed at.
+
+**A recording is never labelled from a guess.** If the scanner never named a
+channel, the channel fields are absent from the JSON and the recording is named
+from its timestamp alone.
+
+## Errors
+
+| Error | Meaning | Fix |
+| ----- | ------- | --- |
+| `error: no scanner named: "audio record" needs the scanner as well as its audio, ...` | `--device` was not given. | Pass `--device` with the port from [`devices`](devices.md). |
+| `error: invalid naming template: "..." is not a token: the tokens are ...` | `--template` used a token that does not exist. | Use one of the tokens listed in the message. |
+| `error: invalid naming template: "..." has a "{" that is never closed` | A brace in `--template` was left open. | Close it, or write `{{` for a literal brace. |
+| `error: invalid naming template: "..." has no tokens in it, so every recording would be given the same name` | `--template` was plain text. | Add at least one token, such as `{time}`. |
+| `error: no radiocli daemon is running for this scanner. ...` | No `--input` was given and nothing is holding this scanner's sound input. | Start a daemon with `--audio`, or pass `--input`. |
+| `error: no sound input by that name: "..."` | `--input` named something not attached. | Run [`radiocli audio`](#audio) to see the names. |
+| `error: "audio record" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. |
+| `error: the scanner stopped answering, so recording has stopped: ...` | The scanner was unplugged or switched off while recording. | Reconnect it and start again. The transmission in progress is written out before the command exits. |
+| `error: <port> is in use by another radiocli` | Another invocation has the scanner and no daemon is sharing it. | Wait for it, or start a [`daemon`](daemon.md). |
+
+Two warnings are printed to stderr rather than stopping the recording, because
+each means the audio input is probably not the scanner. Both wait until the
+disagreement has lasted half a minute, since the radio and the sound card never
+agree to the millisecond at the edges of a transmission:
+
+```
+The scanner says it is receiving and nothing is arriving on the audio input.
+Check the cable is in the scanner's headphone or record socket and in the input
+you named, and check the scanner's volume is not at zero.
+```
+
+```
+Sound is arriving while the scanner says it is receiving nothing.
+The input named is probably not the scanner. Run "radiocli audio" to see what
+else this computer can record from.
+```
+
+If an earlier run was killed part way through a transmission, this is printed
+when the next one starts:
+
+```
+1 recording(s) in /Users/you/scanner were left unfinished by an earlier run and will not play. They are the hidden files beginning ".partial-", and can be deleted.
+```
+
+They are reported rather than deleted. A recording interrupted this way has an
+incomplete header, so nothing will play it, but deleting somebody's files
+without being asked is not this command's decision.

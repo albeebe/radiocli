@@ -95,18 +95,20 @@ func TestDownmixOneSideKeepsItsLevel(t *testing.T) {
 	}
 }
 
-func TestLevelOf(t *testing.T) {
+// TestLevelOfAfterDownmix checks that a frame measures correctly once it has
+// been folded to mono, which is the only form LevelOf is ever given.
+func TestLevelOfAfterDownmix(t *testing.T) {
 	mono := make([]byte, MonoFrameBytes)
 
 	downmix(stereoFrame(0, 0), mono, ChannelMix)
-	if got := levelOf(mono); got != quietest {
+	if got := LevelOf(mono); got != quietest {
 		t.Errorf("silence measured %.1f dBFS, want %.1f", got, quietest)
 	}
 
 	// A full-scale sine is 3 dB below full scale as an RMS measurement, which
 	// is the number to expect rather than 0.
 	downmix(stereoTone(32767, 32767), mono, ChannelMix)
-	if got := levelOf(mono); got < -4 || got > -2 {
+	if got := LevelOf(mono); got < -4 || got > -2 {
 		t.Errorf("a full-scale tone measured %.1f dBFS, want about -3", got)
 	}
 }
@@ -346,7 +348,7 @@ func Test_decide(t *testing.T) {
 	})
 }
 
-// Test_levelOf tests the levelOf function with 100% coverage.
+// TestLevelOf tests the LevelOf function with 100% coverage.
 //
 // Coverage: 100% (3 test cases covering all branches)
 //
@@ -354,11 +356,11 @@ func Test_decide(t *testing.T) {
 //   - NoSamples: a frame with nothing in it at all reads as silence
 //   - Silence: a frame of zeroes reads as silence
 //   - Tone: a full-scale tone reads about 3 dB below full scale
-func Test_levelOf(t *testing.T) {
+func TestLevelOf(t *testing.T) {
 
 	// Verify that a frame with nothing in it at all reads as silence.
 	t.Run("NoSamples", func(t *testing.T) {
-		if got := levelOf(nil); got != quietest {
+		if got := LevelOf(nil); got != quietest {
 			t.Errorf("an empty frame measured %.1f dBFS, want %.1f", got, quietest)
 		}
 	})
@@ -366,7 +368,7 @@ func Test_levelOf(t *testing.T) {
 	// Verify that a frame of zeroes reads as silence.
 	t.Run("Silence", func(t *testing.T) {
 		mono := make([]byte, MonoFrameBytes)
-		if got := levelOf(mono); got != quietest {
+		if got := LevelOf(mono); got != quietest {
 			t.Errorf("silence measured %.1f dBFS, want %.1f", got, quietest)
 		}
 	})
@@ -376,7 +378,7 @@ func Test_levelOf(t *testing.T) {
 		mono := make([]byte, MonoFrameBytes)
 		downmix(stereoTone(32767, 32767), mono, ChannelMix)
 
-		if got := levelOf(mono); got < -4 || got > -2 {
+		if got := LevelOf(mono); got < -4 || got > -2 {
 			t.Errorf("a full-scale tone measured %.1f dBFS, want about -3", got)
 		}
 	})

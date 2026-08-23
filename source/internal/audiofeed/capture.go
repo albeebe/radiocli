@@ -178,7 +178,7 @@ func (p *pump) cut(seq uint32, now time.Time) {
 	}
 
 	downmix(p.stereo, p.mono, mode)
-	level := levelOf(p.mono)
+	level := LevelOf(p.mono)
 
 	// Fresh for each frame. See Frame.PCM for why this is not pooled.
 	pcm := make([]byte, MonoFrameBytes)

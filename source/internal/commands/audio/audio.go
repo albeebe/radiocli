@@ -28,7 +28,8 @@ import (
 //     writes its output through
 //
 // Returns:
-//   - the "audio" command, with "audio listen" already attached to it
+//   - the "audio" command, with "audio listen" and "audio record" already
+//     attached to it
 func New(app *appcontext.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audio",
@@ -38,14 +39,15 @@ func New(app *appcontext.App) *cobra.Command {
 			"so which input carries it is something only you can know.\n\n" +
 			"It only looks. Nothing here opens an input, which is why it never asks for\n" +
 			"permission to use the microphone.\n\n" +
-			"Run \"radiocli audio listen\" to record from one.",
+			"Run \"radiocli audio listen\" to hear one, or \"radiocli audio record\" to\n" +
+			"record the scanner's transmissions to files.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(app)
 		},
 	}
 
-	cmd.AddCommand(newListen(app))
+	cmd.AddCommand(newListen(app), newRecord(app))
 	return cmd
 }
 

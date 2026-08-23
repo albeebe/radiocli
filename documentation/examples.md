@@ -137,6 +137,49 @@ $ radiocli tune 1030kHz
 error: the scanner cannot receive 1.0300 MHz: it covers 25.0000 MHz to 512.0000 MHz, ...
 ```
 
+## Hearing it, and keeping what it hears
+
+The USB cable carries commands, not sound. To hear the scanner on the computer,
+run an audio cable from its headphone or record socket into an input, then find
+out what that input is called:
+
+```
+radiocli audio                    # the sound inputs on this computer
+```
+
+With the cable in, you can listen:
+
+```
+radiocli audio listen --input "USB Audio CODEC" | ffplay -f s16le -ar 48000 -ac 1 -i -
+```
+
+Or keep what it hears, one file per transmission:
+
+```
+radiocli --device $SDS audio record ~/scanner --input "USB Audio CODEC"
+```
+
+That writes a WAV every time the scanner stops on something, with a JSON file
+beside it naming the system, department, channel and frequency. It needs
+`--device` as well as the audio, because that is what labels every recording and
+what lets it warn you when the input turns out not to be the scanner.
+
+Everything recorded is also listed in one file, so a night of traffic is
+searchable afterwards:
+
+```
+jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' ~/scanner/index.jsonl
+jq -r 'select(.duration > 10) | "\(.duration)s \(.channel)"' ~/scanner/index.jsonl
+```
+
+To listen and record at the same time, or to keep using the scanner while a
+recording runs, start a daemon holding both and leave `--input` off:
+
+```
+radiocli daemon --device $SDS --audio "USB Audio CODEC" &
+radiocli --device $SDS audio record ~/scanner
+```
+
 ## Listening to the weather
 
 ```

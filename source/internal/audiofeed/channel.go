@@ -137,19 +137,25 @@ func downmix(stereo, mono []byte, mode string) {
 	}
 }
 
-// levelOf measures one frame of mono, in dBFS.
+// LevelOf measures one frame of mono, in dBFS.
 //
-// Decibels here rather than sample units because the only thing that reads this
-// is a person: a meter on a page, and the level a gate will one day be set
-// against. Both of those are naturally spoken in decibels, and neither cares
-// about the ratio arithmetic rmsPair exists for.
+// Decibels here rather than sample units because what reads this is either a
+// person or a gate: a meter on a page, and the level a transmission is judged
+// against. Both are naturally spoken in decibels, and neither cares about the
+// ratio arithmetic rmsPair exists for.
+//
+// It is exported because audio taken from a daemon arrives as samples with no
+// level attached, and whatever measures it there has to get the same answer as
+// the capture would. Two copies of this arithmetic would be two definitions of
+// how loud a frame is, and a gate tuned against one of them would behave
+// differently depending on where its audio came from.
 //
 // Parameters:
 //   - mono: one frame of mono samples
 //
 // Returns:
-//   - the frame's RMS level in dBFS, or quietest for an empty frame
-func levelOf(mono []byte) float64 {
+//   - the frame's RMS level in dBFS, or the quietest value for an empty frame
+func LevelOf(mono []byte) float64 {
 	var sum float64
 	samples := len(mono) / 2
 

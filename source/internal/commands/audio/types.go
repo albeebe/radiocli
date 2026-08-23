@@ -5,8 +5,14 @@
 package audio
 
 import (
+	"time"
+
+	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
+	"github.com/albeebe/radiocli/internal/audiogate"
 	"github.com/albeebe/radiocli/internal/audioin"
+	"github.com/albeebe/radiocli/internal/device"
+	"github.com/albeebe/radiocli/internal/recordings"
 )
 
 // defaultBitrate is what --format opus uses unless told otherwise.
@@ -66,4 +72,97 @@ type listenOptions struct {
 	format  string // Audio format to write, as --format gave it
 	bitrate int    // Bits per second, for --format opus
 	channel string // Which side of the cable the scanner is on, as --channel gave it
+}
+
+// recordQueue is how many frames may be waiting for the recorder before the
+// oldest are dropped.
+//
+// Two seconds, which is generous, because what is on the other end of this is a
+// disk rather than a person. A write that stalls for a moment should be caught
+// up with rather than punched a hole in the recording, and the gate reports the
+// hole either way if one happens.
+const recordQueue = 2000 / audiofeed.FrameMS
+
+// samplePeriod is how often the scanner is asked what it is hearing while a
+// recording is running.
+//
+// Three times a second. It does not need to be fast, and that is the point of
+// the design rather than a compromise: the audio is buffered, so the boundaries
+// of a recording never depend on when the radio was asked. A sample only has to
+// land somewhere inside a transmission to identify it, and at this rate a
+// transmission of any length worth keeping is covered many times over.
+const samplePeriod = 333 * time.Millisecond
+
+// The mismatch check: how much disagreement between the radio and the sound
+// card is enough to say the input is not the scanner.
+const (
+	// mismatchLimit is how many times the two must disagree before it is
+	// mentioned. High enough that the ordinary overlap at the edges of a
+	// transmission cannot reach it, since the radio and the audio are never
+	// going to agree to the millisecond.
+	mismatchLimit = 150
+
+	// mismatchWindow is how long one kind of disagreement must persist to
+	// count as continuous rather than momentary.
+	mismatchWindow = 30 * time.Second
+)
+
+// recordOptions is what the flags asked for.
+type recordOptions struct {
+	destination string        // Where recordings are written
+	input       string        // Sound input to open directly, empty to take the audio from a daemon
+	channel     string        // Which side of the cable the scanner is on, as --channel gave it
+	template    string        // How each recording is named, as --template gave it
+	hang        time.Duration // Quiet time before a transmission is called finished
+	minDuration time.Duration // Shortest recording worth keeping
+	maxDuration time.Duration // Longest a recording may run before it is split
+}
+
+// mismatchMargin is how far above the noise floor the mismatch check counts a
+// frame as carrying sound.
+//
+// Wider than the gate's own margin on purpose. This is not deciding what to
+// record, it is deciding whether to tell somebody their cable is wrong, and a
+// false accusation is worse than a slow one.
+const mismatchMargin = 12.0
+
+// meterEvery is how many frames go by between level readings under --verbose.
+//
+// About one every two seconds. Fast enough to watch somebody move a volume
+// knob, slow enough that a night of it is readable.
+const meterEvery = 2000 / audiofeed.FrameMS
+
+// meter reports how loud the audio is against where the noise floor sits, so a
+// cable problem can be seen rather than guessed at.
+type meter struct {
+	// seen is how many frames have gone by since the last reading, and peak is
+	// the loudest of them.
+	seen int
+	peak float64
+}
+
+// recorder is the state one run of "audio record" carries: what it is writing
+// into, the gate deciding where transmissions begin and end, the recording in
+// progress, and what the scanner has said while it has been open.
+//
+// It is a type rather than a handful of variables threaded through the loop
+// because the recording in progress is written by one path and closed by
+// another, and passing a pointer to a pointer between them was the shape that
+// made an abandoned file easy to leak.
+type recorder struct {
+	// app is where a finished recording is reported.
+	app *appcontext.App
+
+	// library is where recordings are filed.
+	library *recordings.Library
+
+	// gate decides where each transmission begins and ends.
+	gate *audiogate.Gate
+
+	// open is the recording being written, nil when there is none.
+	open *recordings.Recording
+
+	// seen is every reading of the radio taken while the open recording has
+	// been running, and is what labels it when it ends.
+	seen []device.Heard
 }

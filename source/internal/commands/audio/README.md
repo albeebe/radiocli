@@ -1,7 +1,7 @@
 # audio
 
 ## What this does?
-This package is the `audio` command: it lists every sound input this computer can record from, and its `audio listen` subcommand writes the sound arriving on one of them to standard output. It is how the scanner's audio gets off the radio and into a player, a recording, or another program.
+This package is the `audio` command: it lists every sound input this computer can record from, its `audio listen` subcommand writes the sound arriving on one of them to standard output, and its `audio record` subcommand keeps that sound as one file per transmission. It is how the scanner's audio gets off the radio and into a player, a recording, or another program.
 
 ## Why we use it?
 The scanner's audio does not travel over the USB cable this tool controls it with. It leaves the radio as an ordinary sound signal on a cable and arrives at whatever the other end of that cable is plugged into, so which input carries it is something only the person who ran the cable can know. Before anything can listen, there has to be a way to see the choices and name one, and that has to be possible without the operating system interrupting to ask about a microphone nobody has chosen yet.
@@ -16,6 +16,15 @@ var commands = []func(*appcontext.App) *cobra.Command{
 	audio.New,
 }
 ```
+
+`audio record` is the third verb, and it is a different kind of thing from the
+other two. Listing and listening are about the sound card; recording is about
+the scanner, so it is the one subcommand here that requires `--device`. That is
+not an inconvenience to be worked around, it is what the feature is: naming the
+radio is what lets every file be labelled with the channel it came from, and it
+is what makes it possible to notice that the input is not the scanner at all.
+The rest of it lives a layer down, in `audiogate` for deciding where a
+transmission begins and ends, and in `recordings` for filing the result.
 
 ```bash
 # What can this computer record from?
@@ -33,6 +42,12 @@ radiocli audio listen --input "USB Audio CODEC" --channel left | \
 
 # Compressed, for a program rather than a player.
 radiocli --device $SDS audio listen --format opus --bitrate 48000 > stream.raw
+
+# Keep what it hears: one WAV per transmission, described and indexed.
+radiocli --device $SDS audio record ~/scanner --input "USB Audio CODEC"
+
+# The same, as a live feed of labelled transmissions for an agent.
+radiocli --device $SDS audio record ~/scanner -o json
 ```
 
 ### Testing

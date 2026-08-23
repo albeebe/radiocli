@@ -65,7 +65,20 @@ var (
 		"value passed as --pace to every command (default: whatever the tool chooses)")
 	port = flag.String("port", "",
 		"serial port of the scanner to test against (default: whichever one is attached)")
+	audioInput = flag.String("audio", "",
+		"sound input the scanner's audio is cabled into, as \"radiocli audio\" names it "+
+			"(default: skip the tests that need to hear the scanner)")
 )
+
+// recordFor is how long the recorder is left running by the test that exercises
+// it.
+//
+// It is a compromise with nothing to optimise. A scanner on a quiet channel may
+// transmit nothing at all in any window, so the test is written to pass on
+// having heard nothing rather than to wait for traffic, and this is simply long
+// enough to catch something on a busy evening without holding up a suite that
+// otherwise takes a couple of minutes.
+const recordFor = 20 * time.Second
 
 // commandTimeout caps a single run of the tool. It is generous because it has
 // to cover the slowest thing the tool does: "location gps --wait" sits through
@@ -467,6 +480,61 @@ func mustFail(t *testing.T, want string, args ...string) result {
 		t.Errorf("radiocli %s reported %q, wanted it to mention %q",
 			strings.Join(args, " "), firstLine(res.stderr), want)
 	}
+	return res
+}
+
+// runFor runs a command that does not end on its own, stops it after d the way
+// a person would, and reports what it produced.
+//
+// Interrupting is how commands like "audio record" are meant to end, so the
+// signal is the ordinary path rather than a way of giving up on a hung command.
+// Anything that ignores it is killed after a grace period and reported as a
+// failure, because a command that will not stop is a defect in its own right.
+func runFor(t *testing.T, d time.Duration, args ...string) result {
+	t.Helper()
+
+	full := []string{"--config", harness.config}
+	if *pace != "" {
+		full = append(full, "--pace", *pace)
+	}
+	full = append(full, args...)
+
+	var stdout, stderr strings.Builder
+	cmd := exec.Command(harness.binary, full...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	started := time.Now()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting %q: %v", "radiocli "+strings.Join(args, " "), err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	time.Sleep(d)
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("stopping %q: %v", "radiocli "+strings.Join(args, " "), err)
+	}
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(15 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("radiocli %s did not stop when it was interrupted", strings.Join(args, " "))
+	}
+
+	res := result{stdout: stdout.String(), stderr: stderr.String(), took: time.Since(started)}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		res.code = exit.ExitCode()
+	} else if err != nil {
+		t.Fatalf("running %q: %v", "radiocli "+strings.Join(args, " "), err)
+	}
+
+	t.Logf("radiocli %s (%d, %s)", strings.Join(args, " "), res.code, res.took.Round(time.Millisecond))
 	return res
 }
 
