@@ -368,8 +368,7 @@ than only listen to it.
 `audio record` listens to the scanner and writes a separate WAV file every time
 it hears a transmission, together with a JSON file of the same name describing
 what that transmission was: the system, the department, the channel, and the
-frequency or talkgroup behind it. Every recording is also appended as one line
-to `index.jsonl` at the top of the destination, which is what makes a night's
+frequency or talkgroup behind it. Those descriptions are what make a night's
 recordings searchable with ordinary tools rather than something to scroll
 through. It records a scanner rather than a sound card, so `--device` is
 required as well as the audio: naming the radio is what lets every file be
@@ -633,7 +632,7 @@ $ radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner -o jso
 Finding every recording of one channel afterwards:
 
 ```
-$ jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' ~/scanner/index.jsonl
+$ find ~/scanner -name '*.json' -exec jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' {} +
 2026-08-22/19-54-03_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav
 2026-08-22/20-11-47_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav
 ```
@@ -641,7 +640,7 @@ $ jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' ~/scanner/index.jsonl
 Finding everything over ten seconds long from one evening:
 
 ```
-$ jq -r 'select(.duration > 10 and (.start | startswith("2026-08-22T20"))) | "\(.duration)s \(.channel)"' ~/scanner/index.jsonl
+$ find ~/scanner -name '*.json' -exec jq -r 'select(.duration > 10 and (.start | startswith("2026-08-22T20"))) | "\(.duration)s \(.channel)"' {} +
 14.2s FIREGROUND 2
 ```
 
@@ -656,7 +655,6 @@ The destination looks like this:
 
 ```
 scanner/
-  index.jsonl
   2026-08-22/
     19-54-03_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav
     19-54-03_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.json
@@ -666,9 +664,8 @@ Every WAV is signed 16-bit little-endian mono at 48000 Hz, which any player
 opens. There is no compressed option: a recording is an archive, and WAV has no
 codec in it to fall out of date.
 
-`index.jsonl` holds one JSON object per line, one per recording, appended as each
-finishes. Each line is the same object as the `.json` file beside the audio, and
-the same object printed by `--output json`, so there is one shape to learn.
+The `.json` file beside each recording is the same object printed by
+`--output json`, so there is one shape to learn.
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |

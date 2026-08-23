@@ -97,20 +97,33 @@ func TestAudioRecordWritesRecordings(t *testing.T) {
 		t.Errorf("stderr never named the input it was recording from: %s", res.stderr)
 	}
 
-	// The index is created whether or not anything was heard, so it is the one
-	// thing that must be there.
-	index := filepath.Join(dir, "index.jsonl")
-	raw, err := os.ReadFile(index)
-	if err != nil {
-		t.Fatalf("no index was written: %v", err)
+	// The destination is prepared whether or not anything was heard, so it is
+	// the one thing that must be there.
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("the destination was not prepared: %v", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) == 1 && lines[0] == "" {
+	// Every recording is described by a JSON file beside its audio, so the
+	// sidecars are the listing of what the run caught.
+	var sidecars []string
+	if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".json") {
+			sidecars = append(sidecars, path)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("looking through %s: %v", dir, err)
+	}
+	if len(sidecars) == 0 {
 		t.Skip("nothing was transmitted while the recorder was running")
 	}
 
-	for i, line := range lines {
+	for i, path := range sidecars {
+		line, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+
 		var e struct {
 			File     string  `json:"file"`
 			Start    string  `json:"start"`
@@ -120,48 +133,48 @@ func TestAudioRecordWritesRecordings(t *testing.T) {
 			Reason   string  `json:"reason"`
 			Samples  int     `json:"samples"`
 		}
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("line %d of the index is not JSON: %v\n%s", i+1, err, line)
+		if err := json.Unmarshal(line, &e); err != nil {
+			t.Fatalf("%s is not JSON: %v\n%s", path, err, line)
 		}
 
 		if e.File == "" || e.Start == "" || e.End == "" {
-			t.Errorf("line %d is missing a field every recording has: %+v", i+1, e)
+			t.Errorf("recording %d is missing a field every recording has: %+v", i+1, e)
 		}
 		if e.Duration <= 0 {
-			t.Errorf("line %d has a duration of %v", i+1, e.Duration)
+			t.Errorf("recording %d has a duration of %v", i+1, e.Duration)
 		}
 		if e.Reason == "" {
-			t.Errorf("line %d does not say why it ended: %+v", i+1, e)
+			t.Errorf("recording %d does not say why it ended: %+v", i+1, e)
 		}
 
 		// The audio and its description sit beside each other under the same
-		// name, whatever the template said.
+		// name, whatever the template said, and File points at the audio from
+		// the top of the destination.
 		audio := filepath.Join(dir, e.File)
 		if _, err := os.Stat(audio); err != nil {
-			t.Errorf("the audio for line %d is not there: %v", i+1, err)
+			t.Errorf("the audio for recording %d is not there: %v", i+1, err)
 		}
-		sidecar := strings.TrimSuffix(audio, ".wav") + ".json"
-		if _, err := os.Stat(sidecar); err != nil {
-			t.Errorf("the description for line %d is not there: %v", i+1, err)
+		if want := strings.TrimSuffix(audio, ".wav") + ".json"; want != path {
+			t.Errorf("%s describes %s, want the audio beside it", path, want)
 		}
 
 		// A WAV nothing will play is the failure worth catching, so the header
 		// is checked rather than only the file's existence.
 		header, err := os.ReadFile(audio)
 		if err != nil || len(header) < 44 {
-			t.Fatalf("the audio for line %d is too short to be a WAV: %v", i+1, err)
+			t.Fatalf("the audio for recording %d is too short to be a WAV: %v", i+1, err)
 		}
 		if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
-			t.Errorf("the audio for line %d is not a WAV", i+1)
+			t.Errorf("the audio for recording %d is not a WAV", i+1)
 		}
 		if len(header) == 44 {
-			t.Errorf("the audio for line %d is a header with no audio in it", i+1)
+			t.Errorf("the audio for recording %d is a header with no audio in it", i+1)
 		}
 
 		// A recording the scanner named has to have been asked at least once,
 		// and one it did not name must not have been given a channel anyway.
 		if e.Channel != "" && e.Samples == 0 {
-			t.Errorf("line %d names a channel with no readings behind it: %+v", i+1, e)
+			t.Errorf("recording %d names a channel with no readings behind it: %+v", i+1, e)
 		}
 	}
 }

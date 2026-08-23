@@ -51,9 +51,8 @@ func newRecord(app *appcontext.App) *cobra.Command {
 			"the radio said it was receiving. Several seconds are kept buffered, so news\n" +
 			"arriving late cannot clip the beginning of a transmission and nothing is\n" +
 			"padded with silence to make sure it does not.\n\n" +
-			"Each recording is a WAV, with a JSON file of the same name beside it, and\n" +
-			"every one is appended to index.jsonl at the top of the destination so the\n" +
-			"whole collection can be searched with jq.",
+			"Each recording is a WAV, with a JSON file of the same name beside it\n" +
+			"saying what it is: when it was, which channel, and how long it ran.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
@@ -707,7 +706,6 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	if err != nil {
 		return err
 	}
-	defer library.Close()
 
 	if left, err := library.Sweep(); err == nil && len(left) > 0 {
 		app.Notef("%d recording(s) in %s were left unfinished by an earlier run and will not "+

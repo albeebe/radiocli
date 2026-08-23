@@ -164,12 +164,12 @@ beside it naming the system, department, channel and frequency. It needs
 `--device` as well as the audio, because that is what labels every recording and
 what lets it warn you when the input turns out not to be the scanner.
 
-Everything recorded is also listed in one file, so a night of traffic is
-searchable afterwards:
+Each of those JSON files describes one recording, so a night of traffic is
+searchable afterwards with nothing to install:
 
 ```
-jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' ~/scanner/index.jsonl
-jq -r 'select(.duration > 10) | "\(.duration)s \(.channel)"' ~/scanner/index.jsonl
+find ~/scanner -name '*.json' -exec jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' {} +
+find ~/scanner -name '*.json' -exec jq -r 'select(.duration > 10) | "\(.duration)s \(.channel)"' {} +
 ```
 
 If recordings sound thin, hollow, or unexpectedly quiet, the scanner's headphone

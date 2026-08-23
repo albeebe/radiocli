@@ -5,10 +5,8 @@
 package recordings
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,7 +92,6 @@ func library(t *testing.T, naming string) (*Library, string) {
 	if err != nil {
 		t.Fatalf("opening the library: %v", err)
 	}
-	t.Cleanup(func() { _ = l.Close() })
 	return l, dir
 }
 
@@ -154,7 +151,7 @@ func TestNewChecksTheTemplateBeforeAnythingElse(t *testing.T) {
 }
 
 // TestRecordingIsFiledWithItsDescription covers the ordinary path end to end:
-// audio, a sidecar beside it, and a line in the index.
+// the audio, and a sidecar beside it.
 func TestRecordingIsFiledWithItsDescription(t *testing.T) {
 	l, dir := library(t, "")
 	filed := record(t, l, entry())
@@ -193,52 +190,6 @@ func TestRecordingIsFiledWithItsDescription(t *testing.T) {
 	// 960 bytes of 48 kHz 16-bit mono is a hundredth of a second.
 	if got.Duration != 0.01 {
 		t.Errorf("duration is %v, want it measured from the audio", got.Duration)
-	}
-}
-
-// TestIndexHoldsEveryRecording covers the listing that makes the collection
-// searchable, which is the thing a pile of sidecars cannot do.
-func TestIndexHoldsEveryRecording(t *testing.T) {
-	l, dir := library(t, "")
-
-	for _, channel := range []string{"MARLINTON DISPATCH", "GREEN BANK FIRE", "MARLINTON DISPATCH"} {
-		e := entry()
-		e.Channel = channel
-		record(t, l, e)
-	}
-	if err := l.Close(); err != nil {
-		t.Fatalf("closing the library: %v", err)
-	}
-
-	f, err := os.Open(filepath.Join(dir, IndexName))
-	if err != nil {
-		t.Fatalf("the index is not there: %v", err)
-	}
-	defer f.Close()
-
-	var lines []Entry
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		var e Entry
-		if err := json.Unmarshal(s.Bytes(), &e); err != nil {
-			t.Fatalf("line %d of the index is not JSON: %v", len(lines)+1, err)
-		}
-		lines = append(lines, e)
-	}
-	if len(lines) != 3 {
-		t.Fatalf("the index holds %d recordings, want 3", len(lines))
-	}
-
-	// One object per line is what lets a search be a one-liner, so check the
-	// search actually works rather than only that the file parses.
-	found := 0
-	for _, e := range lines {
-		if e.Channel == "MARLINTON DISPATCH" {
-			found++
-		}
-	}
-	if found != 2 {
-		t.Errorf("found %d transmissions on the channel, want 2", found)
 	}
 }
 
@@ -412,9 +363,7 @@ func TestAbandon(t *testing.T) {
 		t.Fatalf("reading the destination: %v", err)
 	}
 	for _, e := range entries {
-		if e.Name() != IndexName {
-			t.Errorf("%s was left behind", e.Name())
-		}
+		t.Errorf("%s was left behind", e.Name())
 	}
 }
 
@@ -492,17 +441,6 @@ func TestNewReportsADestinationItCannotPrepare(t *testing.T) {
 		}
 	})
 
-	t.Run("the index cannot be opened", func(t *testing.T) {
-		broken(t, func() func() {
-			was := openIndex
-			openIndex = func(string) (io.WriteCloser, error) { return nil, errBroken }
-			return func() { openIndex = was }
-		})
-
-		if _, err := New(t.TempDir(), ""); !errors.Is(err, errBroken) {
-			t.Fatalf("got %v, want it to wrap errBroken", err)
-		}
-	})
 }
 
 // TestBeginReportsAFileItCannotCreate covers a destination that stopped being
@@ -553,11 +491,6 @@ func TestCloseReportsEveryWayFilingCanFail(t *testing.T) {
 			marshalIndent = func(any, string, string) ([]byte, error) { return nil, errBroken }
 			return func() { marshalIndent = was }
 		}},
-		{"the index line cannot be assembled", func() func() {
-			was := marshal
-			marshal = func(any) ([]byte, error) { return nil, errBroken }
-			return func() { marshal = was }
-		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// The library is opened before the seam is broken, since New
@@ -576,35 +509,6 @@ func TestCloseReportsEveryWayFilingCanFail(t *testing.T) {
 		})
 	}
 }
-
-// TestIndexThatCannotBeWrittenIsReported covers the disk filling up part way
-// through a night, which is the way this fails in practice.
-func TestIndexThatCannotBeWrittenIsReported(t *testing.T) {
-	l, _ := library(t, "")
-	l.index = failingWriter{}
-
-	r, err := l.Begin()
-	if err != nil {
-		t.Fatalf("beginning a recording: %v", err)
-	}
-	if _, err := r.Close(entry()); !errors.Is(err, errBroken) {
-		t.Fatalf("got %v, want it to wrap errBroken", err)
-	}
-
-	// And closing the library reports it too, rather than losing it.
-	if err := l.Close(); !errors.Is(err, errBroken) {
-		t.Fatalf("got %v, want it to wrap errBroken", err)
-	}
-}
-
-// failingWriter stands in for an index on a disk that has stopped cooperating.
-type failingWriter struct{}
-
-// Close reports the failure.
-func (failingWriter) Close() error { return errBroken }
-
-// Write reports the failure.
-func (failingWriter) Write([]byte) (int, error) { return 0, errBroken }
 
 // TestAbandonReportsWhatItCannotClearUp covers the two ways discarding a
 // recording fails.

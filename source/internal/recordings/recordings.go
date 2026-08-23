@@ -2,8 +2,8 @@
 // Author: Alan Beebe
 // Created: 8/22/2026
 
-// Package recordings files transmissions on disk: the audio, a description
-// beside it, and a searchable index of everything recorded.
+// Package recordings files transmissions on disk: the audio and a description
+// beside it.
 //
 // # Why the metadata is a file of its own
 //
@@ -19,21 +19,6 @@
 // can say what is not known instead of leaving a blank that might mean either.
 // The filename is then free to be for people, which is what a filename is good
 // at.
-//
-// # Why there is an index as well
-//
-// A sidecar answers "what is this recording". It cannot answer "which
-// recordings", and that is the question anybody actually has: every
-// transmission on this talkgroup, everything from Tuesday evening, the longest
-// call of the day. Without a listing, answering means opening every sidecar in
-// every folder.
-//
-// So every recording is also appended to one file of newline-delimited JSON at
-// the top of the destination. It is the format that can be appended to safely,
-// that survives being cut off mid-write, and that ordinary tools already read,
-// so the whole collection is searchable with a one-line jq expression and
-// nothing to install. The alternative was a database, which would need a schema,
-// a migration story and a program to read it.
 //
 // # Names
 //
@@ -88,7 +73,7 @@ func ValidateTemplate(naming string) error {
 //   - naming: the naming template, or empty for DefaultTemplate
 //
 // Returns:
-//   - *Library ready to record into, which the caller must Close
+//   - *Library ready to record into
 //   - error if the template is bad or the destination cannot be prepared
 //
 // Errors:
@@ -107,11 +92,7 @@ func New(dir, naming string) (*Library, error) {
 		return nil, fmt.Errorf("preparing %s to record into: %w", dir, err)
 	}
 
-	index, err := openIndex(filepath.Join(dir, IndexName))
-	if err != nil {
-		return nil, fmt.Errorf("opening the recording index: %w", err)
-	}
-	return &Library{dir: dir, name: name, index: index}, nil
+	return &Library{dir: dir, name: name}, nil
 }
 
 // Begin opens a recording and returns it ready for audio.
@@ -136,20 +117,6 @@ func (l *Library) Begin() (*Recording, error) {
 		return nil, err
 	}
 	return &Recording{library: l, wav: wav, partial: partial}, nil
-}
-
-// Close finishes the library and stops writing to the index.
-//
-// Returns:
-//   - error if the index cannot be closed
-func (l *Library) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if err := l.index.Close(); err != nil {
-		return fmt.Errorf("closing the recording index: %w", err)
-	}
-	return nil
 }
 
 // Dir reports the destination recordings are written into.
@@ -179,7 +146,7 @@ func (r *Recording) Abandon() error {
 }
 
 // Close finishes the recording, files it under the name e describes, and
-// writes its sidecar and index line.
+// writes its sidecar.
 //
 // The duration in the entry is taken from the audio rather than from the times
 // in it. They differ whenever frames were lost, and the file's own length is
@@ -191,8 +158,7 @@ func (r *Recording) Abandon() error {
 // Returns:
 //   - the entry as it was filed, carrying the path it ended up at
 //   - error if the audio cannot be closed, the folders cannot be made, the
-//     recording cannot be moved into place, or either the sidecar or the index
-//     cannot be written
+//     recording cannot be moved into place, or the sidecar cannot be written
 func (r *Recording) Close(e Entry) (Entry, error) {
 	if r.done {
 		return e, nil
@@ -224,10 +190,6 @@ func (r *Recording) Close(e Entry) (Entry, error) {
 	if err := writeFile(filepath.Join(r.library.dir, rel+".json"), append(sidecar, '\n'), 0o644); err != nil {
 		return e, fmt.Errorf("writing the description of %s: %w", e.File, err)
 	}
-
-	if err := r.library.append(e); err != nil {
-		return e, err
-	}
 	return e, nil
 }
 
@@ -240,28 +202,6 @@ func (r *Recording) Close(e Entry) (Entry, error) {
 //   - error if the audio cannot be written
 func (r *Recording) Write(pcm []byte) error {
 	return r.wav.Write(pcm)
-}
-
-// append adds one line to the index.
-//
-// Parameters:
-//   - e: the recording to record
-//
-// Returns:
-//   - error if the line cannot be written
-func (l *Library) append(e Entry) error {
-	line, err := marshal(e)
-	if err != nil {
-		return fmt.Errorf("describing %s for the index: %w", e.File, err)
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if _, err := l.index.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("adding %s to the recording index: %w", e.File, err)
-	}
-	return nil
 }
 
 // reserve works out where a recording goes and makes sure the name is free.

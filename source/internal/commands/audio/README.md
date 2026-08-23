@@ -43,7 +43,7 @@ radiocli audio feed --input "USB Audio CODEC" --channel left | \
 # Compressed, for a program rather than a player.
 radiocli --device $SDS audio feed --format opus --bitrate 48000 > stream.raw
 
-# Keep what it hears: one WAV per transmission, described and indexed.
+# Keep what it hears: one WAV per transmission, with a description beside it.
 radiocli --device $SDS audio record ~/scanner --input "USB Audio CODEC"
 
 # The same, as a live feed of labelled transmissions for an agent.

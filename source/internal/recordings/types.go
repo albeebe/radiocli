@@ -7,7 +7,6 @@ package recordings
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -25,15 +24,6 @@ import (
 // the fix is a setting the user has to know exists. Making the day a folder by
 // default means the case nobody thinks about is the one that already works.
 const DefaultTemplate = "{date}/{time}_{system}_{department}_{channel}"
-
-// IndexName is the file every recording is appended to, at the top of the
-// destination.
-//
-// One JSON object per line, which is the format that can be appended to safely
-// and read with anything. It is what makes the collection searchable: without
-// it, answering "every transmission on this talkgroup last Tuesday" means
-// opening every sidecar in every folder.
-const IndexName = "index.jsonl"
 
 // The limits on how long a path this package will produce.
 //
@@ -84,24 +74,17 @@ var (
 	// createWav opens the audio file a recording is written to.
 	createWav = func(path string) (wavWriter, error) { return wavfile.Create(path) }
 
-	// marshal and marshalIndent turn an entry into the index line and the
-	// sidecar.
+	// marshalIndent turns an entry into the sidecar beside the audio.
 	//
-	// They are seams only so that the failure they report can be tested. Every
-	// field of Entry is a string, a number or a time, so neither can fail as
-	// the type stands, and the error is still handled because a field added
-	// later could change that. A branch that cannot be reached is a branch
-	// nothing is checking.
-	marshal       = json.Marshal
+	// It is a seam only so that the failure it reports can be tested. Every
+	// field of Entry is a string, a number or a time, so it cannot fail as the
+	// type stands, and the error is still handled because a field added later
+	// could change that. A branch that cannot be reached is a branch nothing is
+	// checking.
 	marshalIndent = json.MarshalIndent
 
 	// mkdirAll creates the folders a template asked for.
 	mkdirAll = os.MkdirAll
-
-	// openIndex opens the index for appending, creating it if it is not there.
-	openIndex = func(path string) (io.WriteCloser, error) {
-		return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	}
 
 	// readDir lists the destination, for finding recordings left behind.
 	readDir = os.ReadDir
@@ -156,10 +139,10 @@ var tokens = map[string]func(Entry) string{
 
 // Entry is one recording, and is the only shape this package reports.
 //
-// The same object is the sidecar beside the audio, the line appended to the
-// index, and what the command prints. One schema for all three is deliberate:
-// anything reading these has one thing to learn, and a field cannot mean
-// something different depending on where it was read.
+// The same object is the sidecar beside the audio and what the command prints.
+// One schema for both is deliberate: anything reading these has one thing to
+// learn, and a field cannot mean something different depending on where it was
+// read.
 //
 // It is also the whole of the metadata. The software this was measured against
 // smuggles its metadata into the filename and three text tags inside the audio
@@ -167,8 +150,8 @@ var tokens = map[string]func(Entry) string{
 // was not given the format of. A JSON object beside the audio needs no such
 // agreement.
 type Entry struct {
-	// File is where the audio is, relative to the destination, so an index
-	// copied elsewhere with its recordings still points at them.
+	// File is where the audio is, relative to the destination, so a sidecar
+	// copied elsewhere with its recording still points at it.
 	File string `json:"file"`
 
 	// Start and End are when the audio began and ended, found in the buffer
@@ -240,7 +223,8 @@ type Entry struct {
 //
 // It is safe for concurrent use, though the recorder does not need that: one
 // goroutine reads the feed and finishes one recording at a time. The lock is
-// there because the index is a single file that every recording appends to.
+// there because the counter behind the temporary names is shared by every
+// recording begun.
 type Library struct {
 	// dir is the destination every path is relative to.
 	dir string
@@ -248,12 +232,8 @@ type Library struct {
 	// name renders a recording's path from its metadata.
 	name template
 
-	// mu guards index and partials.
+	// mu guards partials.
 	mu sync.Mutex
-
-	// index is the append-only listing, opened once and held for the session
-	// rather than reopened per recording.
-	index io.WriteCloser
 
 	// partials counts recordings begun, so two starting in the same second
 	// cannot collide on a temporary name.

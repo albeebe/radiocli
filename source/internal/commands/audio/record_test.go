@@ -56,6 +56,39 @@ func heardOn(channel string) device.Heard {
 	}
 }
 
+// sidecar reads the description written beside the one recording below dir.
+//
+// Parameters:
+//   - t: the test, failed if there is no sidecar or it cannot be read
+//   - dir: the destination the recording was written into
+//
+// Returns:
+//   - the entry the recorder described the transmission with
+func sidecar(t *testing.T, dir string) recordings.Entry {
+	t.Helper()
+
+	var found string
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && found == "" && strings.HasSuffix(path, ".json") {
+			found = path
+		}
+		return nil
+	})
+	if found == "" {
+		t.Fatalf("no recording was described below %s", dir)
+	}
+
+	raw, err := os.ReadFile(found)
+	if err != nil {
+		t.Fatalf("reading %s: %v", found, err)
+	}
+	var e recordings.Entry
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatalf("%s is not JSON: %v", found, err)
+	}
+	return e
+}
+
 // recorderApp returns an App with buffers for streams and no scanner.
 //
 // Returns:
@@ -407,7 +440,6 @@ func Test_recordLoop(t *testing.T) {
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
-		t.Cleanup(func() { library.Close() })
 
 		r := &radio{}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -436,8 +468,8 @@ func Test_recordLoop(t *testing.T) {
 		return n
 	}
 
-	// Verify a transmission the radio confirmed lands as a file, described and
-	// indexed.
+	// Verify a transmission the radio confirmed lands as a file with a
+	// description beside it.
 	t.Run("Transmission", func(t *testing.T) {
 		r, frames, dir, out, cancel, done := start(t)
 		defer cancel()
@@ -474,14 +506,7 @@ func Test_recordLoop(t *testing.T) {
 			t.Error("nothing was printed for the finished recording")
 		}
 
-		raw, err := os.ReadFile(filepath.Join(dir, recordings.IndexName))
-		if err != nil || len(raw) == 0 {
-			t.Fatalf("the index holds nothing: %v", err)
-		}
-		var e recordings.Entry
-		if err := json.Unmarshal(bytes.Split(raw, []byte("\n"))[0], &e); err != nil {
-			t.Fatalf("the index line is not JSON: %v", err)
-		}
+		e := sidecar(t, dir)
 		if e.Channel != "MARLINTON DISPATCH" || e.Samples == 0 {
 			t.Errorf("got %+v, want it labelled from the radio", e)
 		}
@@ -600,7 +625,6 @@ func Test_recorder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
-		t.Cleanup(func() { l.Close() })
 
 		return &recorder{app: app, library: l, gate: audiogate.New(audiogate.Options{})}, dir
 	}
@@ -698,9 +722,7 @@ func Test_recorder(t *testing.T) {
 			t.Fatalf("reading the destination: %v", err)
 		}
 		for _, e := range entries {
-			if e.Name() != recordings.IndexName {
-				t.Errorf("%s was left behind", e.Name())
-			}
+			t.Errorf("%s was left behind", e.Name())
 		}
 	})
 }
@@ -1370,7 +1392,6 @@ func Test_recordLoopEndings(t *testing.T) {
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
-		t.Cleanup(func() { library.Close() })
 
 		ctx, cancel := context.WithCancel(context.Background())
 		frames := make(chan audiofeed.Frame)
@@ -1432,14 +1453,7 @@ func Test_recordLoopEndings(t *testing.T) {
 			t.Fatalf("recording: %v", err)
 		}
 
-		raw, err := os.ReadFile(filepath.Join(dir, recordings.IndexName))
-		if err != nil {
-			t.Fatalf("reading the index: %v", err)
-		}
-		var e recordings.Entry
-		if err := json.Unmarshal(bytes.Split(raw, []byte("\n"))[0], &e); err != nil {
-			t.Fatalf("the index line is not JSON: %v", err)
-		}
+		e := sidecar(t, dir)
 		if e.Channel != "MARLINTON DISPATCH" {
 			t.Errorf("the recording is labelled %q, want the channel the radio named", e.Channel)
 		}
@@ -1588,8 +1602,8 @@ func Test_runRecordRecords(t *testing.T) {
 		t.Errorf("said %q, want the input it was recording from named", errs.String())
 	}
 	// The destination is prepared whether or not anything was heard.
-	if _, err := os.Stat(filepath.Join(dir, recordings.IndexName)); err != nil {
-		t.Errorf("the index was not created: %v", err)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Errorf("the destination was not prepared: %v", err)
 	}
 }
 
@@ -1612,8 +1626,8 @@ func Test_runRecordDefaultsTheDestination(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("recording: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join("recordings", recordings.IndexName)); err != nil {
-		t.Errorf("nothing was created in the default destination: %v", err)
+	if info, err := os.Stat("recordings"); err != nil || !info.IsDir() {
+		t.Errorf("the default destination was not created: %v", err)
 	}
 }
 
@@ -1871,7 +1885,6 @@ func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the library: %v", err)
 	}
-	defer library.Close()
 
 	// A scanner that answers once, so a recording opens, and then goes away.
 	var asked atomic.Int32
@@ -1915,9 +1928,7 @@ func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
 		t.Fatalf("reading the destination: %v", err)
 	}
 	for _, e := range entries {
-		if e.Name() != recordings.IndexName {
-			t.Errorf("%s was left behind", e.Name())
-		}
+		t.Errorf("%s was left behind", e.Name())
 	}
 }
 
