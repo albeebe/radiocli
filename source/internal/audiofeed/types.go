@@ -44,12 +44,14 @@ const (
 	// second is one syllable, and a syllable can be quiet on both sides.
 	chooseFrames = 3 * 1000 / FrameMS
 
-	// giveUpFrames is thirty seconds of anything at all, floor or not. Past
-	// that the channel has been silent almost the whole time, nothing is coming
-	// that would settle it, and going on listening means going on sounding
-	// possibly wrong. Mix is the answer that is never silent, so it is the one
-	// to stop at.
-	giveUpFrames = 30 * 1000 / FrameMS
+	// cancelDB is how much level folding the two sides together may lose before
+	// folding is treated as destroying the signal rather than combining it.
+	//
+	// Two sides carrying the same mono audio fold with no loss at all, so any
+	// meaningful loss means they disagree. Four decibels is above anything a
+	// slightly unbalanced pair produces and far below the eleven measured on a
+	// scanner whose headphone output was set to invert one side.
+	cancelDB = 4.0
 
 	// dominanceDB is how much quieter one side has to be to be called empty.
 	//
@@ -132,6 +134,16 @@ const silentFor = 5 * time.Second
 
 // silentFrames is silentFor counted in frames.
 const silentFrames = int(silentFor / (FrameMS * time.Millisecond))
+
+// ReasonOutOfPhase is why the fold was refused, when it was refused because
+// folding the two sides together cancelled them.
+//
+// It exists to be passed on to a person. The headphone jack on an SDS100 and an
+// SDS150 is wired out of phase, which Uniden addressed in firmware by adding a
+// menu to invert one side rather than by changing the wiring, so a radio has it
+// either way depending on whether its owner has ever found that menu. Taking a
+// single side works around it, and saying so lets them fix it at the source.
+const ReasonOutOfPhase = "out-of-phase"
 
 // Channels is every channel mode, in the order a listing should show them.
 var Channels = []string{ChannelAuto, ChannelLeft, ChannelRight, ChannelMix}
@@ -232,12 +244,19 @@ type chooser struct {
 	// it is set before the first frame arrives and nothing here ever runs.
 	settled string
 
-	// Sums of squares rather than levels, so the two can be compared as a
-	// ratio without either being converted first.
-	sumL, sumR float64
+	// Sums of squares rather than levels, so they can be compared as ratios
+	// without any being converted first. sumM is what folding the two together
+	// would have produced, which is the only thing that says whether folding
+	// them is safe.
+	sumL, sumR, sumM float64
 
-	// seen is every frame; qualified is the ones loud enough to mean anything.
-	seen, qualified int
+	// qualified counts the frames loud enough to mean anything, which are the
+	// only ones that settle the question.
+	qualified int
+
+	// why is why the answer is what it is, when that is worth telling
+	// somebody. Empty for an unremarkable decision.
+	why string
 }
 
 // Event is something worth saying about the audio that is not audio.

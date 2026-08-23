@@ -431,11 +431,17 @@ radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --input 
 
 ### `--channel`
 
-Which side of the audio cable carries the scanner. `auto` listens to both for a
-few seconds and decides, `left` and `right` take one side and ignore the other,
-and `mix` averages the two. `auto` is right unless you know the cable. This has
-no effect when the audio comes from a daemon, because the daemon has already
-folded it.
+Which side of the audio cable carries the scanner. `auto` listens to both and
+decides, `left` and `right` take one side and ignore the other, and `mix`
+averages the two. `auto` is right unless you know the cable. This has no effect
+when the audio comes from a daemon, because the daemon has already folded it.
+
+`auto` waits for real audio before deciding, so on a quiet channel it may not
+settle until the first transmission. It judges the fold by what mixing actually
+produces rather than by comparing the two sides, because **the headphone jack on
+an SDS100 and an SDS150 is wired out of phase**: both sides are equally loud, and
+averaging them cancels most of the sound. When that is detected, `auto` takes
+one side and says so on stderr, naming the menu that fixes it on the radio.
 
 ```
 radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --input "USB Audio CODEC" --channel left

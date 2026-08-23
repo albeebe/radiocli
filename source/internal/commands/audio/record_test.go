@@ -1920,3 +1920,48 @@ func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
 		}
 	}
 }
+
+// Test_openAudioReportsWhatTheFeedSays checks that the recorder passes on the
+// feed's warnings.
+//
+// They are the only way a person learns that the recording is going wrong for a
+// reason outside the radio: a lead in the wrong socket, a permission never
+// granted, or two sides of a cable that cancel each other. The recorder reads
+// frames from its subscription, so without something reading the events beside
+// them they would be produced and never seen.
+func Test_openAudioReportsWhatTheFeedSays(t *testing.T) {
+	// A capture that publishes an event and no audio at all.
+	original := startCapture
+	t.Cleanup(func() { startCapture = original })
+
+	published := make(chan struct{})
+	startCapture = func(opts audiofeed.Options, out audiofeed.Publisher) (capture, error) {
+		go func() {
+			out.PublishEvent("channel", map[string]any{
+				"channel": audiofeed.ChannelLeft,
+				"reason":  audiofeed.ReasonOutOfPhase,
+			})
+			close(published)
+		}()
+		return fakeCapture{source: "USB Audio CODEC"}, nil
+	}
+
+	app, _, errs := recorderApp()
+	_, _, done, err := openAudio(context.Background(), app, "USB Audio CODEC", audiofeed.ChannelAuto)
+	if err != nil {
+		t.Fatalf("opening the audio: %v", err)
+	}
+	defer done()
+
+	<-published
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && errs.Len() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(errs.String(), "out of phase") {
+		t.Errorf("said %q, want the out of phase cable called out", errs.String())
+	}
+	if !strings.Contains(errs.String(), "Headphone L/R output") {
+		t.Errorf("said %q, want the menu that fixes it named", errs.String())
+	}
+}

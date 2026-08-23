@@ -297,6 +297,13 @@ func report(app *appcontext.App, ev audiofeed.Event) {
 		if channel, ok := fields["channel"].(string); ok {
 			app.Notef("The scanner's audio is on the %s channel.\n", channel)
 		}
+		if fields["reason"] == audiofeed.ReasonOutOfPhase {
+			app.Notef("The two sides of the audio cable are out of phase, so this is recording one\n" +
+				"side rather than mixing them, which would have cancelled most of the sound.\n" +
+				"The scanner's headphone jack is wired that way. To fix it at the source, set\n" +
+				"Menu > Settings > Headphone L/R output to the other of \"In Phase\" and\n" +
+				"\"Invert Phase\".\n")
+		}
 
 	case "silent":
 		// The one failure that looks exactly like working. A stream that opened

@@ -90,9 +90,33 @@ func (c *chooser) decide() string {
 		return ChannelLeft
 	case diff < -dominanceDB:
 		return ChannelRight
-	default:
-		return ChannelMix
 	}
+
+	// Both sides carry the signal, which is not on its own a reason to fold
+	// them together. Two sides can be equally loud and still cancel, and this
+	// is the case that matters: an SDS150 has a setting for whether its
+	// headphone output is in phase or inverted, and inverted puts the same mono
+	// audio on the two sides with opposite polarity.
+	//
+	// Measured on one, folding those cost eleven decibels and took most of the
+	// voice's body with it, because the low frequencies are the most alike
+	// between the two sides and cancel the most completely. What is left is
+	// thin and reedy, and sounds like the speaker is talking through a kazoo.
+	//
+	// So the fold is judged by what it produces rather than by the levels going
+	// into it. If mixing loses more than a little against the louder side on its
+	// own, it is destroying the signal and one side is taken instead.
+	if c.sumM > 0 && 10*math.Log10(math.Max(c.sumL, c.sumR)/c.sumM) > cancelDB {
+		// Worth saying out loud. Taking one side recovers the level, but the
+		// owner can fix it properly in one menu and have it right for
+		// everything they plug the radio into, not just this tool.
+		c.why = ReasonOutOfPhase
+		if c.sumL >= c.sumR {
+			return ChannelLeft
+		}
+		return ChannelRight
+	}
+	return ChannelMix
 }
 
 // decided returns the answer and whether there is one yet.
@@ -102,6 +126,15 @@ func (c *chooser) decide() string {
 //   - whether the choice has been made
 func (c *chooser) decided() (string, bool) {
 	return c.settled, c.settled != ""
+}
+
+// reason reports why the chooser settled where it did, when that is worth
+// telling somebody.
+//
+// Returns:
+//   - ReasonOutOfPhase if the two sides were found to cancel, empty otherwise
+func (c *chooser) reason() string {
+	return c.why
 }
 
 // downmix folds one frame of interleaved stereo into one frame of mono.
@@ -175,30 +208,43 @@ func LevelOf(mono []byte) float64 {
 // Parameters:
 //   - left: the left side's RMS in sample units
 //   - right: the right side's RMS in sample units
+//   - mixed: the RMS the two would have if folded together, which is what says
+//     whether folding them is safe
 //
 // Returns:
 //   - the channel mode to fold this frame with: the settled answer, or
 //     ChannelMix while there is not one yet
-func (c *chooser) observe(left, right float64) string {
+func (c *chooser) observe(left, right, mixed float64) string {
 	if c.settled != "" {
 		return c.settled
 	}
 
-	c.seen++
 	if left > silenceFloor || right > silenceFloor {
 		c.sumL += left * left
 		c.sumR += right * right
+		c.sumM += mixed * mixed
 		c.qualified++
 	}
 
-	switch {
-	case c.qualified >= chooseFrames:
+	// Settling happens on evidence and on nothing else. A quiet channel simply
+	// stays undecided, folding with mix in the meantime, until something is
+	// actually heard.
+	//
+	// There used to be a deadline here: after thirty seconds of silence the
+	// answer was fixed at mix, on the reasoning that mix is the one fold that
+	// is never silent. That reasoning was wrong, and expensively so. Mix is
+	// near-silent whenever the two sides are out of phase, which is how the
+	// headphone jack on an SDS100 and SDS150 is wired unless the owner has
+	// found the menu that inverts it. A scanner is quiet most of the time, so
+	// the deadline reliably expired before the first transmission of the
+	// evening and locked in the one answer that destroys the audio, for the
+	// whole run.
+	//
+	// Waiting costs nothing by comparison. Undecided already folds with mix, so
+	// the only thing the deadline ever changed was whether a later transmission
+	// was allowed to correct it.
+	if c.qualified >= chooseFrames {
 		c.settled = c.decide()
-	case c.seen >= giveUpFrames:
-		c.settled = ChannelMix
-	}
-
-	if c.settled != "" {
 		return c.settled
 	}
 	return ChannelMix
@@ -217,19 +263,22 @@ func (c *chooser) observe(left, right float64) string {
 // Returns:
 //   - left: the left side's RMS in sample units
 //   - right: the right side's RMS in sample units
-func rmsPair(stereo []byte) (left, right float64) {
-	var sumL, sumR float64
+func rmsPair(stereo []byte) (left, right, mixed float64) {
+	var sumL, sumR, sumM float64
 	pairs := len(stereo) / 4
 
 	for i := range pairs {
 		l := float64(int16(binary.LittleEndian.Uint16(stereo[i*4:])))
 		r := float64(int16(binary.LittleEndian.Uint16(stereo[i*4+2:])))
+		m := (l + r) / 2
 		sumL += l * l
 		sumR += r * r
+		sumM += m * m
 	}
 
 	if pairs == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
-	return math.Sqrt(sumL / float64(pairs)), math.Sqrt(sumR / float64(pairs))
+	n := float64(pairs)
+	return math.Sqrt(sumL / n), math.Sqrt(sumR / n), math.Sqrt(sumM / n)
 }

@@ -113,6 +113,14 @@ func TestLevelOfAfterDownmix(t *testing.T) {
 	}
 }
 
+// inPhase is the level folding two sides together produces when they carry the
+// same signal, which is what every case here is unless it says otherwise.
+//
+// Two correlated signals of level l and r fold to their average. Sides that
+// disagree fold to less than that, and it is that shortfall the chooser reads
+// as a reason not to fold at all.
+func inPhase(l, r float64) float64 { return (l + r) / 2 }
+
 // loud is an amplitude well above the floor, and quiet is one well below it, so
 // the chooser tests are about the decision rather than about where the floor sits.
 const (
@@ -147,7 +155,7 @@ func TestChooserFindsTheChannelTheScannerIsOn(t *testing.T) {
 			// Exactly as many frames as it takes, so this also pins how long
 			// the decision waits.
 			for range chooseFrames {
-				pick.observe(c.left, c.right)
+				pick.observe(c.left, c.right, inPhase(c.left, c.right))
 			}
 
 			got, ok := pick.decided()
@@ -167,7 +175,7 @@ func TestChooserFindsTheChannelTheScannerIsOn(t *testing.T) {
 func TestChooserSendsAudioBeforeItHasDecided(t *testing.T) {
 	pick := newChooser(ChannelAuto)
 
-	if got := pick.observe(loud, 0); got != ChannelMix {
+	if got := pick.observe(loud, 0, inPhase(loud, 0)); got != ChannelMix {
 		t.Errorf("the first frame was folded as %q, want %q", got, ChannelMix)
 	}
 	if _, ok := pick.decided(); ok {
@@ -182,7 +190,7 @@ func TestChooserIgnoresSilence(t *testing.T) {
 	pick := newChooser(ChannelAuto)
 
 	for range chooseFrames * 2 {
-		if got := pick.observe(quiet, quiet); got != ChannelMix {
+		if got := pick.observe(quiet, quiet, inPhase(quiet, quiet)); got != ChannelMix {
 			t.Fatalf("folded as %q while still undecided, want %q", got, ChannelMix)
 		}
 	}
@@ -193,28 +201,43 @@ func TestChooserIgnoresSilence(t *testing.T) {
 	// And real audio afterwards still settles it, so the silence delayed the
 	// answer rather than poisoning it.
 	for range chooseFrames {
-		pick.observe(loud, 0)
+		pick.observe(loud, 0, inPhase(loud, 0))
 	}
 	if got, ok := pick.decided(); !ok || got != ChannelLeft {
 		t.Errorf("after real audio it chose %q (decided %v), want %q", got, ok, ChannelLeft)
 	}
 }
 
-// TestChooserGivesUpOnASilentInput stops a scanner nobody transmitted on
-// leaving the question open forever.
-func TestChooserGivesUpOnASilentInput(t *testing.T) {
+// TestChooserWaitsRatherThanGuessingOnASilentInput is a regression.
+//
+// There used to be a deadline: after thirty seconds of silence the answer was
+// fixed at mix, on the reasoning that mix is the one fold that is never silent.
+// That is untrue whenever the two sides are out of phase, which is how the
+// headphone jack on an SDS100 and SDS150 is wired unless its owner has found
+// the menu that inverts it, and a scanner is quiet most of the time. So the
+// deadline reliably expired before the first transmission of the evening and
+// locked in the one answer that destroys the audio, for the rest of the run.
+//
+// Silence is not evidence. It waits.
+func TestChooserWaitsRatherThanGuessingOnASilentInput(t *testing.T) {
 	pick := newChooser(ChannelAuto)
 
-	for range giveUpFrames {
-		pick.observe(quiet, quiet)
+	for range 100 * chooseFrames {
+		if got := pick.observe(quiet, quiet, inPhase(quiet, quiet)); got != ChannelMix {
+			t.Fatalf("folded with %q while undecided, want %q", got, ChannelMix)
+		}
+	}
+	if _, ok := pick.decided(); ok {
+		t.Error("settled on a silent input, with nothing to settle it")
 	}
 
-	got, ok := pick.decided()
-	if !ok {
-		t.Fatalf("still undecided after %d frames of silence", giveUpFrames)
+	// And the first real audio still settles it, however long the wait was.
+	for range chooseFrames {
+		pick.observe(loud, loud, loud/8)
 	}
-	if got != ChannelMix {
-		t.Errorf("gave up on %q, want %q, which is the fold that is never silent", got, ChannelMix)
+	got, ok := pick.decided()
+	if !ok || got == ChannelMix {
+		t.Errorf("after real audio it chose %q (decided %v), want a single side", got, ok)
 	}
 }
 
@@ -225,15 +248,15 @@ func TestChooserNeverChangesItsMind(t *testing.T) {
 	pick := newChooser(ChannelAuto)
 
 	for range chooseFrames {
-		pick.observe(loud, 0)
+		pick.observe(loud, 0, inPhase(loud, 0))
 	}
 	if got, _ := pick.decided(); got != ChannelLeft {
 		t.Fatalf("chose %q, want %q", got, ChannelLeft)
 	}
 
 	// Now hand it a great deal of the opposite evidence.
-	for range giveUpFrames * 2 {
-		if got := pick.observe(0, loud); got != ChannelLeft {
+	for range 100 * chooseFrames {
+		if got := pick.observe(0, loud, inPhase(0, loud)); got != ChannelLeft {
 			t.Fatalf("changed to %q, want it to stay on %q", got, ChannelLeft)
 		}
 	}
@@ -251,7 +274,7 @@ func TestChooserDoesNothingWhenTold(t *testing.T) {
 		}
 
 		// Evidence for the other side changes nothing.
-		if got := pick.observe(0, loud); got != mode {
+		if got := pick.observe(0, loud, inPhase(0, loud)); got != mode {
 			t.Errorf("newChooser(%q) folded as %q after contrary evidence", mode, got)
 		}
 	}
@@ -391,19 +414,47 @@ func TestLevelOf(t *testing.T) {
 // Test cases:
 //   - NoSamples: a frame with nothing in it at all measures nothing
 //   - OneSide: a mono lead measures on its own side only
+//   - InPhase: two sides carrying the same signal fold with no loss
+//   - Inverted: two sides carrying opposite signals cancel when folded
 func Test_rmsPair(t *testing.T) {
 
 	// Verify that a frame with nothing in it at all measures nothing.
 	t.Run("NoSamples", func(t *testing.T) {
-		left, right := rmsPair(nil)
-		if left != 0 || right != 0 {
-			t.Errorf("an empty frame measured %.1f and %.1f, want nothing either side", left, right)
+		left, right, mixed := rmsPair(nil)
+		if left != 0 || right != 0 || mixed != 0 {
+			t.Errorf("an empty frame measured %.1f, %.1f and %.1f, want nothing at all",
+				left, right, mixed)
+		}
+	})
+
+	// Verify that folding two sides carrying the same signal loses nothing,
+	// which is what makes any loss evidence that they disagree.
+	t.Run("InPhase", func(t *testing.T) {
+		left, right, mixed := rmsPair(stereoFrame(8000, 8000))
+		if mixed < left-1 || mixed < right-1 {
+			t.Errorf("folding %.1f and %.1f gave %.1f, want it to keep the level",
+				left, right, mixed)
+		}
+	})
+
+	// Verify that folding two sides carrying opposite signals destroys them.
+	//
+	// This is the case the chooser has to notice: both sides are equally loud,
+	// so nothing about their levels says anything is wrong, and folding them
+	// throws the signal away.
+	t.Run("Inverted", func(t *testing.T) {
+		left, right, mixed := rmsPair(stereoFrame(8000, -8000))
+		if left < 7999 || right < 7999 {
+			t.Fatalf("the sides measured %.1f and %.1f, want both loud", left, right)
+		}
+		if mixed > 1 {
+			t.Errorf("folding two opposite sides gave %.1f, want them to cancel", mixed)
 		}
 	})
 
 	// Verify that a mono lead measures on its own side only.
 	t.Run("OneSide", func(t *testing.T) {
-		left, right := rmsPair(stereoFrame(8000, 0))
+		left, right, _ := rmsPair(stereoFrame(8000, 0))
 		if left < 7999 || left > 8001 {
 			t.Errorf("the left measured %.1f, want about 8000", left)
 		}
@@ -411,4 +462,61 @@ func Test_rmsPair(t *testing.T) {
 			t.Errorf("the right measured %.1f, want nothing", right)
 		}
 	})
+}
+
+// TestChooserRefusesToFoldSidesThatCancel is a regression from real hardware.
+//
+// An SDS150 has a setting for whether its headphone output is in phase or
+// inverted, and inverted puts the same mono audio on the two sides with
+// opposite polarity. Nothing about the levels says so: both sides are equally
+// loud, which to a chooser that only compares levels looks like an ordinary
+// stereo lead carrying the signal on both.
+//
+// Folding them measured eleven decibels quieter than either side alone, and
+// took most of the voice's body with it, since the low frequencies are the most
+// alike between the two sides and cancel the most completely. What came out was
+// thin and reedy and sounded like a kazoo.
+func TestChooserRefusesToFoldSidesThatCancel(t *testing.T) {
+	pick := &chooser{}
+
+	// Equally loud on both sides, and folding them leaves almost nothing.
+	for range chooseFrames {
+		pick.observe(loud, loud, loud/8)
+	}
+
+	settled, ok := pick.decided()
+	if !ok {
+		t.Fatal("the chooser never settled")
+	}
+	if settled == ChannelMix {
+		t.Fatal("the chooser folded two sides that cancel, which throws the audio away")
+	}
+	if settled != ChannelLeft {
+		t.Errorf("the chooser settled on %q, want the louder side", settled)
+	}
+
+	// And it takes whichever side is actually louder, not always the left.
+	other := &chooser{}
+	for range chooseFrames {
+		other.observe(loud/2, loud, loud/8)
+	}
+	if settled, _ := other.decided(); settled != ChannelRight {
+		t.Errorf("the chooser settled on %q, want the louder side", settled)
+	}
+}
+
+// TestChooserStillFoldsSidesThatAgree checks the other half of the same rule:
+// an ordinary stereo lead carrying the same signal on both sides is still
+// folded, because folding it costs nothing and using both is the quieter of the
+// two failure modes if one side is later lost.
+func TestChooserStillFoldsSidesThatAgree(t *testing.T) {
+	pick := &chooser{}
+
+	for range chooseFrames {
+		pick.observe(loud, loud, inPhase(loud, loud))
+	}
+
+	if settled, _ := pick.decided(); settled != ChannelMix {
+		t.Errorf("the chooser settled on %q, want %q for two sides that agree", settled, ChannelMix)
+	}
 }

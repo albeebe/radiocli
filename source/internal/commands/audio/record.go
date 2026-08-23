@@ -323,6 +323,17 @@ func openAudio(ctx context.Context, app *appcontext.App, input, channel string) 
 	}
 
 	sub := feed.Subscribe(recordQueue)
+
+	// The feed has things to say that are not audio, and every one of them is
+	// about the recording being wrong rather than about the radio: a cable in
+	// the wrong socket, a permission never granted, two sides that cancel. They
+	// reach a person here or not at all.
+	go func() {
+		for ev := range sub.Events() {
+			report(app, ev)
+		}
+	}()
+
 	return sub.Frames(), capture.Source(), func() {
 		capture.Close()
 		sub.Close()

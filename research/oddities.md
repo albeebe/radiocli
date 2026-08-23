@@ -296,6 +296,48 @@ together, a `scanning` and a `battery` both failed and both blamed the cable.
 `TIOCEXCL`, which `go.bug.st/serial` sets, does not stop a second open of a
 `/dev/cu.*` on macOS. An advisory lock file was the fix.
 
+### The headphone jack is wired out of phase
+
+*2026-08-23*
+
+Folding the two sides of the headphone output together loses most of the audio.
+Measured on an SDS150 on firmware 1.00.37, against continuous NOAA weather
+voice, through the same cable and sound card:
+
+| Fold | RMS | Peak |
+| ---- | --- | ---- |
+| Left only | -25.2 dBFS | -9.5 dBFS |
+| Right only | -24.0 dBFS | -8.2 dBFS |
+| Both, averaged | **-35.0 dBFS** | **-19.5 dBFS** |
+
+Two sides carrying the same mono audio fold with no loss at all, so eleven
+decibels means they are fighting each other. The level is not the worst of it.
+Comparing the spectrum of one side against the fold, on the same source:
+
+| Band | One side | Folded |
+| ---- | -------- | ------ |
+| 300-1000 Hz | 67% | 13% |
+| 1-2 kHz | 22% | 43% |
+| 2-3.4 kHz | 11% | 43% |
+
+The fold guts the low end, because the low frequencies are the most alike
+between the two sides and cancel the most completely. What is left is a thin,
+reedy voice with its body removed, which is reported by listeners as sounding
+like a kazoo and is easy to mistake for a fault in the radio or for the
+artefacts of a digital voice codec.
+
+The cause is the jack itself, which is wired out of phase. Uniden addressed it
+in firmware rather than in hardware, by adding **Menu > Settings > Headphone L/R
+output** with the values `In Phase` and `Invert Phase`. So whether a given radio
+has the problem depends on which way that setting is left, and any tool reading
+this output has to cope with both.
+
+**Nothing about the levels reveals it.** Both sides are equally loud. Anything
+deciding how to fold by comparing the two sides sees a healthy stereo lead and
+picks the one option that destroys the signal. The fold has to be judged by what
+it produces: measure what mixing would give, and refuse to mix when it comes out
+quieter than either side on its own. That is what `audiofeed`'s chooser does.
+
 ### Mass storage mode is a one-way door
 
 *2026-08-05*
