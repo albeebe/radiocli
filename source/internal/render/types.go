@@ -4,6 +4,20 @@
 
 package render
 
+// The escape codes Alert paints with, written out rather than pulled from a
+// library because two of them is not a dependency's worth.
+//
+// Yellow rather than red. Red is what a terminal has taught everyone to read as
+// "this failed and stopped", and the things Alert says did neither: the
+// recording was written, the run is still going, and something about the setup
+// wants attention. It is also one of the eight original colours, so it comes
+// out as whatever shade the reader chose in their own terminal rather than a
+// value this tool picked for them.
+const (
+	yellow = "\x1b[33m"
+	reset  = "\x1b[0m"
+)
+
 // Unread is what a table cell shows when the value behind it was never read,
 // which is a different thing from the scanner reporting nothing there.
 //

@@ -26,11 +26,76 @@ package render
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
 	"reflect"
 
 	"github.com/albeebe/radiocli/internal/appcontext"
 )
+
+// Alert writes a warning to Stderr, in yellow where that means anything.
+//
+// It is for the failures a run survives: the recording still happened and the
+// command carries on, but something about the setup is wrong and the person
+// watching needs to notice it among lines that are all scrolling past at the
+// same speed. The colour is the only thing that separates it from them.
+//
+// Stderr rather than Stdout, like every other message, so that a caller piping
+// the results somewhere still gets the warning on their terminal rather than
+// silently in the middle of their data.
+//
+// Parameters:
+//   - app: the application context holding the streams
+//   - format: the message, with a trailing newline, as Printf takes it
+//   - args: the values for format
+func Alert(app *appcontext.App, format string, args ...any) {
+	text := fmt.Sprintf(format, args...)
+	if colorful(app.Stderr) {
+		text = yellow + text + reset
+	}
+	fmt.Fprint(app.Stderr, text)
+}
+
+// colorful reports whether escape codes written to w will be read as colour
+// rather than printed as punctuation.
+//
+// Two conditions, and both have to hold. A terminal, because a file or a pipe
+// keeps the bytes and hands somebody a message with "[33m" in the middle of
+// it. And no NO_COLOR in the environment, which is the convention for saying
+// so once rather than per-program.
+//
+// The unwrapping is not defensive. By the time a command runs, the streams have
+// been wrapped at least once: main puts a witness around both of them so that a
+// command refused before it printed anything can be told apart from one refused
+// after. Asking the wrapper whether it is a terminal gets "no" from every
+// stream in the program, which is a silent answer rather than a wrong-looking
+// one, and the colour simply never appears.
+//
+// Parameters:
+//   - w: the stream about to be written to
+//
+// Returns:
+//   - true if w is a terminal and colour has not been turned off
+func colorful(w io.Writer) bool {
+	if _, off := os.LookupEnv("NO_COLOR"); off {
+		return false
+	}
+
+	for {
+		if file, ok := w.(*os.File); ok {
+			info, err := file.Stat()
+			return err == nil && info.Mode()&os.ModeCharDevice != 0
+		}
+		inner, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			return false
+		}
+		if w = inner.Unwrap(); w == nil {
+			return false
+		}
+	}
+}
 
 // Changed reports one change to the scanner's memory.
 //

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -584,6 +585,27 @@ func TestWrite(t *testing.T) {
 		}
 		if w.written {
 			t.Error("nothing was written and the witness remembered something")
+		}
+	})
+}
+
+// TestUnwrap tests the witness Unwrap method with 100% coverage.
+//
+// Coverage: 100% (1 test case, since the method has one branch)
+//
+// Test cases:
+//   - Returns: the stream underneath comes back, so a caller can ask what the
+//     output really is
+func TestUnwrap(t *testing.T) {
+	// Verify the wrapped stream is handed back. Colour is what needs this: a
+	// wrapper is not a terminal, so a check that stops here would turn the
+	// colour off for every stream in the program.
+	t.Run("Returns", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := &witness{to: &buf}
+
+		if w.Unwrap() != io.Writer(&buf) {
+			t.Error("Unwrap did not return the stream underneath")
 		}
 	})
 }

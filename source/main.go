@@ -279,6 +279,15 @@ type witness struct {
 	written bool
 }
 
+// Unwrap returns the stream underneath, so that anything needing to know what
+// the output really is can see past this. Colour is the caller that needs it:
+// a wrapper is not a terminal, and asking one would turn the colour off for the
+// whole program.
+//
+// Returns:
+//   - the writer this passes everything on to
+func (w *witness) Unwrap() io.Writer { return w.to }
+
 // Write records that something was produced and passes it on.
 func (w *witness) Write(p []byte) (int, error) {
 	if len(p) > 0 {
