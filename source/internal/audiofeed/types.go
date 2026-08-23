@@ -38,6 +38,15 @@ const (
 
 // How long auto listens before it decides, and by how much one side has to win.
 const (
+	// cancelFrames is one second of audio that was above the floor, which is
+	// all it takes to see that folding the two sides destroys them.
+	//
+	// Shorter than chooseFrames because it answers a much louder question. The
+	// difference between the two sides is measured in decibels either way, but
+	// cancellation is eleven of them rather than the handful that separates a
+	// slightly unbalanced pair, so it does not need the same evidence.
+	cancelFrames = 1000 / FrameMS
+
 	// chooseFrames is three seconds of audio that was actually above the floor,
 	// counted in frames rather than measured on a clock. Three seconds is about
 	// one transmission, which is the smallest sample that says anything: half a

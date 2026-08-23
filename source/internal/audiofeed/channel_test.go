@@ -304,71 +304,45 @@ func TestParseChannel(t *testing.T) {
 
 // Test_decide tests the decide function with 100% coverage.
 //
-// Coverage: 100% (6 test cases covering all branches)
+// Called directly rather than through observe, because two of these cannot be
+// reached that way. Observe only counts a frame once a side is above the floor,
+// so the sums cannot both be zero by the time it asks, and its shortcut
+// normally catches cancellation a second in rather than three, so decide sees
+// that case only when the audio was not yet cancelling at the one second mark.
+//
+// Coverage: 100% (8 test cases covering all branches)
 //
 // Test cases:
 //   - NothingEitherSide: no evidence at all still answers
-//   - RightEmpty: a mono lead on the left
-//   - LeftEmpty: a mono lead on the right
-//   - LeftDominates: the left is far louder than a noise floor on the right
-//   - RightDominates: the right is far louder than a noise floor on the left
-//   - Balanced: two sides carrying the same signal
+//   - RightEmpty, LeftEmpty: a mono lead on one side
+//   - LeftDominates, RightDominates: one side far louder than a noise floor
+//   - Balanced: two sides carrying the same signal, which folds safely
+//   - Cancelling: two sides that fold to nothing, either way round
 func Test_decide(t *testing.T) {
-
-	// Verify that no evidence at all still answers.
-	//
-	// Called here rather than through observe because observe only counts a
-	// frame once a side is above the floor, so the sums cannot both be zero by
-	// the time it asks. Mix is the answer that is never silent, and this is the
-	// test that says so out loud.
-	t.Run("NothingEitherSide", func(t *testing.T) {
-		c := &chooser{}
-		if got := c.decide(); got != ChannelMix {
-			t.Errorf("with no evidence at all it chose %q, want %q", got, ChannelMix)
-		}
-	})
-
-	// Verify that a mono lead on the left is heard as the left.
-	t.Run("RightEmpty", func(t *testing.T) {
-		c := &chooser{sumL: loud * loud}
-		if got := c.decide(); got != ChannelLeft {
-			t.Errorf("chose %q, want %q", got, ChannelLeft)
-		}
-	})
-
-	// Verify that a mono lead on the right is heard as the right.
-	t.Run("LeftEmpty", func(t *testing.T) {
-		c := &chooser{sumR: loud * loud}
-		if got := c.decide(); got != ChannelRight {
-			t.Errorf("chose %q, want %q", got, ChannelRight)
-		}
-	})
-
-	// Verify that the left far above a noise floor on the right is heard as the
-	// left.
-	t.Run("LeftDominates", func(t *testing.T) {
-		c := &chooser{sumL: loud * loud, sumR: (loud / 1000) * (loud / 1000)}
-		if got := c.decide(); got != ChannelLeft {
-			t.Errorf("chose %q, want %q", got, ChannelLeft)
-		}
-	})
-
-	// Verify that the right far above a noise floor on the left is heard as the
-	// right.
-	t.Run("RightDominates", func(t *testing.T) {
-		c := &chooser{sumL: (loud / 1000) * (loud / 1000), sumR: loud * loud}
-		if got := c.decide(); got != ChannelRight {
-			t.Errorf("chose %q, want %q", got, ChannelRight)
-		}
-	})
-
-	// Verify that two sides carrying the same signal are mixed.
-	t.Run("Balanced", func(t *testing.T) {
-		c := &chooser{sumL: loud * loud, sumR: (loud / 2) * (loud / 2)}
-		if got := c.decide(); got != ChannelMix {
-			t.Errorf("chose %q, want %q", got, ChannelMix)
-		}
-	})
+	for _, c := range []struct {
+		name             string
+		sumL, sumR, sumM float64
+		want, why        string
+	}{
+		{"NothingEitherSide", 0, 0, 0, ChannelMix, ""},
+		{"RightEmpty", 100, 0, 25, ChannelLeft, ""},
+		{"LeftEmpty", 0, 100, 25, ChannelRight, ""},
+		{"LeftDominates", 100, 0.1, 25, ChannelLeft, ""},
+		{"RightDominates", 0.1, 100, 25, ChannelRight, ""},
+		{"Balanced", 100, 100, 100, ChannelMix, ""},
+		{"CancellingLeftLouder", 100, 90, 1, ChannelLeft, ReasonOutOfPhase},
+		{"CancellingRightLouder", 90, 100, 1, ChannelRight, ReasonOutOfPhase},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pick := &chooser{sumL: c.sumL, sumR: c.sumR, sumM: c.sumM}
+			if got := pick.decide(); got != c.want {
+				t.Errorf("decided %q, want %q", got, c.want)
+			}
+			if pick.reason() != c.why {
+				t.Errorf("gave the reason %q, want %q", pick.reason(), c.why)
+			}
+		})
+	}
 }
 
 // TestLevelOf tests the LevelOf function with 100% coverage.
@@ -518,5 +492,46 @@ func TestChooserStillFoldsSidesThatAgree(t *testing.T) {
 
 	if settled, _ := pick.decided(); settled != ChannelMix {
 		t.Errorf("the chooser settled on %q, want %q for two sides that agree", settled, ChannelMix)
+	}
+}
+
+// TestChooserSpotsCancellationQuickly checks that the fold is corrected within
+// about a second of audio rather than three.
+//
+// Every frame spent confirming it is a frame recorded with the sound cancelled
+// out, and on a channel that is quiet most of the time those frames are the
+// opening of the first transmission somebody hears.
+func TestChooserSpotsCancellationQuickly(t *testing.T) {
+	pick := newChooser(ChannelAuto)
+
+	for range cancelFrames {
+		pick.observe(loud, loud, loud/8)
+	}
+
+	settled, ok := pick.decided()
+	if !ok {
+		t.Fatalf("still undecided after %d frames of cancelling audio", cancelFrames)
+	}
+	if settled == ChannelMix {
+		t.Error("settled on the fold that cancels")
+	}
+	if pick.reason() != ReasonOutOfPhase {
+		t.Errorf("gave the reason %q, want %q", pick.reason(), ReasonOutOfPhase)
+	}
+}
+
+// TestChooserDoesNotRushTheOtherQuestion checks that the shortcut is only for
+// cancellation.
+//
+// Which of two sides carries more is a comparison that needs a fair sample,
+// since a syllable can be quiet on either one, so it still waits.
+func TestChooserDoesNotRushTheOtherQuestion(t *testing.T) {
+	pick := newChooser(ChannelAuto)
+
+	for range cancelFrames {
+		pick.observe(loud, 0, inPhase(loud, 0))
+	}
+	if _, ok := pick.decided(); ok {
+		t.Error("settled which side carries the audio after a second, want it to wait")
 	}
 }

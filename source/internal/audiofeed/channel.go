@@ -70,12 +70,55 @@ func dbfs(rms float64) float64 {
 // Returns:
 //   - ChannelLeft or ChannelRight when one side dominates, ChannelMix otherwise
 func (c *chooser) decide() string {
+	// One side carrying everything is the plainest answer there is, and it is
+	// asked first: a dead side makes folding lossy too, but for a reason that
+	// has nothing to do with phase and no advice worth giving.
+	if side := c.dominant(); side != "" {
+		return side
+	}
+
+	if c.cancels() {
+		// Worth saying out loud. Taking one side recovers the level, but the
+		// owner can fix it properly in one menu and have it right for
+		// everything they plug the radio into, not just this tool.
+		c.why = ReasonOutOfPhase
+		return c.louder()
+	}
+	return ChannelMix
+}
+
+// cancels reports whether folding the two sides together destroys them.
+//
+// Both sides carrying the signal is not on its own a reason to fold them: two
+// sides can be equally loud and still cancel, and that is the case that
+// matters. The headphone jack on an SDS100 and an SDS150 is wired out of phase,
+// which puts the same mono audio on the two sides with opposite polarity unless
+// the owner has found the menu that inverts one of them.
+//
+// Measured on one, folding those cost eleven decibels and took most of the
+// voice's body with it, because the low frequencies are the most alike between
+// the two sides and cancel the most completely. What is left is thin and reedy,
+// and sounds like the speaker is talking through a kazoo.
+//
+// So the fold is judged by what it produces rather than by the levels going
+// into it. Two sides carrying the same audio fold with no loss at all, so any
+// real loss means they disagree.
+//
+// Returns:
+//   - true if mixing comes out meaningfully quieter than the louder side alone
+func (c *chooser) cancels() bool {
+	return c.sumM > 0 && 10*math.Log10(math.Max(c.sumL, c.sumR)/c.sumM) > cancelDB
+}
+
+// dominant returns the side carrying the audio, when one of them plainly is.
+//
+// Returns:
+//   - ChannelLeft or ChannelRight when one side is far louder than the other,
+//     empty when they are comparable or when there is nothing on either
+func (c *chooser) dominant() string {
 	switch {
-	case c.sumR == 0 && c.sumL == 0:
-		// Cannot happen: a frame only counts once a side is above the floor.
-		// Answered anyway, because mix is the mode that is never silent and
-		// this is not worth a panic.
-		return ChannelMix
+	case c.sumL == 0 && c.sumR == 0:
+		return ""
 	case c.sumR == 0:
 		return ChannelLeft
 	case c.sumL == 0:
@@ -84,46 +127,26 @@ func (c *chooser) decide() string {
 
 	// Ten rather than twenty in front of the logarithm because these are sums
 	// of squares, which are already in the units power is measured in.
-	diff := 10 * math.Log10(c.sumL/c.sumR)
-	switch {
+	switch diff := 10 * math.Log10(c.sumL/c.sumR); {
 	case diff > dominanceDB:
 		return ChannelLeft
 	case diff < -dominanceDB:
 		return ChannelRight
 	}
-
-	// Both sides carry the signal, which is not on its own a reason to fold
-	// them together. Two sides can be equally loud and still cancel, and this
-	// is the case that matters: an SDS150 has a setting for whether its
-	// headphone output is in phase or inverted, and inverted puts the same mono
-	// audio on the two sides with opposite polarity.
-	//
-	// Measured on one, folding those cost eleven decibels and took most of the
-	// voice's body with it, because the low frequencies are the most alike
-	// between the two sides and cancel the most completely. What is left is
-	// thin and reedy, and sounds like the speaker is talking through a kazoo.
-	//
-	// So the fold is judged by what it produces rather than by the levels going
-	// into it. If mixing loses more than a little against the louder side on its
-	// own, it is destroying the signal and one side is taken instead.
-	if c.sumM > 0 && 10*math.Log10(math.Max(c.sumL, c.sumR)/c.sumM) > cancelDB {
-		// Worth saying out loud. Taking one side recovers the level, but the
-		// owner can fix it properly in one menu and have it right for
-		// everything they plug the radio into, not just this tool.
-		c.why = ReasonOutOfPhase
-		if c.sumL >= c.sumR {
-			return ChannelLeft
-		}
-		return ChannelRight
-	}
-	return ChannelMix
+	return ""
 }
 
-// decided returns the answer and whether there is one yet.
+// louder returns whichever single side carries more.
 //
 // Returns:
-//   - the settled channel mode, empty until there is one
-//   - whether the choice has been made
+//   - ChannelLeft or ChannelRight
+func (c *chooser) louder() string {
+	if c.sumL >= c.sumR {
+		return ChannelLeft
+	}
+	return ChannelRight
+}
+
 func (c *chooser) decided() (string, bool) {
 	return c.settled, c.settled != ""
 }
@@ -243,8 +266,22 @@ func (c *chooser) observe(left, right, mixed float64) string {
 	// Waiting costs nothing by comparison. Undecided already folds with mix, so
 	// the only thing the deadline ever changed was whether a later transmission
 	// was allowed to correct it.
-	if c.qualified >= chooseFrames {
+	switch {
+	case c.qualified >= chooseFrames:
 		c.settled = c.decide()
+
+	// Cancellation is settled sooner than the rest, because it is a far
+	// louder question. Which of two sides carries more is a comparison that
+	// needs a fair sample, since a syllable can be quiet on either. Whether
+	// folding them destroys the signal is an eleven decibel effect that is
+	// obvious in the first moment of audio, and every frame spent confirming
+	// it is a frame recorded with the sound cancelled out.
+	case c.qualified >= cancelFrames && c.dominant() == "" && c.cancels():
+		c.why = ReasonOutOfPhase
+		c.settled = c.louder()
+	}
+
+	if c.settled != "" {
 		return c.settled
 	}
 	return ChannelMix
