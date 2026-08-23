@@ -7,6 +7,7 @@ package audio
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -423,6 +424,7 @@ func (r *recorder) one(ev audiogate.Event) error {
 			return err
 		}
 		r.open = open
+		r.clipped, r.samples = 0, 0
 		return nil
 
 	case audiogate.KindAudio:
@@ -433,6 +435,7 @@ func (r *recorder) one(ev audiogate.Event) error {
 			// night's recording.
 			return nil
 		}
+		r.count(ev.Frame.PCM)
 		return r.open.Write(ev.Frame.PCM)
 
 	default:
@@ -447,8 +450,97 @@ func (r *recorder) one(ev audiogate.Event) error {
 		if err != nil {
 			return err
 		}
-		return reportRecording(r.app, filed)
+		if err := reportRecording(r.app, filed); err != nil {
+			return err
+		}
+		r.warnIfClipped()
+		return nil
 	}
+}
+
+// volumeNow reads the scanner's volume for the clipping warning to quote.
+//
+// Every failure is the same answer here. The volume is a nicety on a warning
+// about something else, so a scanner that is busy, absent, or simply unwilling
+// to say costs the warning one sentence rather than costing the run anything.
+//
+// Parameters:
+//   - ctx: context for the exchange with the scanner
+//   - app: the application context holding the scanner connection
+//
+// Returns:
+//   - the volume level, or -1 when it could not be read
+func volumeNow(ctx context.Context, app *appcontext.App) int {
+	client, err := app.Device(ctx)
+	if err != nil {
+		return -1
+	}
+	level, err := client.Volume(ctx)
+	if err != nil {
+		return -1
+	}
+	return level
+}
+
+// count folds one frame of audio into the clipping tally for the open
+// recording.
+//
+// Parameters:
+//   - pcm: signed 16-bit little-endian mono samples
+func (r *recorder) count(pcm []byte) {
+	for i := 0; i+1 < len(pcm); i += 2 {
+		sample := int16(binary.LittleEndian.Uint16(pcm[i : i+2]))
+		r.samples++
+		if sample >= clipCeiling || sample <= -clipCeiling {
+			r.clipped++
+		}
+	}
+}
+
+// warnIfClipped says so when the recording just filed was overloaded on the
+// way in.
+//
+// It is said again for every recording rather than once for the run, because
+// the warning is only useful next to the thing it is about. A line that
+// scrolled past twenty transmissions ago does not tell somebody that the one
+// they are looking at is distorted, and the whole point of repeating it is that
+// it stops the moment the volume comes down.
+//
+// The advice names the volume rather than a target level, because how far down
+// is far enough depends on the sound card and the only honest instruction is to
+// lower it until this stops.
+//
+// The level is read here rather than remembered from the start of the run, so
+// that somebody who just turned the volume down is told the number they set
+// rather than the one they replaced.
+//
+// It says to turn the radio down rather than naming "radiocli volume set",
+// which is the obvious thing to write and does not work. This command holds the
+// serial port for as long as it runs, so that invocation is refused as busy by
+// the very run that printed the advice. The knob is the way, and it is already
+// in the person's hand.
+func (r *recorder) warnIfClipped() {
+	if r.samples == 0 || float64(r.clipped) < clipFraction*float64(r.samples) {
+		return
+	}
+
+	volume := -1
+	if r.volume != nil {
+		volume = r.volume()
+	}
+
+	percent := 100 * float64(r.clipped) / float64(r.samples)
+	if volume < 0 {
+		render.Alert(r.app, "  warning: %.1f%% of that recording is clipped, so the sound input is being\n"+
+			"           overloaded. Turn the scanner's volume down until this stops, or move\n"+
+			"           the cable to a line input rather than a microphone input.\n", percent)
+		return
+	}
+	render.Alert(r.app, "  warning: %.1f%% of that recording is clipped, so the sound input is being\n"+
+		"           overloaded. Turn the scanner's volume down from %d of %d until this\n"+
+		"           stops, or move the cable to a line input rather than a microphone\n"+
+		"           input.\n",
+		percent, volume, device.MaxLevel)
 }
 
 // openAudio starts the audio arriving, either from a sound card this process
@@ -563,6 +655,7 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 	r := &recorder{
 		app:     app,
 		library: library,
+		volume:  func() int { return volumeNow(ctx, app) },
 		gate: audiogate.New(audiogate.Options{
 			Hang:        opts.hang,
 			MinDuration: opts.minDuration,

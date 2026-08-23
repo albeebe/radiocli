@@ -43,6 +43,25 @@ const (
 // still bounded, because the sound card cannot be asked to wait.
 const feedQueue = 1000 / audiofeed.FrameMS
 
+// The two numbers that decide whether a recording was overloaded on the way in.
+//
+// clipCeiling is the sample value at which a converter has run out of room.
+// Anything louder than full scale is handed back as full scale, so a run of
+// these is the flat top of a waveform that was too big for the input.
+//
+// clipFraction is how much of a transmission has to be flat before it is worth
+// interrupting somebody about. Measured on an SDS150 through the same cable
+// into both jacks: twenty-three recordings through a line input contained
+// exactly zero full-scale samples between them, out of four and a half million,
+// while every overloaded recording through a mic input ran from 1.4% to 19%.
+// The gap is wide enough that the threshold hardly matters, so it is set low
+// and left there. One sample in a thousand is far above what clean audio
+// produces and far below what a mic input does.
+const (
+	clipCeiling  = 32767
+	clipFraction = 0.001
+)
+
 // meterEvery is how many frames go by between level readings under --verbose.
 //
 // About one every two seconds. Fast enough to watch somebody move a volume
@@ -209,4 +228,23 @@ type recorder struct {
 	// seen is every reading of the radio taken while the open recording has
 	// been running, and is what labels it when it ends.
 	seen []device.Heard
+
+	// volume reads the scanner's volume level, or reports -1 when it cannot be
+	// read. It is nil when nothing arranged one.
+	//
+	// A function rather than a number, and read again for every warning rather
+	// than once for the run. The first version of this cached it on the
+	// reasoning that turning the volume down is what stops the warning quoting
+	// it, so a stale reading could not mislead for long. That was wrong in the
+	// case that matters: one notch is not enough to stop a mic input clipping,
+	// so the warning fires again and repeats the level the person has just
+	// changed. Telling somebody their volume is still 15 immediately after they
+	// set it to 14 reads as the tool not seeing the radio at all, which is
+	// worse than saying nothing.
+	volume func() int
+
+	// clipped and samples count the open recording's audio, for deciding
+	// whether the input was overloaded while it was being written.
+	clipped int
+	samples int
 }

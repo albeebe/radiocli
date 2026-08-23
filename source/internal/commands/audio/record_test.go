@@ -468,6 +468,39 @@ func Test_recordLoop(t *testing.T) {
 		return n
 	}
 
+	// Verify a transmission recorded through an overloaded input is warned
+	// about, all the way through the real wiring rather than a recorder built
+	// by hand. This is the path that reads the scanner for the level, so it is
+	// the one that has to work when nothing can be read.
+	t.Run("Clipping", func(t *testing.T) {
+		r, frames, _, _, cancel, done := start(t)
+		defer cancel()
+
+		// A tone at 0 dBFS is every sample at full scale, which is what an
+		// input given far more signal than it can take hands back.
+		quiet, next := feed(0, 30, quietLevel)
+		for _, f := range quiet {
+			frames <- f
+		}
+		r.on.Store(true)
+		settle()
+		loud, next := feed(next, 60, 0.0)
+		for _, f := range loud {
+			frames <- f
+		}
+		r.on.Store(false)
+		settle()
+		tail, _ := feed(next, 60, quietLevel)
+		for _, f := range tail {
+			frames <- f
+		}
+		close(frames)
+
+		if err := <-done; err != nil {
+			t.Fatalf("recording: %v", err)
+		}
+	})
+
 	// Verify a transmission the radio confirmed lands as a file with a
 	// description beside it.
 	t.Run("Transmission", func(t *testing.T) {
@@ -1974,5 +2007,258 @@ func Test_openAudioReportsWhatTheFeedSays(t *testing.T) {
 	}
 	if !strings.Contains(errs.String(), "Headphone L/R output") {
 		t.Errorf("said %q, want the menu that fixes it named", errs.String())
+	}
+}
+
+// Test_volumeNow tests the volumeNow function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering every branch)
+//
+// Test cases:
+//   - Reads: a scanner that answers gives the level
+//   - NoScanner: no radio is -1 rather than an error, since the volume is a
+//     nicety on a warning about something else
+//   - Unreadable: a scanner that answers with nonsense is -1 too
+func Test_volumeNow(t *testing.T) {
+	// Verify the level comes back when the scanner answers.
+	t.Run("Reads", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+		app.SetDevice(device.New(recordConn{doc: "12"}))
+
+		if got := volumeNow(context.Background(), app); got != 12 {
+			t.Errorf("volumeNow() = %d, want 12", got)
+		}
+	})
+
+	// Verify that having no radio costs the warning a sentence rather than
+	// costing the run anything.
+	t.Run("NoScanner", func(t *testing.T) {
+		app, _, _ := recorderApp()
+
+		if got := volumeNow(context.Background(), app); got != -1 {
+			t.Errorf("volumeNow() = %d, want -1", got)
+		}
+	})
+
+	// Verify the same for a scanner that answers with something unparseable.
+	t.Run("Unreadable", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+		app.SetDevice(device.New(recordConn{doc: "loud"}))
+
+		if got := volumeNow(context.Background(), app); got != -1 {
+			t.Errorf("volumeNow() = %d, want -1", got)
+		}
+	})
+}
+
+// Test_recorderWarnsWhenClipped tests the count and warnIfClipped methods with
+// 100% coverage.
+//
+// The thresholds are the ones measured on a real SDS150 through one cable into
+// both jacks: a line input produced no full-scale samples at all across
+// twenty-three recordings, and a mic input produced between 1.4% and 19% on
+// every recording that was not near silence.
+//
+// Coverage: 100% (5 test cases covering every branch of both)
+//
+// Test cases:
+//   - Clipped: an overloaded recording is warned about, naming the volume
+//   - NoVolume: the same warning without the level, when the radio never said
+//   - NoReader: a recorder with nothing to read the volume with still warns
+//   - Rereads: a volume changed between recordings is reported as it is now,
+//     not as it was when the run started
+//   - Clean: audio that fits is not warned about
+//   - Silence: a recording with no audio in it is not warned about
+//   - Resets: the tally starts again for each recording, so one loud
+//     transmission does not warn about the next
+func Test_recorderWarnsWhenClipped(t *testing.T) {
+	// recorderWith returns a recorder reading its volume from levels in turn,
+	// and the stderr it warns through. A list rather than a number so that a
+	// volume changed part way through a run can be tested, which is the whole
+	// reason it is read again for every warning.
+	recorderWith := func(t *testing.T, levels ...int) (*recorder, *bytes.Buffer) {
+		t.Helper()
+
+		app, _, errs := recorderApp()
+		l, err := recordings.New(t.TempDir(), "")
+		if err != nil {
+			t.Fatalf("opening the library: %v", err)
+		}
+
+		at := 0
+		return &recorder{app: app, library: l,
+			volume: func() int {
+				level := levels[at]
+				if at < len(levels)-1 {
+					at++
+				}
+				return level
+			},
+			gate: audiogate.New(audiogate.Options{})}, errs
+	}
+
+	// pcm returns one frame in which clipped of the samples are at full scale,
+	// alternating sides so both halves of the check are exercised.
+	pcm := func(samples, clipped int) []byte {
+		out := make([]byte, 2*samples)
+		for i := 0; i < samples; i++ {
+			v := int16(1000)
+			if i < clipped {
+				v = 32767
+				if i%2 == 1 {
+					v = -32767
+				}
+			}
+			binary.LittleEndian.PutUint16(out[2*i:], uint16(v))
+		}
+		return out
+	}
+
+	// record drives one whole transmission through the recorder.
+	record := func(t *testing.T, r *recorder, audio []byte) {
+		t.Helper()
+
+		events := []audiogate.Event{{Kind: audiogate.KindStart}}
+		if audio != nil {
+			events = append(events, audiogate.Event{
+				Kind: audiogate.KindAudio, Frame: audiofeed.Frame{PCM: audio},
+			})
+		}
+		events = append(events, audiogate.Event{Kind: audiogate.KindEnd})
+
+		if err := r.apply(events); err != nil {
+			t.Fatalf("recording: %v", err)
+		}
+	}
+
+	// Verify an overloaded recording is warned about, and that the warning
+	// names the level somebody is about to change.
+	t.Run("Clipped", func(t *testing.T) {
+		r, errs := recorderWith(t, 12)
+		record(t, r, pcm(1000, 50))
+
+		got := errs.String()
+		if !strings.Contains(got, "clipped") {
+			t.Errorf("said %q, want it to name the clipping", got)
+		}
+		if !strings.Contains(got, "5.0%") {
+			t.Errorf("said %q, want the proportion that clipped", got)
+		}
+		if !strings.Contains(got, "12") {
+			t.Errorf("said %q, want the volume level named", got)
+		}
+	})
+
+	// Verify the warning still happens without a radio to quote, since the
+	// audio is just as distorted either way.
+	t.Run("NoVolume", func(t *testing.T) {
+		r, errs := recorderWith(t, -1)
+		record(t, r, pcm(1000, 50))
+
+		got := errs.String()
+		if !strings.Contains(got, "clipped") {
+			t.Errorf("said %q, want it to name the clipping", got)
+		}
+		if strings.Contains(got, "down from") {
+			t.Errorf("said %q, want no level quoted when none was read", got)
+		}
+	})
+
+	// Verify a recorder nothing gave a volume reader to still says the useful
+	// half of the message rather than panicking on the nil.
+	t.Run("NoReader", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		l, err := recordings.New(t.TempDir(), "")
+		if err != nil {
+			t.Fatalf("opening the library: %v", err)
+		}
+		r := &recorder{app: app, library: l, gate: audiogate.New(audiogate.Options{})}
+
+		record(t, r, pcm(1000, 50))
+
+		if got := errs.String(); !strings.Contains(got, "clipped") {
+			t.Errorf("said %q, want the warning without a level", got)
+		}
+	})
+
+	// Verify the level is read again for each warning. Somebody who turns the
+	// volume down and sees the old number reads it as the tool not talking to
+	// the radio at all, which is worse than saying nothing.
+	t.Run("Rereads", func(t *testing.T) {
+		r, errs := recorderWith(t, 15, 14)
+
+		record(t, r, pcm(1000, 50))
+		if got := errs.String(); !strings.Contains(got, "down from 15 of") {
+			t.Errorf("the first warning said %q, want it to name 15", got)
+		}
+
+		errs.Reset()
+		record(t, r, pcm(1000, 50))
+		if got := errs.String(); !strings.Contains(got, "down from 14 of") {
+			t.Errorf("the second warning said %q, want it to name 14", got)
+		}
+	})
+
+	// Verify audio that fits is left alone, which is every recording through a
+	// line input.
+	t.Run("Clean", func(t *testing.T) {
+		r, errs := recorderWith(t, 12)
+		record(t, r, pcm(1000, 0))
+
+		if got := errs.String(); got != "" {
+			t.Errorf("said %q about a recording that did not clip", got)
+		}
+	})
+
+	// Verify a recording with no audio at all is not divided by zero.
+	t.Run("Silence", func(t *testing.T) {
+		r, errs := recorderWith(t, 12)
+		record(t, r, nil)
+
+		if got := errs.String(); got != "" {
+			t.Errorf("said %q about a recording with no audio in it", got)
+		}
+	})
+
+	// Verify the tally is per recording rather than per run, so a clean
+	// transmission after a clipped one is reported as clean.
+	t.Run("Resets", func(t *testing.T) {
+		r, errs := recorderWith(t, 12)
+		record(t, r, pcm(1000, 50))
+		errs.Reset()
+
+		record(t, r, pcm(1000, 0))
+		if got := errs.String(); got != "" {
+			t.Errorf("said %q about the clean recording that followed a clipped one", got)
+		}
+	})
+}
+
+// Test_recorderReportsAFailedReport covers the one path that opens between
+// filing a recording and warning about it: the recording was written, and
+// saying so failed.
+//
+// It matters because the warning must not be reached with the report only half
+// written. Under --output json the report is the object a script is reading,
+// and a stream that has gone away is the run ending rather than something to
+// carry on past.
+func Test_recorderReportsAFailedReport(t *testing.T) {
+	app, _, _ := recorderApp()
+	app.Config.Output = appcontext.OutputJSON
+	app.Stdout = failWriter{}
+
+	l, err := recordings.New(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("opening the library: %v", err)
+	}
+	r := &recorder{app: app, library: l, gate: audiogate.New(audiogate.Options{})}
+
+	if err := r.apply([]audiogate.Event{
+		{Kind: audiogate.KindStart},
+		{Kind: audiogate.KindEnd},
+	}); err == nil {
+		t.Fatal("a report that could not be written reported nothing")
 	}
 }

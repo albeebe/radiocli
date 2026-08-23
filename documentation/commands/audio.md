@@ -697,6 +697,39 @@ guessed at.
 channel, the channel fields are absent from the JSON and the recording is named
 from its timestamp alone.
 
+**An overloaded input is warned about, in yellow, after every recording it spoils.**
+
+```
+15:08:19    3.3s  City of Manchester Fire Fire Tac 4
+  warning: 9.3% of that recording is clipped, so the sound input is being
+           overloaded. Turn the scanner's volume down from 12 of 15 until this
+           stops, or move the cable to a line input rather than a microphone
+           input.
+```
+
+This is what a microphone input does with a line-level signal. A mic input
+expects a few millivolts from a microphone capsule and applies gain on top; the
+scanner's headphone socket puts out far more than that, so the samples run past
+full scale and are handed back flat-topped. The distortion cannot be undone
+afterwards, because the peaks never reached the file.
+
+Nothing else goes wrong. The transmissions are still detected, cut and labelled
+correctly, which is exactly why it is worth interrupting about: a night of
+recordings can be quietly ruined while every line on screen looks right.
+
+It is said again for each spoiled recording rather than once for the run,
+because the warning is only useful beside the thing it is about, and because it
+stopping is how you know the volume is now low enough. The level is read from
+the scanner each time, so turning the radio down part way through a run is
+reflected in the next warning rather than repeating the number you just changed.
+
+**Turn the volume down on the radio, not with `volume set`.** This command holds
+the serial port for as long as it runs, so a second `radiocli` is refused as busy
+while it is recording. The scanner's own volume control is the one that works
+mid-run, and it is what the warning is asking for.
+
+The colour is dropped when stderr is not a terminal, and when `NO_COLOR` is set.
+
 ## Errors
 
 | Error | Meaning | Fix |
