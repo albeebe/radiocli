@@ -336,6 +336,122 @@ func TestScannerInfoCommand(t *testing.T) {
 	})
 }
 
+// TestScannerInfoReadsAConventionalChannel tests the elements a conventional
+// system reports while it is receiving, with 100% coverage of the tidying done
+// to them.
+//
+// The document is a real one, read off an SDS150 on firmware 1.00.37 with the
+// names changed. It is here in full because these attribute spellings were
+// guessed wrongly once already: there is no Channel element on this firmware,
+// the channel arrives as ConvFrequency, and an identifier the radio has not
+// decoded is filled in with the words "TGID None" rather than being left out.
+//
+// Coverage: 100% (2 test cases covering all branches)
+//
+// Test cases:
+//   - Receiving: the channel, the frequency and the mute state are read
+//   - NoneMeansNone: the scanner's words for an absent identifier read as empty
+func TestScannerInfoReadsAConventionalChannel(t *testing.T) {
+	const doc = `<ScannerInfo Mode="Scan Mode" V_Screen="conventional_scan">` +
+		`<MonitorList Name="Pocahontas County" Index="2" ListType="FL" Q_Key="0" N_Tag="None" DB_Counter="1"/>` +
+		`<System Name="PUBLIC SAFETY" Index="10" Avoid="Off" SystemType="Conventional" Hold="Off"/>` +
+		`<Department Name="POLICE DEPARTMENT" Index="13" Avoid="Off" Hold="Off"/>` +
+		`<ConvFrequency Name="DISPATCH" Index="15" Avoid="Off" Freq=" 155.550000MHz" Mod="NFM"` +
+		` Hold="Off" SvcType="Custom 1" P_Ch="Off" SAS="All" SAD="None" RecSlot="Slot None"` +
+		` LVL="0" IFX="Off" TGID="TGID None" U_Id="UID None"/>` +
+		`<Property F="Off" VOL="13" SQL="5" Sig="0" Att="Off" Rec="Off" KeyLock="Off"` +
+		` P25Status="None" Mute="Unmute" Backlight="100" A_Led="Blue" Dir="Up" Rssi="-87"/>` +
+		`</ScannerInfo>`
+
+	// Verify that the hierarchy above the channel and the channel itself are
+	// read, and that the frequency loses the space the scanner writes it with.
+	t.Run("Receiving", func(t *testing.T) {
+		info, err := answeringXML(doc).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("reading the scanner info: %v", err)
+		}
+
+		if info.List.Name != "Pocahontas County" || info.List.Type != "FL" {
+			t.Errorf("got list %+v, want the favorites list", info.List)
+		}
+		if info.Frequency.Name != "DISPATCH" || info.Frequency.Modulation != "NFM" {
+			t.Errorf("got %+v, want the conventional channel", info.Frequency)
+		}
+		if info.Frequency.Frequency != "155.550000MHz" {
+			t.Errorf("got %q, want the scanner's leading space stripped", info.Frequency.Frequency)
+		}
+		if info.Property.Recording != "Off" {
+			t.Errorf("got %q, want the scanner's own recorder reported", info.Property.Recording)
+		}
+
+		// The gate is open before the signal reading catches up, which is why
+		// these two are asked separately.
+		if !info.Property.Unmuted() {
+			t.Error("the scanner is passing audio and Unmuted said otherwise")
+		}
+		if info.Property.Receiving() {
+			t.Error("no bars are showing yet and Receiving said there were")
+		}
+
+		// A conventional system sends no Channel element at all, so anything
+		// wanting the channel has to go through Tuned.
+		if info.Channel.Name != "" {
+			t.Errorf("got a channel %q, want none: this firmware sends no Channel element", info.Channel.Name)
+		}
+		name, value, unit := info.Tuned()
+		if name != "DISPATCH" || value != "155.550000MHz" || unit != "" {
+			t.Errorf("got %q, %q and %q, want the conventional channel", name, value, unit)
+		}
+	})
+
+	// Verify that the words the scanner writes for an identifier it has not
+	// decoded do not reach a caller as a value.
+	t.Run("NoneMeansNone", func(t *testing.T) {
+		info, err := answeringXML(doc).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("reading the scanner info: %v", err)
+		}
+		if info.Frequency.Talkgroup != "" || info.Frequency.UnitID != "" {
+			t.Errorf("got talkgroup %q and unit %q, want both empty",
+				info.Frequency.Talkgroup, info.Frequency.UnitID)
+		}
+	})
+}
+
+// TestTuned tests the Tuned method with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering all branches)
+//
+// Test cases:
+//   - Trunked: a talkgroup is preferred, since only one of the two is ever sent
+//   - Conventional: a frequency is used when there is no talkgroup
+//   - Neither: the Channel element is the last resort, and is normally empty
+func TestTuned(t *testing.T) {
+	t.Run("Trunked", func(t *testing.T) {
+		info := ScannerInfo{Talkgroup: Talkgroup{Name: "Fireground", ID: "24944", UnitID: "32"}}
+		name, value, unit := info.Tuned()
+		if name != "Fireground" || value != "24944" || unit != "32" {
+			t.Errorf("got %q, %q and %q, want the talkgroup", name, value, unit)
+		}
+	})
+
+	t.Run("Conventional", func(t *testing.T) {
+		info := ScannerInfo{Frequency: ConvFrequency{Name: "Dispatch", Frequency: "155.550000MHz"}}
+		name, value, unit := info.Tuned()
+		if name != "Dispatch" || value != "155.550000MHz" || unit != "" {
+			t.Errorf("got %q, %q and %q, want the frequency", name, value, unit)
+		}
+	})
+
+	t.Run("Neither", func(t *testing.T) {
+		info := ScannerInfo{Channel: Named{Name: "Dispatch"}}
+		name, value, unit := info.Tuned()
+		if name != "Dispatch" || value != "" || unit != "" {
+			t.Errorf("got %q, %q and %q, want the name alone", name, value, unit)
+		}
+	})
+}
+
 // TestScanning tests the Scanning method with 100% coverage.
 //
 // Coverage: 100% (2 test cases covering all branches)
@@ -465,6 +581,60 @@ func TestScannerInfoReadsEitherMenuSpelling(t *testing.T) {
 		}
 		if info.Menu.Index != "LOC" {
 			t.Errorf("got menu %+v, want the capitalised Index to be read on its own", info.Menu)
+		}
+	})
+}
+
+// TestHeard tests the Heard method with 100% coverage.
+//
+// It is the shape the "receiving" command renders and the recorder reads back
+// over a socket, so the two agreeing on it is the whole point of it living
+// here.
+//
+// Coverage: 100% (2 test cases covering all branches)
+//
+// Test cases:
+//   - Conventional: the frequency is reported and the talkgroup left empty
+//   - Trunked: the talkgroup is reported and the frequency left empty
+func TestHeard(t *testing.T) {
+	t.Run("Conventional", func(t *testing.T) {
+		info := ScannerInfo{
+			Mode:       "Scan Mode",
+			List:       MonitorList{Name: "Pocahontas County"},
+			System:     Named{Name: "PUBLIC SAFETY"},
+			Department: Named{Name: "POLICE DEPARTMENT"},
+			Frequency:  ConvFrequency{Name: "MARLINTON DISPATCH", Frequency: "155.550000MHz", Modulation: "NFM"},
+			Property:   Property{Mute: "Unmute", Signal: "0", RSSI: "-87"},
+		}
+
+		h := info.Heard()
+		if !h.Receiving || h.Channel != "MARLINTON DISPATCH" || h.Frequency != "155.550000MHz" {
+			t.Errorf("got %+v, want the conventional channel", h)
+		}
+		if h.Talkgroup != "" {
+			t.Errorf("got talkgroup %q, want none on a conventional system", h.Talkgroup)
+		}
+		if h.List != "Pocahontas County" || h.Mode != "Scan Mode" || h.RSSI != "-87" {
+			t.Errorf("got %+v, want the rest of the reading carried over", h)
+		}
+	})
+
+	t.Run("Trunked", func(t *testing.T) {
+		info := ScannerInfo{
+			Site:      Named{Name: "Bald Knob"},
+			Talkgroup: Talkgroup{Name: "FIREGROUND", ID: "24944", UnitID: "32"},
+			Property:  Property{Mute: "Mute"},
+		}
+
+		h := info.Heard()
+		if h.Talkgroup != "24944" || h.Site != "Bald Knob" || h.Unit != "32" {
+			t.Errorf("got %+v, want the talkgroup", h)
+		}
+		if h.Frequency != "" {
+			t.Errorf("got frequency %q, want none on a trunked system", h.Frequency)
+		}
+		if h.Receiving {
+			t.Error("the scanner is muted and Receiving said otherwise")
 		}
 	})
 }

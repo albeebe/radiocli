@@ -246,6 +246,57 @@ doing. `GSI` answers once; `PSI` streams.
 The specification says `PSI` takes a parameter controlling the push interval but
 never says what it is. That parameter remains undocumented.
 
+### A real document, read off the radio
+
+Everything above and below this comes from the specification. This is what an
+SDS150 on firmware 1.00.37 actually sent, scanning a conventional system, with
+the names changed:
+
+```xml
+<ScannerInfo Mode="Scan Mode" V_Screen="conventional_scan">
+  <MonitorList Name="Pocahontas County" Index="2" ListType="FL" Q_Key="0" N_Tag="None" DB_Counter="1" />
+  <System Name="PUBLIC SAFETY" Index="10" Avoid="Off" SystemType="Conventional" Q_Key="None" N_Tag="None" Hold="Off" />
+  <Department Name="POLICE DEPARTMENT" Index="13" Avoid="Off" Q_Key="None" Hold="Off" />
+  <ConvFrequency Name="MARLINTON DISPATCH" Index="15" Avoid="Off" Freq=" 155.550000MHz" Mod="NFM"
+                 N_Tag="None" Hold="Off" SvcType="Custom 1" P_Ch="Off" SAS="All" SAD="None"
+                 RecSlot="Slot None" LVL="0" IFX="Off" TGID="TGID None" U_Id="UID None" />
+  <DualWatch PRI="Off" CC="Off" WX="Off" />
+  <Property F="Off" VOL="13" SQL="5" Sig="0" Att="Off" Rec="Off" KeyLock="Off" P25Status="None"
+            Mute="Unmute" Backlight="100" A_Led="Blue" Dir="Up" Rssi="-87" />
+</ScannerInfo>
+```
+
+Three things in it are worth writing down, because each was guessed wrongly
+first.
+
+**There is no `Channel` element.** The specification describes one and this
+firmware never sends it. A conventional channel arrives as `ConvFrequency` and
+carries its own `Name`, and a talkgroup arrives as `TGID`. Anything reading "the
+channel" has to look in whichever of those two turned up, and code that reads a
+`Channel` element gets an empty string forever without ever failing.
+
+**An absent identifier is written out rather than omitted.** `TGID="TGID None"`
+and `U_Id="UID None"` are how the radio says it decoded neither, so a comparison
+against the empty string is quietly wrong about every document. `Freq` also
+carries a leading space.
+
+**`Mute` opens before `Sig` catches up.** These two consecutive documents are
+the same transmission, a third of a second apart:
+
+```
+Sig="0" Mute="Unmute" Rssi="-87"     first poll of the transmission
+Sig="5" Mute="Unmute" Rssi="-87"     the next one
+```
+
+The audio gate is already open while the signal reading still says nothing.
+Anything waiting for bars therefore misses the start of every transmission,
+which is the part hardest to get back, so `Mute` is the field to watch for "is
+it receiving right now" and `Sig` is a measure of how strong the signal is once
+there is one. `Rssi` reads `-999` when nothing is coming in.
+
+`Property` also carries `Rec`, which is the state of the radio's own recorder,
+and `A_Led`, which is `Blue` while receiving and `Off` otherwise.
+
 ### What is always there
 
 A root element, plus `Property`, `AGC`, `DispFormat`, a `ViewDescription` when an

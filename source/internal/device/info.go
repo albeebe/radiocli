@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -183,8 +184,126 @@ func (s *Scanner) ScannerInfo(ctx context.Context) (ScannerInfo, error) {
 
 	parsed.WxChannel.Frequency = strings.TrimSpace(parsed.WxChannel.Frequency)
 	info.Weather = Weather{Mode: parsed.WxMode.Mode, Channel: parsed.WxChannel}
+
+	// The scanner writes a frequency with a leading space, and writes the words
+	// "TGID None" and "UID None" rather than leaving an identifier out. Both are
+	// tidied here so that everything above this sees an absent value as empty,
+	// which is the one spelling worth having.
+	info.Frequency.Frequency = strings.TrimSpace(info.Frequency.Frequency)
+	info.Frequency.Talkgroup = present(info.Frequency.Talkgroup)
+	info.Frequency.UnitID = present(info.Frequency.UnitID)
+	info.Talkgroup.UnitID = present(info.Talkgroup.UnitID)
+
 	info.XML = doc
 	return info, nil
+}
+
+// Receiving reports whether a signal is actually coming in.
+//
+// The number of bars is the reading to trust. The raw strength figure is
+// reported even when nothing is coming in, as the noise floor, so a value there
+// says only that the scanner answered: a scanning radio with nothing on the
+// channel reports a strength of -999 and no bars at all.
+//
+// Returns:
+//   - true if the scanner is showing at least one signal bar
+func (p Property) Receiving() bool {
+	bars, err := strconv.Atoi(strings.TrimSpace(p.Signal))
+	return err == nil && bars > 0
+}
+
+// Heard flattens what the scanner is listening to into one value.
+//
+// Returns:
+//   - what the scanner is hearing, with everything it did not name left empty
+func (i ScannerInfo) Heard() Heard {
+	name, value, unit := i.Tuned()
+
+	h := Heard{
+		Receiving:  i.Property.Unmuted(),
+		List:       i.List.Name,
+		System:     i.System.Name,
+		Department: i.Department.Name,
+		Site:       i.Site.Name,
+		Channel:    name,
+		Unit:       unit,
+		Modulation: i.Frequency.Modulation,
+		Signal:     i.Property.Signal,
+		RSSI:       i.Property.RSSI,
+		Mode:       i.Mode,
+	}
+
+	// A conventional system answers with a frequency and a trunked one with a
+	// talkgroup, and they are not the same kind of number, so they are reported
+	// in fields of their own rather than in one meaning whichever arrived.
+	if i.Talkgroup.ID != "" {
+		h.Talkgroup = value
+	} else {
+		h.Frequency = value
+	}
+	return h
+}
+
+// Unmuted reports whether the scanner's audio gate is open, meaning sound is
+// coming out of it right now.
+//
+// This is a different question from Receiving, and the difference matters to
+// anything lining the radio up against its audio. The gate opens at the very
+// start of a transmission, before the signal reading has caught up: a document
+// captured on the first poll of a transmission read Mute="Unmute" with Sig="0",
+// and the next one read Sig="5" on the same unchanged signal. Waiting for bars
+// therefore misses the opening of every transmission, which is the part hardest
+// to get back.
+//
+// Returns:
+//   - true if the scanner is passing audio through
+func (p Property) Unmuted() bool {
+	return strings.EqualFold(strings.TrimSpace(p.Mute), "Unmute")
+}
+
+// Tuned returns what the scanner is on, whichever kind of thing that is.
+//
+// A conventional system reports a ConvFrequency and a trunked one a TGID, and
+// they are different documents describing the same idea. Callers that only want
+// to know what is being listened to should ask here rather than testing both,
+// which is the check that gets written once per caller and wrong in half of
+// them.
+//
+// Returns:
+//   - the channel's name, empty if the scanner is not on one
+//   - what it is tuned to, which is a frequency such as "155.235000MHz" on a
+//     conventional system and a talkgroup number on a trunked one
+//   - the radio heard transmitting, empty when none was decoded
+func (i ScannerInfo) Tuned() (name, value, unit string) {
+	if i.Talkgroup.ID != "" {
+		return i.Talkgroup.Name, i.Talkgroup.ID, i.Talkgroup.UnitID
+	}
+	if i.Frequency.Frequency != "" {
+		return i.Frequency.Name, i.Frequency.Frequency, i.Frequency.UnitID
+	}
+	// Nothing sent either element. The Channel the specification describes is
+	// the last resort, and is empty on every firmware seen so far.
+	return i.Channel.Name, "", ""
+}
+
+// present turns the scanner's way of writing "there is none" into an empty
+// string.
+//
+// The radio fills an unused identifier in with the words "TGID None" or
+// "UID None" rather than omitting the attribute, so anything comparing against
+// empty is quietly wrong about every frame.
+//
+// Parameters:
+//   - value: the attribute as the scanner wrote it
+//
+// Returns:
+//   - the value, or empty if it is one of the scanner's ways of saying none
+func present(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasSuffix(value, "None") {
+		return ""
+	}
+	return value
 }
 
 // Scanning reports whether the scanner is working through its favorites lists,

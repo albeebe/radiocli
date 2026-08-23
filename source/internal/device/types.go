@@ -787,6 +787,150 @@ type MenuItem struct {
 	Index string `xml:"Index,attr" json:"index"` // The scanner's own index for the entry, which is not its position
 }
 
+// ConvFrequency is the conventional channel the scanner is on.
+//
+// It is the closest thing the protocol has to "the channel", and it is what a
+// conventional system reports instead of the Channel element the specification
+// describes. Read off an SDS150 on firmware 1.00.37.
+type ConvFrequency struct {
+	// Name is the channel's alpha tag, such as "FIREGROUND 3".
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the channel.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Avoid is "Off", "T-Avoid" or "Avoid".
+	Avoid string `xml:"Avoid,attr" json:"avoid,omitempty"`
+
+	// Frequency carries its own unit, such as "155.235000MHz". The scanner
+	// writes it with a leading space, which ScannerInfo strips.
+	Frequency string `xml:"Freq,attr" json:"frequency,omitempty"`
+
+	// Modulation is how the scanner is demodulating, such as "NFM".
+	Modulation string `xml:"Mod,attr" json:"modulation,omitempty"`
+
+	// ServiceType is the category the channel is filed under, such as
+	// "Custom 1".
+	ServiceType string `xml:"SvcType,attr" json:"serviceType,omitempty"`
+
+	// Held reports whether the scanner is parked on this channel, "On" or
+	// "Off".
+	Held string `xml:"Hold,attr" json:"held,omitempty"`
+
+	// Talkgroup and UnitID carry the identifiers decoded out of a digital
+	// signal on this frequency, and are empty when there are none.
+	//
+	// The scanner writes the words "TGID None" and "UID None" rather than
+	// leaving them out, which ScannerInfo turns into the empty string so that
+	// absent reads as absent everywhere above here.
+	Talkgroup string `xml:"TGID,attr" json:"talkgroup,omitempty"`
+	UnitID    string `xml:"U_Id,attr" json:"unitId,omitempty"`
+}
+
+// MonitorList is the favorites list or database the scanner is working
+// through, which sits above the system in the hierarchy.
+type MonitorList struct {
+	// Name is the list's name, such as "Green Bank".
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the list.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Type is where the entries come from: "FL" for a favorites list, "FullDb"
+	// for the downloaded database, or "SWS" for a service search.
+	Type string `xml:"ListType,attr" json:"type,omitempty"`
+}
+
+// Talkgroup is the trunked talkgroup the scanner is on.
+//
+// **Unverified against hardware.** Every other element modelled here was read
+// off a real SDS150, but the radio tested is on a conventional system, which
+// never sends this one. The attribute names come from the protocol
+// specification and follow the spelling ConvFrequency uses for the same two
+// identifiers, which is the best evidence available without a trunked system to
+// point the radio at. Anything relying on these fields should confirm them
+// first, and the raw document is in ScannerInfo.XML for that.
+type Talkgroup struct {
+	// Name is the talkgroup's alpha tag.
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the talkgroup.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Avoid is "Off", "T-Avoid" or "Avoid".
+	Avoid string `xml:"Avoid,attr" json:"avoid,omitempty"`
+
+	// ID is the talkgroup number itself.
+	ID string `xml:"TGID,attr" json:"id,omitempty"`
+
+	// UnitID is the radio heard transmitting, empty when none was decoded.
+	UnitID string `xml:"U_Id,attr" json:"unitId,omitempty"`
+
+	// ServiceType is the category the talkgroup is filed under.
+	ServiceType string `xml:"SvcType,attr" json:"serviceType,omitempty"`
+
+	// Held reports whether the scanner is parked on this talkgroup.
+	Held string `xml:"Hold,attr" json:"held,omitempty"`
+}
+
+// Heard is what the scanner is listening to at one instant, flattened out of
+// the several elements that describe it.
+//
+// It exists because two very different callers need the same answer in the same
+// shape: the "receiving" command renders it, and the recorder reads that
+// command's JSON back over a daemon socket to label a transmission. Defining it
+// once here is what stops those two drifting apart, since a command package may
+// not import another command package and would otherwise carry its own copy of
+// the field names.
+//
+// The channel fields are filled in whether or not anything is being received,
+// because a scanning radio names whichever channel it is stepping past at the
+// instant it is asked. Receiving is what separates the two, and it is the field
+// to read first.
+type Heard struct {
+	// Receiving reports whether audio is coming out of the scanner right now,
+	// and is what makes the rest of this either a transmission or a channel the
+	// scanner happened to be passing.
+	Receiving bool `json:"receiving"`
+
+	// List is the favorites list or database the channel was found in.
+	List string `json:"list,omitempty"`
+
+	// System and Department are where the channel sits in the scanner memory.
+	System     string `json:"system,omitempty"`
+	Department string `json:"department,omitempty"`
+
+	// Site is the trunked site being listened to, empty on a conventional
+	// system.
+	Site string `json:"site,omitempty"`
+
+	// Channel is the channel alpha tag, such as "Marlinton Dispatch".
+	Channel string `json:"channel,omitempty"`
+
+	// Frequency is what the scanner is tuned to on a conventional system,
+	// carrying its own unit. Talkgroup is the number on a trunked one. Only one
+	// of the two is ever set.
+	Frequency string `json:"frequency,omitempty"`
+	Talkgroup string `json:"talkgroup,omitempty"`
+
+	// Unit is the radio heard transmitting, when the scanner decoded one.
+	Unit string `json:"unit,omitempty"`
+
+	// Modulation is how the scanner is demodulating, such as "NFM".
+	Modulation string `json:"modulation,omitempty"`
+
+	// Signal is the number of bars the scanner is showing, from "0" to "5".
+	Signal string `json:"signal,omitempty"`
+
+	// RSSI is the received signal strength in the scanner own units. It reads
+	// "-999" when nothing is coming in, which is the scanner saying it has
+	// nothing to report rather than a measurement.
+	RSSI string `json:"rssi,omitempty"`
+
+	// Mode is what the scanner is doing, in its own words.
+	Mode string `json:"mode"`
+}
+
 // Named is an element carrying a name and an index, which is how the scanner
 // reports most database entries.
 type Named struct {
@@ -833,6 +977,11 @@ type Property struct {
 
 	// Mute is "Mute" or "Unmute".
 	Mute string `xml:"Mute,attr" json:"mute,omitempty"`
+
+	// Recording is "On" or "Off", and reports the scanner's own recorder,
+	// which writes to the memory card inside it and has nothing to do with
+	// anything this tool records. See SetRecording.
+	Recording string `xml:"Rec,attr" json:"recording,omitempty"`
 }
 
 // Scanner is a connected scanner, with one method per command it understands.
@@ -870,9 +1019,32 @@ type ScannerInfo struct {
 
 	// System, Department, and Channel describe where the scanner is in the
 	// database. They are empty unless it is receiving or holding.
+	//
+	// Channel is the odd one out and is usually empty even then. The scanner
+	// does not send a Channel element on this firmware: a conventional channel
+	// arrives as ConvFrequency and a talkgroup as TGID, each carrying its own
+	// name. Use Tuned, which returns whichever of them applies. The field is
+	// kept because the protocol specification describes it and a different
+	// model or firmware may yet send one.
 	System     Named `xml:"System" json:"system"`
 	Department Named `xml:"Department" json:"department"`
 	Channel    Named `xml:"Channel" json:"channel"`
+
+	// List is the favorites list or database the scanner is working through,
+	// which sits above System. The scanner calls it the monitor list.
+	List MonitorList `xml:"MonitorList" json:"list,omitempty"`
+
+	// Site is the trunked site being listened to, and is absent on a
+	// conventional system.
+	Site Named `xml:"Site" json:"site,omitempty"`
+
+	// Frequency is the conventional channel the scanner is on, present only in
+	// conventional modes.
+	Frequency ConvFrequency `xml:"ConvFrequency" json:"frequency,omitempty"`
+
+	// Talkgroup is the trunked talkgroup the scanner is on, present only in
+	// trunked modes.
+	Talkgroup Talkgroup `xml:"TGID" json:"talkgroup,omitempty"`
 
 	// Menu describes the menu the scanner is in, when it is in one.
 	Menu Named `xml:"MenuSummary" json:"menu"`
