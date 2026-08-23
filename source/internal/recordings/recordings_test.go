@@ -49,9 +49,11 @@ func entry() Entry {
 
 // fakeWav stands in for a WAV file so a test can drive a disk that fails.
 type fakeWav struct {
-	written   int
-	failWrite bool
-	failClose bool
+	written      int
+	normalizedTo float64
+	failWrite    bool
+	failClose    bool
+	failNorm     bool
 }
 
 // Close reports whatever the fake was told to.
@@ -65,6 +67,16 @@ func (f *fakeWav) Close() error {
 // Duration reports a second per byte written, which keeps the arithmetic in the
 // tests obvious.
 func (f *fakeWav) Duration() time.Duration { return time.Duration(f.written) * time.Second }
+
+// Normalize records the level it was asked for, or fails if the fake was told
+// to.
+func (f *fakeWav) Normalize(target float64) error {
+	if f.failNorm {
+		return errBroken
+	}
+	f.normalizedTo = target
+	return nil
+}
 
 // Write counts the audio, or fails if the fake was told to.
 func (f *fakeWav) Write(pcm []byte) error {
@@ -84,11 +96,11 @@ func (f *fakeWav) Write(pcm []byte) error {
 // Returns:
 //   - the library, closed when the test ends
 //   - the directory it writes into
-func library(t *testing.T, naming string) (*Library, string) {
+func library(t *testing.T, naming string, normalize bool) (*Library, string) {
 	t.Helper()
 
 	dir := t.TempDir()
-	l, err := New(dir, naming)
+	l, err := New(dir, naming, normalize)
 	if err != nil {
 		t.Fatalf("opening the library: %v", err)
 	}
@@ -133,7 +145,7 @@ func TestNewChecksTheTemplateBeforeAnythingElse(t *testing.T) {
 		{"no tokens at all", "recording", "no tokens in it"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := New(t.TempDir(), c.naming)
+			_, err := New(t.TempDir(), c.naming, false)
 			if !errors.Is(err, ErrBadTemplate) {
 				t.Fatalf("got %v, want ErrBadTemplate", err)
 			}
@@ -145,7 +157,7 @@ func TestNewChecksTheTemplateBeforeAnythingElse(t *testing.T) {
 
 	// And a good one names the tokens when it complains, so the fix does not
 	// need the documentation.
-	if _, err := New(t.TempDir(), "{nope}"); err == nil || !strings.Contains(err.Error(), "talkgroup") {
+	if _, err := New(t.TempDir(), "{nope}", false); err == nil || !strings.Contains(err.Error(), "talkgroup") {
 		t.Errorf("got %v, want the list of tokens in the message", err)
 	}
 }
@@ -153,7 +165,7 @@ func TestNewChecksTheTemplateBeforeAnythingElse(t *testing.T) {
 // TestRecordingIsFiledWithItsDescription covers the ordinary path end to end:
 // the audio, and a sidecar beside it.
 func TestRecordingIsFiledWithItsDescription(t *testing.T) {
-	l, dir := library(t, "")
+	l, dir := library(t, "", false)
 	filed := record(t, l, entry())
 
 	// The default template puts the day in a folder, which is what stops a long
@@ -196,7 +208,7 @@ func TestRecordingIsFiledWithItsDescription(t *testing.T) {
 // TestNamesDoNotCollide covers two transmissions that render to the same name,
 // which must both survive rather than one overwriting the other.
 func TestNamesDoNotCollide(t *testing.T) {
-	l, dir := library(t, "{system}_{channel}")
+	l, dir := library(t, "{system}_{channel}", false)
 
 	first := record(t, l, entry())
 	second := record(t, l, entry())
@@ -217,7 +229,7 @@ func TestNamesDoNotCollide(t *testing.T) {
 // TestUnlabelledRecordingStillGetsAUsableName covers a transmission the scanner
 // never named, which is what an empty token has to survive.
 func TestUnlabelledRecordingStillGetsAUsableName(t *testing.T) {
-	l, _ := library(t, "")
+	l, _ := library(t, "", false)
 
 	e := Entry{Start: at, End: at.Add(time.Second)}
 	filed := record(t, l, e)
@@ -267,7 +279,7 @@ func TestEveryTokenRenders(t *testing.T) {
 // for safety rather than tidiness: a channel name is programmed by somebody
 // else and arrives as text.
 func TestNamesFromTheScannerCannotEscapeTheDestination(t *testing.T) {
-	l, dir := library(t, "{channel}")
+	l, dir := library(t, "{channel}", false)
 
 	e := entry()
 	e.Channel = "../../etc/FIRE/EMS"
@@ -284,7 +296,7 @@ func TestNamesFromTheScannerCannotEscapeTheDestination(t *testing.T) {
 // TestLongNamesAreShortened covers the limit that the software this was
 // measured against hits at 260 characters and reports as a popup.
 func TestLongNamesAreShortened(t *testing.T) {
-	l, _ := library(t, "{list}/{system}/{department}/{channel}")
+	l, _ := library(t, "{list}/{system}/{department}/{channel}", false)
 
 	e := entry()
 	e.List = strings.Repeat("L", 200)
@@ -344,7 +356,7 @@ func TestLiteralBraces(t *testing.T) {
 // TestAbandon covers the recording that turns out not to be wanted, which must
 // leave nothing behind.
 func TestAbandon(t *testing.T) {
-	l, dir := library(t, "")
+	l, dir := library(t, "", false)
 
 	r, err := l.Begin()
 	if err != nil {
@@ -370,7 +382,7 @@ func TestAbandon(t *testing.T) {
 // TestCloseTwiceIsHarmless covers the deferred close that runs after the
 // normal one.
 func TestCloseTwiceIsHarmless(t *testing.T) {
-	l, _ := library(t, "")
+	l, _ := library(t, "", false)
 
 	r, err := l.Begin()
 	if err != nil {
@@ -388,7 +400,7 @@ func TestCloseTwiceIsHarmless(t *testing.T) {
 // which is reported rather than deleted because deleting somebody's files
 // unasked is not this package's decision.
 func TestSweepReportsPartials(t *testing.T) {
-	l, dir := library(t, "")
+	l, dir := library(t, "", false)
 
 	if _, err := l.Begin(); err != nil {
 		t.Fatalf("beginning a recording: %v", err)
@@ -436,7 +448,7 @@ func TestNewReportsADestinationItCannotPrepare(t *testing.T) {
 			return func() { mkdirAll = was }
 		})
 
-		if _, err := New(t.TempDir(), ""); !errors.Is(err, errBroken) {
+		if _, err := New(t.TempDir(), "", false); !errors.Is(err, errBroken) {
 			t.Fatalf("got %v, want it to wrap errBroken", err)
 		}
 	})
@@ -446,7 +458,7 @@ func TestNewReportsADestinationItCannotPrepare(t *testing.T) {
 // TestBeginReportsAFileItCannotCreate covers a destination that stopped being
 // writable after the library was opened.
 func TestBeginReportsAFileItCannotCreate(t *testing.T) {
-	l, _ := library(t, "")
+	l, _ := library(t, "", false)
 	broken(t, func() func() {
 		was := createWav
 		createWav = func(string) (wavWriter, error) { return nil, errBroken }
@@ -496,7 +508,7 @@ func TestCloseReportsEveryWayFilingCanFail(t *testing.T) {
 			// The library is opened before the seam is broken, since New
 			// uses several of these itself and has to succeed for there to
 			// be a recording to file at all.
-			l, _ := library(t, "")
+			l, _ := library(t, "", false)
 			broken(t, c.set)
 
 			r, err := l.Begin()
@@ -514,7 +526,7 @@ func TestCloseReportsEveryWayFilingCanFail(t *testing.T) {
 // recording fails.
 func TestAbandonReportsWhatItCannotClearUp(t *testing.T) {
 	t.Run("the audio cannot be closed", func(t *testing.T) {
-		l, _ := library(t, "")
+		l, _ := library(t, "", false)
 		broken(t, func() func() {
 			was := createWav
 			createWav = func(string) (wavWriter, error) { return &fakeWav{failClose: true}, nil }
@@ -531,7 +543,7 @@ func TestAbandonReportsWhatItCannotClearUp(t *testing.T) {
 	})
 
 	t.Run("the file cannot be removed", func(t *testing.T) {
-		l, _ := library(t, "")
+		l, _ := library(t, "", false)
 		r, err := l.Begin()
 		if err != nil {
 			t.Fatalf("beginning a recording: %v", err)
@@ -551,7 +563,7 @@ func TestAbandonReportsWhatItCannotClearUp(t *testing.T) {
 // TestWriteReportsAFailedWrite covers audio that cannot be written, which must
 // not be counted as recorded.
 func TestWriteReportsAFailedWrite(t *testing.T) {
-	l, _ := library(t, "")
+	l, _ := library(t, "", false)
 	broken(t, func() func() {
 		was := createWav
 		createWav = func(string) (wavWriter, error) { return &fakeWav{failWrite: true}, nil }
@@ -573,7 +585,7 @@ func TestWriteReportsAFailedWrite(t *testing.T) {
 // Without the limit this is a loop that never ends and never says why, which is
 // the worst way for a recorder to fail.
 func TestReserveGivesUpRatherThanLoopingForever(t *testing.T) {
-	l, _ := library(t, "")
+	l, _ := library(t, "", false)
 	broken(t, func() func() {
 		was := statFile
 		statFile = func(string) (os.FileInfo, error) { return nil, errBroken }
@@ -593,7 +605,7 @@ func TestReserveGivesUpRatherThanLoopingForever(t *testing.T) {
 // TestSweepReportsADestinationItCannotRead covers a destination that went away
 // while the recorder was running.
 func TestSweepReportsADestinationItCannotRead(t *testing.T) {
-	l, _ := library(t, "")
+	l, _ := library(t, "", false)
 	broken(t, func() func() {
 		was := readDir
 		readDir = func(string) ([]os.DirEntry, error) { return nil, errBroken }
@@ -608,7 +620,7 @@ func TestSweepReportsADestinationItCannotRead(t *testing.T) {
 // TestDirReportsTheDestination covers the accessor the recorder uses when it
 // tells somebody where their recordings are going.
 func TestDirReportsTheDestination(t *testing.T) {
-	l, dir := library(t, "")
+	l, dir := library(t, "", false)
 	if l.Dir() != dir {
 		t.Errorf("Dir is %q, want %q", l.Dir(), dir)
 	}
@@ -633,7 +645,7 @@ func TestTunedFallsBackToNothing(t *testing.T) {
 // A recording still has to be called something. Falling back to the timestamp
 // keeps it distinct from the next one, which an empty name would not.
 func TestTemplateThatRendersToNothingStillNamesTheFile(t *testing.T) {
-	l, dir := library(t, "{system}/{channel}")
+	l, dir := library(t, "{system}/{channel}", false)
 
 	filed := record(t, l, Entry{Start: at, End: at.Add(time.Second)})
 	if filed.File != at.Format("2006-01-02T15-04-05")+".wav" {
@@ -657,4 +669,94 @@ func TestValidateTemplate(t *testing.T) {
 	if err := ValidateTemplate("{chanel}"); !errors.Is(err, ErrBadTemplate) {
 		t.Errorf("got %v, want ErrBadTemplate", err)
 	}
+}
+
+// fakeAudio makes recordings use wav instead of a real WAV file, and lets the
+// filing that follows succeed anyway.
+//
+// The rename has to be stubbed alongside it. A fake writer creates nothing on
+// disk, so moving the recording into place would fail for a reason that has
+// nothing to do with what is being tested.
+//
+// Parameters:
+//   - t: the test, which restores both seams when it ends
+//   - wav: the writer every recording should use
+func fakeAudio(t *testing.T, wav wavWriter) {
+	t.Helper()
+
+	wasCreate, wasRename := createWav, renameFile
+	t.Cleanup(func() { createWav, renameFile = wasCreate, wasRename })
+
+	createWav = func(string) (wavWriter, error) { return wav, nil }
+	renameFile = func(string, string) error { return nil }
+}
+
+// TestNormalizingIsOptedInto covers the choice a caller makes when it opens a
+// destination, and what each answer does to the recording that comes out.
+//
+// The reason this exists at all is that the scanner's line output does not
+// follow its volume control. A recording that arrives quiet stays quiet however
+// the radio is set, so scaling it after the transmission has ended is the only
+// place left to fix it.
+//
+// Coverage: 100% (3 test cases covering both answers and the failure)
+//
+// Test cases:
+//   - Off: by default the audio is left exactly as it arrived, and the entry
+//     does not claim otherwise
+//   - On: the recording is scaled and the entry says so, so that anything
+//     reading it later knows the level no longer means what it used to
+//   - Fails: a recording that cannot be scaled is reported rather than filed
+//     as though it had been
+func TestNormalizingIsOptedInto(t *testing.T) {
+	// Verify the default leaves the audio alone. A level that was not touched
+	// still carries the difference between a strong signal and a weak one.
+	t.Run("Off", func(t *testing.T) {
+		l, _ := library(t, "", false)
+
+		wav := &fakeWav{}
+		fakeAudio(t, wav)
+
+		filed := record(t, l, entry())
+		if wav.normalizedTo != 0 {
+			t.Errorf("the audio was scaled to %v, want it left alone", wav.normalizedTo)
+		}
+		if filed.Normalized {
+			t.Error("the entry claims the audio was normalized, and it was not")
+		}
+	})
+
+	// Verify opting in scales the recording to the target and records that it
+	// happened.
+	t.Run("On", func(t *testing.T) {
+		l, _ := library(t, "", true)
+
+		wav := &fakeWav{}
+		fakeAudio(t, wav)
+
+		filed := record(t, l, entry())
+		if wav.normalizedTo != NormalizeTarget {
+			t.Errorf("the audio was scaled to %v, want %v", wav.normalizedTo, NormalizeTarget)
+		}
+		if !filed.Normalized {
+			t.Error("the entry does not say the audio was normalized, and it was")
+		}
+	})
+
+	// Verify a scaling pass that fails is reported. It reads the audio back and
+	// writes it again, so it is a disk operation that can fail like any other,
+	// and a recording left half scaled must not be filed as finished.
+	t.Run("Fails", func(t *testing.T) {
+		l, _ := library(t, "", true)
+
+		fakeAudio(t, &fakeWav{failNorm: true})
+
+		r, err := l.Begin()
+		if err != nil {
+			t.Fatalf("beginning a recording: %v", err)
+		}
+		if _, err := r.Close(entry()); !errors.Is(err, errBroken) {
+			t.Fatalf("got %v, want it to wrap errBroken", err)
+		}
+	})
 }

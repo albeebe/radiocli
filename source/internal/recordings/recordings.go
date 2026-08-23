@@ -71,6 +71,8 @@ func ValidateTemplate(naming string) error {
 // Parameters:
 //   - dir: the destination directory, created along with any parents
 //   - naming: the naming template, or empty for DefaultTemplate
+//   - normalize: whether to bring each recording's loudest sample up to
+//     NormalizeTarget once the transmission has ended
 //
 // Returns:
 //   - *Library ready to record into
@@ -79,7 +81,7 @@ func ValidateTemplate(naming string) error {
 // Errors:
 //   - ErrBadTemplate: if the template has an unclosed brace, an unknown token,
 //     or no tokens at all
-func New(dir, naming string) (*Library, error) {
+func New(dir, naming string, normalize bool) (*Library, error) {
 	if naming == "" {
 		naming = DefaultTemplate
 	}
@@ -92,7 +94,11 @@ func New(dir, naming string) (*Library, error) {
 		return nil, fmt.Errorf("preparing %s to record into: %w", dir, err)
 	}
 
-	return &Library{dir: dir, name: name}, nil
+	lib := &Library{dir: dir, name: name}
+	if normalize {
+		lib.normalize = NormalizeTarget
+	}
+	return lib, nil
 }
 
 // Begin opens a recording and returns it ready for audio.
@@ -166,6 +172,18 @@ func (r *Recording) Close(e Entry) (Entry, error) {
 	r.done = true
 
 	e.Duration = r.wav.Duration().Seconds()
+
+	// Before the file is closed, because normalizing reads the audio back and
+	// writes it again in place, and both need the file still open. The factor
+	// cannot be known any earlier: it depends on the loudest sample, and that
+	// is not settled until the transmission has ended.
+	if r.library.normalize > 0 {
+		if err := r.wav.Normalize(r.library.normalize); err != nil {
+			return e, err
+		}
+		e.Normalized = true
+	}
+
 	if err := r.wav.Close(); err != nil {
 		return e, err
 	}

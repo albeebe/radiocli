@@ -413,6 +413,7 @@ radiocli audio record [destination] [flags]
 | `--hang` | No | `500ms` | How long the scanner must stop receiving before a transmission is called finished. |
 | `--min-duration` | No | `500ms` | Discard any transmission shorter than this. |
 | `--max-duration` | No | `5m` | Split any transmission longer than this. |
+| `--normalize` | No | `true` | Scale each recording up so its loudest moment is just under full scale. `--normalize=false` keeps the level exactly as it arrived. |
 
 ### `[destination]`
 
@@ -556,6 +557,51 @@ stuck microphone cannot produce one enormous file.
 radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --max-duration 2m
 ```
 
+### `--normalize`
+
+Scales each recording up once the transmission has ended, so its loudest sample
+sits just under full scale. This is on unless you turn it off.
+
+```
+radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --normalize=false
+```
+
+**It is on because recordings otherwise come out too quiet to play.** A line
+input applies no gain of its own, and the scanner's volume control does not
+change what leaves it for one, so a recording arrives at whatever level the
+radio happened to send and stays there however the volume is set. There is
+nothing on the radio or on the sound card to turn up. Measured on an SDS150
+through a line input, a recording peaked 12 dB below full scale and averaged 36
+dB below it, which is quiet enough to need the volume raised on every playback.
+
+**A microphone input has the opposite problem, and this does not fix it.** There
+the input applies far too much gain and the audio is already flat-topped by the
+time anything here sees it. That is what the clipping warning is for, and no
+amount of scaling afterwards puts back peaks that never reached the file.
+
+**It does not make anything clearer.** The noise floor comes up by exactly as
+much as the voice, so a recording gets louder and no cleaner.
+
+**What it costs is the comparison between recordings.** Left alone, one
+recording being quieter than another says the signal was weaker. Normalized,
+every recording is equally loud and that difference is gone. Each one carries
+`"normalized": true` in its description so anything reading them later knows
+which it is looking at, but the original levels are not recoverable from the
+audio. Pass `--normalize=false` if the levels are what you are keeping the
+recordings for.
+
+Silence is left alone, and the gain is capped at about 30 dB. A recording that
+caught almost nothing would otherwise ask for a factor in the hundreds, which
+does not rescue a faint transmission so much as play a noise floor at full
+volume. Thirty decibels covers every real case: a line input recording measured
+12 dB below full scale, and a genuinely quiet transmission 30 dB below is
+brought all the way up. Anything fainter is left short of the target.
+
+**A transmission split by `--max-duration` is normalized in halves.** Each file
+is scaled by its own loudest moment, so where a long recording is cut into two
+the level can step at the join. Pass `--normalize=false` if you are recording
+something long enough to be split and the join matters.
+
 ### Global flags that change this command
 
 - `--device` is **required**, and names the scanner. Get the value from the
@@ -686,6 +732,7 @@ The `.json` file beside each recording is the same object printed by
 | `samples` | number | How many times the scanner was asked what it was hearing while this was being recorded. Always present. |
 | `channels` | array of strings | Every distinct channel seen during the recording. Present only when there was more than one. |
 | `dropped` | number | Frames of audio the sound card produced that never arrived. Present only when some were lost. Each frame is 20 ms. |
+| `normalized` | boolean | The audio was scaled up after the transmission ended so its loudest sample sits just under full scale. Present unless `--normalize=false` turned that off. |
 
 **`samples` is how much the label is worth.** A transmission of any ordinary
 length is covered many times over, because the scanner is asked three times a

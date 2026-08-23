@@ -75,6 +75,9 @@ func newRecord(app *appcontext.App) *cobra.Command {
 		"discard any transmission shorter than this")
 	cmd.Flags().DurationVar(&opts.maxDuration, "max-duration", audiogate.DefaultMaxDuration,
 		"split any transmission longer than this")
+	cmd.Flags().BoolVar(&opts.normalize, "normalize", true,
+		"scale each recording up so its loudest moment is just under full scale; "+
+			"--normalize=false keeps the level exactly as it arrived")
 
 	return cmd
 }
@@ -795,7 +798,7 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	if destination == "" {
 		destination = "recordings"
 	}
-	library, err := recordings.New(destination, opts.template)
+	library, err := recordings.New(destination, opts.template, opts.normalize)
 	if err != nil {
 		return err
 	}

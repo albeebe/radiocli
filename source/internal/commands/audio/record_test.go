@@ -184,6 +184,7 @@ func Test_newRecord(t *testing.T) {
 			"hang":         audiogate.DefaultHang.String(),
 			"min-duration": audiogate.DefaultMinDuration.String(),
 			"max-duration": audiogate.DefaultMaxDuration.String(),
+			"normalize":    "true",
 		} {
 			f := cmd.Flags().Lookup(name)
 			if f == nil {
@@ -436,7 +437,7 @@ func Test_recordLoop(t *testing.T) {
 
 		app, out, _ := recorderApp()
 		dir := t.TempDir()
-		library, err := recordings.New(dir, "")
+		library, err := recordings.New(dir, "", false)
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
@@ -654,7 +655,7 @@ func Test_recorder(t *testing.T) {
 
 		app, _, _ := recorderApp()
 		dir := t.TempDir()
-		l, err := recordings.New(dir, "")
+		l, err := recordings.New(dir, "", false)
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
@@ -1421,7 +1422,7 @@ func Test_recordLoopEndings(t *testing.T) {
 		t.Helper()
 
 		app, _, _ := recorderApp()
-		library, err := recordings.New(dir, "")
+		library, err := recordings.New(dir, "", false)
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
@@ -1914,7 +1915,7 @@ func Test_meter(t *testing.T) {
 func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
 	app, _, _ := recorderApp()
 	dir := t.TempDir()
-	library, err := recordings.New(dir, "")
+	library, err := recordings.New(dir, "", false)
 	if err != nil {
 		t.Fatalf("opening the library: %v", err)
 	}
@@ -2082,7 +2083,7 @@ func Test_recorderWarnsWhenClipped(t *testing.T) {
 		t.Helper()
 
 		app, _, errs := recorderApp()
-		l, err := recordings.New(t.TempDir(), "")
+		l, err := recordings.New(t.TempDir(), "", false)
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
@@ -2170,7 +2171,7 @@ func Test_recorderWarnsWhenClipped(t *testing.T) {
 	// half of the message rather than panicking on the nil.
 	t.Run("NoReader", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		l, err := recordings.New(t.TempDir(), "")
+		l, err := recordings.New(t.TempDir(), "", false)
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
@@ -2249,7 +2250,7 @@ func Test_recorderReportsAFailedReport(t *testing.T) {
 	app.Config.Output = appcontext.OutputJSON
 	app.Stdout = failWriter{}
 
-	l, err := recordings.New(t.TempDir(), "")
+	l, err := recordings.New(t.TempDir(), "", false)
 	if err != nil {
 		t.Fatalf("opening the library: %v", err)
 	}

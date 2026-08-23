@@ -1,7 +1,7 @@
 # wavfile
 
 ## What this does?
-Writes one transmission of scanner audio to a WAV file: open a file, hand it audio as it arrives, close it, and what is left on disk is something any player on any computer will open by double-clicking it.
+Writes one transmission of scanner audio to a WAV file: open a file, hand it audio as it arrives, close it, and what is left on disk is something any player on any computer will open by double-clicking it. It can also scale the whole recording up before closing, for audio that arrived quieter than the file could hold.
 
 ## Why we use it?
 Everything upstream of here deals in audio that cannot be kept. `audiofeed` hands out 20 ms slices of raw samples, which are only meaningful to something that has been told the rate, the width and the channel count, because raw samples carry no header saying so. `opusenc` turns those into bare Opus packets with no container around them, which the audio command's own documentation admits nothing that plays files will open. Both are right for what they are for, which is getting sound to a listener who is waiting for it. Neither produces a file.
@@ -13,6 +13,8 @@ Opus was the obvious alternative and is deliberately not offered. The encoder th
 The cost is size, and it is smaller than it looks. An hour of audio is about 345 MB against roughly 15 MB of Opus, but the recorder only ever writes transmissions, and a scanner is silent most of the time. The silence between them costs nothing, because none of it is written.
 
 Keeping this in its own package means the format lives in one place. The two length fields in a WAV header cannot be known until the audio stops, so they are written last by seeking back over them, and a file closed without that step holds every sample while still declaring it holds none. That is the kind of detail that should be got right once rather than in whichever command happens to need a file next.
+
+Normalizing lives here rather than upstream because this is the only layer holding the finished recording. The factor depends on the loudest sample in the whole transmission, which nothing knows until the transmission has ended, so it cannot be applied to frames on their way past. The loudest sample is tracked as the audio is written, which costs one comparison per sample and saves reading the file back to find it, and the scaling itself is done in place: a read and a write of the audio, and no second file on disk. Rounding is held inside what an int16 can carry, because a sample one past full scale wraps to the opposite extreme and clicks.
 
 ## How we use it?
 ```go

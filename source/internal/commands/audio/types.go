@@ -202,6 +202,7 @@ type recordOptions struct {
 	hang        time.Duration // Quiet time before a transmission is called finished
 	minDuration time.Duration // Shortest recording worth keeping
 	maxDuration time.Duration // Longest a recording may run before it is split
+	normalize   bool          // Scale each recording up to just under full scale once it has ended, on unless --normalize=false
 }
 
 // recorder is the state one run of "audio record" carries: what it is writing

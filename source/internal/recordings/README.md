@@ -1,12 +1,14 @@
 # recordings
 
 ## What this does?
-Files transmissions on disk: the audio, with a description of what it is beside it. It decides what each recording is called and where it goes.
+Files transmissions on disk: the audio, with a description of what it is beside it. It decides what each recording is called and where it goes, and can scale a quiet recording up once the transmission has ended.
 
 ## Why we use it?
 The obvious way to keep what a recording is of is to put it in the filename, and the software this feature was measured against does exactly that, with a printf-style template plus three text fields written inside the audio file itself. The result is that anything wanting the frequency back out has to parse a name it was never told the format of, which is why the one third-party tool that reads those recordings has the tag layout hardcoded and says so in its own documentation.
 
 A JSON object beside the audio needs no such agreement. It carries its fields under names, it can gain a field later without breaking anything already reading it, and it can say that something is not known instead of leaving a blank that might mean either. The filename is then free to be for people, which is what a filename is actually good at.
+
+Normalizing is a choice the caller makes, and the command above turns it on. A line input applies no gain and the scanner's volume control does not change what leaves it for one, so recordings through it arrive at whatever level the radio happened to send and stay there however the radio is set: measured on an SDS150, twelve decibels below full scale at the peak and thirty-six below on average, which needs the volume raised on every playback. Scaling here is the only place left to fix it. What it costs is the comparison between recordings, since one being quieter than another no longer says the signal was weaker, so the entry carries a flag recording that it happened and the untouched levels remain available by asking for them. It is a second pass over the audio either way, because the factor depends on the loudest sample and that is not settled until the transmission has ended.
 
 The naming is a template, and it is checked when the destination is opened rather than when the first transmission arrives, because a mistyped token found at startup costs a second and the same typo found on the first recording of the night costs the night. Everything else about the template exists because of a way the other software fails: an empty token takes its separator with it rather than leaving a row of underscores; a channel name is reduced to safe characters so `FIRE/EMS` cannot invent a directory; two recordings that would collide are numbered rather than one overwriting the other; and the path is shortened before it reaches the length Windows refuses, rather than after. The default puts the date in a folder, which is not decoration either: a scheme that puts the date only in the filename does not start a new folder at midnight, and the fix is a setting the user has to know exists.
 

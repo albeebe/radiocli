@@ -47,6 +47,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"time"
 )
 
@@ -154,11 +155,129 @@ func (w *Writer) Write(pcm []byte) error {
 		return fmt.Errorf("%w: %s has reached %d bytes", ErrTooLarge, w.path, w.n)
 	}
 
+	for i := 0; i+1 < len(pcm); i += 2 {
+		if m := magnitude(int16(binary.LittleEndian.Uint16(pcm[i : i+2]))); m > w.peak {
+			w.peak = m
+		}
+	}
+
 	if _, err := w.f.Write(pcm); err != nil {
 		return fmt.Errorf("writing audio to %s: %w", w.path, err)
 	}
 	w.n += int64(len(pcm))
 	return nil
+}
+
+// Peak reports the largest sample magnitude written so far, from 0 to 32767.
+//
+// Returns:
+//   - the loudest sample in the recording, 0 while it holds none
+func (w *Writer) Peak() int { return w.peak }
+
+// Normalize scales the whole recording so its loudest sample sits at target.
+//
+// It is a second pass over the audio, and it has to be: the factor cannot be
+// known until the loudest sample has been seen, and that is not settled until
+// the transmission has ended. The pass is done in place rather than by
+// rewriting the file, so it costs a read and a write of the audio and no extra
+// disk.
+//
+// Silence is left alone. There is no factor that makes a recording of nothing
+// louder, and scaling by the largest number that does not overflow would turn a
+// quiet channel into a burst of amplified noise.
+//
+// The gain is capped for the same reason one step further along. A recording
+// that caught almost nothing asks for a factor in the hundreds, which does not
+// rescue a faint transmission, it amplifies a noise floor to full volume. Past
+// maxGain the recording is brought up as far as that allows and left quieter
+// than the target, which is the honest outcome for audio that is mostly noise.
+//
+// Parameters:
+//   - target: the level to bring the loudest sample to, from 0 to 1 of full
+//     scale
+//
+// Returns:
+//   - error if target is not between 0 and 1, or if the audio cannot be read
+//     back or written again
+//
+// Errors:
+//   - ErrBadTarget: if target is outside 0 to 1
+func (w *Writer) Normalize(target float64) error {
+	if target <= 0 || target > 1 {
+		return fmt.Errorf("%w: got %v, want more than 0 and no more than 1", ErrBadTarget, target)
+	}
+	if w.peak == 0 {
+		return nil
+	}
+
+	factor := target * fullScale / float64(w.peak)
+	if factor > maxGain {
+		factor = maxGain
+	}
+	if factor == 1 {
+		return nil
+	}
+
+	buf := make([]byte, scaleChunk)
+	for off := int64(0); off < w.n; {
+		end := w.n - off
+		if end > int64(len(buf)) {
+			end = int64(len(buf))
+		}
+		chunk := buf[:end]
+
+		if _, err := w.f.ReadAt(chunk, headerBytes+off); err != nil {
+			return fmt.Errorf("reading %s back to normalize it: %w", w.path, err)
+		}
+		for i := 0; i+1 < len(chunk); i += 2 {
+			v := float64(int16(binary.LittleEndian.Uint16(chunk[i:i+2]))) * factor
+			binary.LittleEndian.PutUint16(chunk[i:], uint16(clamp(v)))
+		}
+		if _, err := w.f.WriteAt(chunk, headerBytes+off); err != nil {
+			return fmt.Errorf("writing the normalized audio to %s: %w", w.path, err)
+		}
+		off += end
+	}
+	return nil
+}
+
+// clamp rounds a scaled sample and holds it inside what an int16 can carry.
+//
+// Rounding can put a sample one past full scale even when the factor was
+// worked out to land exactly on it, so the ceiling is enforced rather than
+// assumed. Without it that one sample wraps to the opposite extreme and clicks.
+//
+// Parameters:
+//   - v: the scaled sample
+//
+// Returns:
+//   - the sample as an int16, held within range
+func clamp(v float64) int16 {
+	switch {
+	case v > fullScale:
+		return fullScale
+	case v < -fullScale:
+		return -fullScale
+	}
+	return int16(math.Round(v))
+}
+
+// magnitude reports how far a sample is from silence.
+//
+// Parameters:
+//   - v: the sample
+//
+// Returns:
+//   - the sample's distance from zero, with the one value that cannot be
+//     negated held at full scale
+func magnitude(v int16) int {
+	if v < 0 {
+		if v == -fullScale-1 {
+			return fullScale
+		}
+		return int(-v)
+	}
+	return int(v)
 }
 
 // header returns the 44 byte WAV header, with both lengths left at zero for

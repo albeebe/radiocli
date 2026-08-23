@@ -56,6 +56,31 @@ const (
 	// chunk, a 16 byte PCM format chunk, and the data chunk's own header.
 	headerBytes = 44
 
+	// fullScale is the largest magnitude a signed 16 bit sample can carry, and
+	// the ceiling Normalize scales towards.
+	fullScale = 32767
+
+	// maxGain is the most Normalize will multiply a recording by, about 30 dB.
+	//
+	// Without a ceiling the factor is whatever it takes to reach the target, and
+	// a recording that caught almost nothing asks for a thousandfold. That does
+	// not recover a faint transmission; it turns a noise floor into a roar, at
+	// full volume, in the middle of a night of ordinary recordings.
+	//
+	// Thirty decibels covers every real case with room to spare. Measured on an
+	// SDS150 through a line input, a recording peaked twelve decibels below full
+	// scale and wanted twelve back. A genuinely quiet transmission peaking
+	// thirty below is served exactly. Anything fainter than that is being asked
+	// to make audible something that was not recorded, and it is left where it
+	// is instead.
+	maxGain = 31.6
+
+	// scaleChunk is how much audio Normalize rewrites at a time. Big enough
+	// that a long recording is a handful of passes rather than thousands, small
+	// enough that the buffer is nothing next to the audio already buffered
+	// elsewhere in the recorder.
+	scaleChunk = 1 << 16
+
 	// riffSizeAt is where the RIFF chunk's length sits in the header, also
 	// patched by Close.
 	riffSizeAt = 4
@@ -83,6 +108,10 @@ const maxData = math.MaxUint32 - riffSizeOverhead
 // from the wrong pair of bytes, so the whole rest of the file is noise.
 var ErrSampleAlign = errors.New("not a whole number of samples")
 
+// ErrBadTarget says Normalize was asked for a level that is not a fraction of
+// full scale.
+var ErrBadTarget = errors.New("normalize target is out of range")
+
 // ErrTooLarge says the file has reached the largest size a WAV can describe.
 var ErrTooLarge = errors.New("recording is larger than a WAV file can address")
 
@@ -101,8 +130,10 @@ var createFile = func(path string) (file, error) {
 // plain io.Writer. *os.File satisfies it.
 type file interface {
 	io.Closer
+	io.ReaderAt
 	io.Seeker
 	io.Writer
+	io.WriterAt
 }
 
 // Writer is one open WAV file that audio is appended to.
@@ -125,4 +156,10 @@ type Writer struct {
 	// path is remembered for error messages, because a failure to write audio
 	// says nothing useful without naming the file it was going to.
 	path string
+
+	// peak is the largest sample magnitude written so far, which is what
+	// Normalize needs and what it would otherwise have to read the whole file
+	// back to find. Tracked on the way past instead, since every sample is
+	// already in hand.
+	peak int
 }

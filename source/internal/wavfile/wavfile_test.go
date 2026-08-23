@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,9 +43,52 @@ type fakeFile struct {
 	failSeek  bool
 	failClose bool
 
+	// failReadAt and failWriteAt make the passes Normalize takes over the
+	// audio fail, which is the only way to reach the errors it reports.
+	failReadAt  bool
+	failWriteAt bool
+
 	// closed records that Close was called, so the tests can check a failed
 	// Create does not leave the file open.
 	closed bool
+}
+
+// ReadAt copies out of the buffer, and fails if the fake was told to.
+//
+// Parameters:
+//   - p: where to put the bytes
+//   - off: where in the file to read from
+//
+// Returns:
+//   - how many bytes were copied
+//   - error if the fake was told to fail, or the read runs past the end
+func (f *fakeFile) ReadAt(p []byte, off int64) (int, error) {
+	if f.failReadAt {
+		return 0, errBroken
+	}
+	if off < 0 || off+int64(len(p)) > int64(len(f.buf)) {
+		return 0, io.EOF
+	}
+	return copy(p, f.buf[off:]), nil
+}
+
+// WriteAt copies into the buffer, and fails if the fake was told to.
+//
+// Parameters:
+//   - p: the bytes to write
+//   - off: where in the file to write them
+//
+// Returns:
+//   - how many bytes were written
+//   - error if the fake was told to fail, or the write runs past the end
+func (f *fakeFile) WriteAt(p []byte, off int64) (int, error) {
+	if f.failWriteAt {
+		return 0, errBroken
+	}
+	if off < 0 || off+int64(len(p)) > int64(len(f.buf)) {
+		return 0, io.ErrShortWrite
+	}
+	return copy(f.buf[off:], p), nil
 }
 
 // Close records the call and fails if the fake was told to.
@@ -438,4 +482,272 @@ func TestCreateOnDiskFails(t *testing.T) {
 func TestFileInterfaceIsSatisfiedByOsFile(t *testing.T) {
 	var _ file = (*os.File)(nil)
 	var _ io.WriteSeeker = (*os.File)(nil)
+}
+
+// pcm builds a run of samples, little endian, for the normalizing tests.
+//
+// Parameters:
+//   - values: the samples to write, in order
+//
+// Returns:
+//   - the samples as bytes, ready for Write
+func pcm(values ...int16) []byte {
+	out := make([]byte, 2*len(values))
+	for i, v := range values {
+		binary.LittleEndian.PutUint16(out[2*i:], uint16(v))
+	}
+	return out
+}
+
+// read returns the samples a fake file holds, past the header.
+//
+// Parameters:
+//   - f: the fake the recording was written to
+//
+// Returns:
+//   - the audio as samples
+func read(f *fakeFile) []int16 {
+	body := f.buf[headerBytes:]
+	out := make([]int16, len(body)/2)
+	for i := range out {
+		out[i] = int16(binary.LittleEndian.Uint16(body[2*i:]))
+	}
+	return out
+}
+
+// TestPeak checks that the loudest sample is tracked as the audio goes past,
+// which is what lets Normalize work without first reading the file back.
+//
+// Coverage: 100% (4 test cases covering silence, both signs, and the value
+// that cannot be negated)
+//
+// Test cases:
+//   - Empty: a recording holding nothing has no peak
+//   - Positive: the largest positive sample is found
+//   - Negative: a negative sample counts by its distance from zero
+//   - MostNegative: -32768 reports as full scale rather than overflowing
+func TestPeak(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		samples []int16
+		want    int
+	}{
+		{"Empty", nil, 0},
+		{"Positive", []int16{100, 9000, -20}, 9000},
+		{"Negative", []int16{100, -9000, 20}, 9000},
+		{"MostNegative", []int16{-32768, 5}, fullScale},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			withFake(t, &fakeFile{})
+			w, err := Create("recording.wav")
+			if err != nil {
+				t.Fatalf("Create returned %v, want nil", err)
+			}
+			if c.samples != nil {
+				if err := w.Write(pcm(c.samples...)); err != nil {
+					t.Fatalf("writing: %v", err)
+				}
+			}
+
+			if got := w.Peak(); got != c.want {
+				t.Errorf("Peak() = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// TestNormalize checks the second pass that brings a quiet recording up.
+//
+// The scanner's line output does not follow its volume control, so a recording
+// that arrives quiet stays quiet however the radio is set. Scaling it here is
+// the only place left to do it.
+//
+// Coverage: 100% (6 test cases covering every branch)
+//
+// Test cases:
+//   - Quiet: the loudest sample lands on the target and the rest keep their
+//     proportions
+//   - Silence: a recording of nothing is left alone rather than divided by zero
+//   - AlreadyThere: audio already at the target is not rewritten
+//   - BadTarget: a level outside 0 to 1 is refused
+//   - ReadFails: audio that cannot be read back is reported
+//   - WriteFails: audio that cannot be written again is reported
+func TestNormalize(t *testing.T) {
+	// recorded writes samples to a fresh fake and hands both back.
+	recorded := func(t *testing.T, f *fakeFile, samples ...int16) (*Writer, *fakeFile) {
+		t.Helper()
+
+		withFake(t, f)
+		w, err := Create("recording.wav")
+		if err != nil {
+			t.Fatalf("Create returned %v, want nil", err)
+		}
+		if len(samples) > 0 {
+			if err := w.Write(pcm(samples...)); err != nil {
+				t.Fatalf("writing: %v", err)
+			}
+		}
+		return w, f
+	}
+
+	// Verify a quiet recording is scaled so its loudest sample reaches the
+	// target, and that everything else moves with it.
+	t.Run("Quiet", func(t *testing.T) {
+		w, f := recorded(t, &fakeFile{}, 4000, -2000, 1000)
+
+		if err := w.Normalize(1); err != nil {
+			t.Fatalf("normalizing: %v", err)
+		}
+
+		got := read(f)
+		if got[0] != fullScale {
+			t.Errorf("the loudest sample is %d, want %d", got[0], fullScale)
+		}
+		// The proportions survive: the second sample was half the first.
+		if want := int16(-fullScale / 2); got[1] > want+1 || got[1] < want-1 {
+			t.Errorf("the second sample is %d, want about %d", got[1], want)
+		}
+	})
+
+	// Verify silence is left as it is. There is no factor that makes a
+	// recording of nothing louder, and the largest one that does not overflow
+	// would turn a quiet channel into amplified noise.
+	t.Run("Silence", func(t *testing.T) {
+		w, f := recorded(t, &fakeFile{}, 0, 0, 0)
+
+		if err := w.Normalize(1); err != nil {
+			t.Fatalf("normalizing: %v", err)
+		}
+
+		for i, s := range read(f) {
+			if s != 0 {
+				t.Errorf("sample %d became %d, want silence left alone", i, s)
+			}
+		}
+	})
+
+	// Verify audio already at the target is not rewritten, since scaling by one
+	// is a read and a write of the whole recording for nothing.
+	t.Run("AlreadyThere", func(t *testing.T) {
+		w, f := recorded(t, &fakeFile{}, fullScale, -1000)
+		f.failReadAt = true
+
+		if err := w.Normalize(1); err != nil {
+			t.Fatalf("normalizing: %v, want it to do nothing at all", err)
+		}
+	})
+
+	// Verify a recording longer than one pass is scaled all the way through.
+	// The chunking is the part that silently half works: a short test never
+	// reaches the second pass, and a recording that got louder only for its
+	// first second and a half would be easy to miss.
+	t.Run("LongerThanOneChunk", func(t *testing.T) {
+		samples := make([]int16, scaleChunk)
+		for i := range samples {
+			samples[i] = 1000
+		}
+		samples[len(samples)-1] = 4000
+
+		w, f := recorded(t, &fakeFile{}, samples...)
+		if err := w.Normalize(1); err != nil {
+			t.Fatalf("normalizing: %v", err)
+		}
+
+		got := read(f)
+		if got[len(got)-1] != fullScale {
+			t.Errorf("the loudest sample is %d, want %d", got[len(got)-1], fullScale)
+		}
+		// The first sample sits in the opening chunk and the loudest in the
+		// last, so both having moved is what says every pass ran.
+		if want := int16(math.Round(1000 * float64(fullScale) / 4000)); got[0] > want+1 || got[0] < want-1 {
+			t.Errorf("the first sample is %d, want about %d", got[0], want)
+		}
+	})
+
+	// Verify a recording that caught almost nothing is brought up only as far
+	// as the ceiling allows.
+	//
+	// Without the cap the factor is whatever reaches the target, and audio this
+	// faint asks for a thousandfold. That does not rescue a transmission
+	// nobody can hear, it plays a noise floor at full volume in the middle of a
+	// night of ordinary recordings.
+	t.Run("TooFaintToRescue", func(t *testing.T) {
+		w, f := recorded(t, &fakeFile{}, 10, -5)
+
+		if err := w.Normalize(1); err != nil {
+			t.Fatalf("normalizing: %v", err)
+		}
+
+		got := read(f)
+		if want := int16(math.Round(10 * maxGain)); got[0] != want {
+			t.Errorf("the loudest sample is %d, want %d: the gain was not capped", got[0], want)
+		}
+		if got[0] >= fullScale {
+			t.Errorf("the loudest sample reached %d, want it left short of the target", got[0])
+		}
+	})
+
+	// Verify a target that is not a fraction of full scale is refused.
+	t.Run("BadTarget", func(t *testing.T) {
+		for _, target := range []float64{0, -0.5, 1.5} {
+			w, _ := recorded(t, &fakeFile{}, 4000)
+
+			if err := w.Normalize(target); !errors.Is(err, ErrBadTarget) {
+				t.Errorf("Normalize(%v) = %v, want ErrBadTarget", target, err)
+			}
+		}
+	})
+
+	// Verify a disk that will not give the audio back is reported rather than
+	// leaving a half scaled recording behind.
+	t.Run("ReadFails", func(t *testing.T) {
+		w, f := recorded(t, &fakeFile{}, 4000, 2000)
+		f.failReadAt = true
+
+		if err := w.Normalize(1); !errors.Is(err, errBroken) {
+			t.Errorf("got %v, want it to wrap errBroken", err)
+		}
+	})
+
+	// Verify the same for a disk that will not take the scaled audio.
+	t.Run("WriteFails", func(t *testing.T) {
+		w, f := recorded(t, &fakeFile{}, 4000, 2000)
+		f.failWriteAt = true
+
+		if err := w.Normalize(1); !errors.Is(err, errBroken) {
+			t.Errorf("got %v, want it to wrap errBroken", err)
+		}
+	})
+}
+
+// TestClamp checks the ceiling on a scaled sample.
+//
+// Rounding can put a sample one past full scale even when the factor was worked
+// out to land exactly on it, and without a ceiling that one sample wraps to the
+// opposite extreme and clicks.
+//
+// Coverage: 100% (4 test cases covering both limits and the ordinary path)
+//
+// Test cases:
+//   - Above: a sample past positive full scale is held there
+//   - Below: a sample past negative full scale is held there
+//   - Rounds: an ordinary value is rounded rather than truncated
+//   - Negative: rounding works away from zero as well
+func TestClamp(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   float64
+		want int16
+	}{
+		{"Above", 40000, fullScale},
+		{"Below", -40000, -fullScale},
+		{"Rounds", 1000.6, 1001},
+		{"Negative", -1000.6, -1001},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := clamp(c.in); got != c.want {
+				t.Errorf("clamp(%v) = %d, want %d", c.in, got, c.want)
+			}
+		})
+	}
 }

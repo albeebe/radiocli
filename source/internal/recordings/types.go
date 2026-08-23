@@ -16,6 +16,13 @@ import (
 	"github.com/albeebe/radiocli/internal/wavfile"
 )
 
+// NormalizeTarget is where normalizing puts a recording's loudest sample.
+//
+// Just under full scale rather than at it. A hair of headroom costs nothing
+// audible and means that rounding, and any player that applies its own gain,
+// have somewhere to go other than into the ceiling.
+const NormalizeTarget = 0.99
+
 // DefaultTemplate is the layout used when none is given.
 //
 // The date is a folder rather than part of the name, which is not a style
@@ -217,6 +224,16 @@ type Entry struct {
 	// arrived, so a recording with a gap in it says so instead of concatenating
 	// across it silently.
 	Dropped int `json:"dropped,omitempty"`
+
+	// Normalized says the audio was scaled up after the transmission ended, so
+	// its loudest sample sits just under full scale.
+	//
+	// It is recorded because it changes what the file's level means. Left
+	// alone, one recording being quieter than another says the signal was
+	// weaker; normalized, every recording is equally loud and that comparison
+	// is gone. Anything reading these later should know which it is looking at
+	// rather than infer it.
+	Normalized bool `json:"normalized,omitempty"`
 }
 
 // Library is a destination directory that recordings are written into.
@@ -231,6 +248,10 @@ type Library struct {
 
 	// name renders a recording's path from its metadata.
 	name template
+
+	// normalize is the level each recording's loudest sample is brought to, or
+	// zero to leave the audio exactly as it arrived.
+	normalize float64
 
 	// mu guards partials.
 	mu sync.Mutex
@@ -285,6 +306,10 @@ type wavWriter interface {
 
 	// Duration reports how much audio has been written.
 	Duration() time.Duration
+
+	// Normalize scales the audio so its loudest sample sits at the given
+	// fraction of full scale.
+	Normalize(target float64) error
 
 	// Write appends audio.
 	Write(pcm []byte) error
