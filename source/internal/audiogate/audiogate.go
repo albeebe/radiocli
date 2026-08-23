@@ -168,7 +168,18 @@ func (g *Gate) Offer(f audiofeed.Frame) []Event {
 	g.floor.add(f.Level)
 
 	if g.tx == nil {
-		if !loud && !g.radio.On {
+		// With a radio to ask, only the radio opens a transmission. Audio alone
+		// cannot be trusted to say one is happening: the level it would have to
+		// clear is derived from a noise floor, and a scanner's own output has
+		// more than one of those.
+		if !g.opts.RequireRadio && !loud && !g.radio.On {
+			g.ring = append(g.ring, f)
+			if len(g.ring) > maxRingFrames {
+				g.ring = g.ring[1:]
+			}
+			return nil
+		}
+		if g.opts.RequireRadio && !g.radio.On {
 			g.ring = append(g.ring, f)
 			if len(g.ring) > maxRingFrames {
 				g.ring = g.ring[1:]
@@ -216,7 +227,7 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 	tx.info.Dropped += dropped
 	tx.pending = append(tx.pending, f)
 
-	if loud {
+	if loud && g.counts(tx, f) {
 		if tx.firstLoud.IsZero() {
 			// The radio opened this into silence and the sound has only now
 			// arrived, so the beginning is here rather than back where the
@@ -234,6 +245,9 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 	// as a change.
 	if tx.info.Key == "" && g.radio.On {
 		tx.info.Key = g.radio.Key
+	}
+	if g.radio.On {
+		tx.lastRadio = f.At
 	}
 
 	switch {
@@ -274,14 +288,58 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 		out = append(out, g.release(f.At.Add(-g.opts.Hang))...)
 	}
 
-	// The ordinary ending: the audio went quiet, and stayed quiet long enough
-	// with the radio no longer receiving that this was a gap between
-	// transmissions rather than a pause within one.
-	if !loud && !g.radio.On && f.At.Sub(tx.lastLoud) >= g.opts.Hang {
+	// The ordinary ending. With a radio to ask, it is the radio going quiet
+	// that ends a transmission, and the audio has no vote: audio that stays
+	// above the floor after the radio has stopped is the input's own noise, and
+	// letting it hold a recording open is how sixteen seconds of hiss gets
+	// written as though it were traffic.
+	if g.ended(tx, f, loud) {
 		out = append(out, g.close(ReasonHang)...)
 	}
 
 	return out
+}
+
+// counts reports whether audio arriving now belongs to the transmission.
+//
+// With the radio as the authority it does not, once the radio has stopped.
+// Otherwise the input's own noise goes on advancing the last-heard time after
+// the transmission ended, and a burst of a few hundred milliseconds grows past
+// the minimum length on nothing but hiss, which is the whole failure this mode
+// exists to prevent.
+//
+// The slack is what keeps the end of a real transmission. The radio is asked
+// several times a second rather than continuously, so the moment it stopped is
+// only known to within one interval, and cutting at the last poll that said yes
+// would clip that much off every recording.
+//
+// Parameters:
+//   - tx: the transmission being assembled
+//   - f: the frame that has just arrived
+//
+// Returns:
+//   - true if this audio is part of the transmission
+func (g *Gate) counts(tx *transmission, f audiofeed.Frame) bool {
+	if !g.opts.RequireRadio {
+		return true
+	}
+	return g.radio.On || f.At.Sub(tx.lastRadio) <= radioSlack
+}
+
+// ended reports whether the open transmission is over.
+//
+// Parameters:
+//   - tx: the transmission being assembled
+//   - f: the frame just added
+//   - loud: whether that frame was above the floor
+//
+// Returns:
+//   - true if the transmission has finished
+func (g *Gate) ended(tx *transmission, f audiofeed.Frame, loud bool) bool {
+	if g.opts.RequireRadio {
+		return !g.radio.On && f.At.Sub(tx.lastRadio) >= g.opts.Hang
+	}
+	return !loud && !g.radio.On && f.At.Sub(tx.lastLoud) >= g.opts.Hang
 }
 
 // close finishes the open transmission, trimming the trailing quiet off it.
@@ -306,7 +364,9 @@ func (g *Gate) close(reason string) []Event {
 
 	// The recording ends a pad after the last audio, not wherever the silence
 	// happened to be noticed. Everything after that is dead air the hang time
-	// was spent waiting through.
+	// was spent waiting through. What counted as audio was already bounded by
+	// the radio, so nothing further is needed here to keep the input's own
+	// noise out of the end of the file.
 	end := tx.lastLoud.Add(padDuration)
 	out := g.releaseFrom(tx, end)
 
@@ -389,8 +449,14 @@ func (g *Gate) open(f audiofeed.Frame, loud bool) {
 	// Walk back over audio that was already above the floor. What stops the
 	// walk is the last frame that was still at the floor, which is the silence
 	// the transmission began out of.
-	start := len(g.ring)
-	for start > 0 && g.aboveFloor(g.ring[start-1]) {
+	//
+	// It is bounded, because the only thing it compensates for is the lag
+	// between a transmission starting and anything noticing, which is a
+	// fraction of a second. A floor measured a little low would otherwise let
+	// the walk run back through the whole buffer and put all of it at the front
+	// of the recording.
+	start, limit := len(g.ring), len(g.ring)-lookBackFrames
+	for start > 0 && start > limit && g.aboveFloor(g.ring[start-1]) {
 		start--
 	}
 

@@ -94,6 +94,28 @@ const (
 	// tracked rather than configured.
 	marginDB = 8.0
 
+	// maxLookBack is how far before the radio's word the onset may be searched
+	// for.
+	//
+	// The search walks back over audio already above the floor, and the only
+	// thing it compensates for is the lag between a transmission starting and
+	// the radio being asked about it, which is a fraction of a second. Two
+	// seconds is generous for that. Leaving it unbounded means a floor measured
+	// a little low lets the walk run back through the whole buffer and put all
+	// of it at the front of the recording.
+	maxLookBack = 2 * time.Second
+
+	// radioSlack is how long after the radio was last seen receiving its audio
+	// still counts as part of the transmission.
+	//
+	// It covers the gap between polls, since the radio is asked several times a
+	// second rather than continuously, so the moment it stopped is only known
+	// to within one interval. Without it a recording loses up to that much off
+	// its end every time. It is deliberately short: everything it lets through
+	// is audio nothing has confirmed, so it buys back the tail of a real
+	// transmission without being long enough for a noise floor to matter.
+	radioSlack = 400 * time.Millisecond
+
 	// padDuration is how much audio is kept before the detected onset.
 	//
 	// The detector finds the last frame that was still at the floor and starts
@@ -151,6 +173,9 @@ const frameDuration = audiofeed.FrameMS * time.Millisecond
 const (
 	// floorFrames is floorWindow counted in frames.
 	floorFrames = int(floorWindow / frameDuration)
+
+	// lookBackFrames is maxLookBack counted in frames.
+	lookBackFrames = int(maxLookBack / frameDuration)
 
 	// maxRingFrames is bufferWindow counted in frames.
 	maxRingFrames = int(bufferWindow / frameDuration)
@@ -237,6 +262,24 @@ type Options struct {
 	// is dropped before a KindStart is ever emitted, so a caller never creates
 	// a file it then has to delete.
 	MinDuration time.Duration
+
+	// RequireRadio makes the radio the authority on whether a transmission is
+	// happening at all, rather than one of two things that can decide it.
+	//
+	// Set it whenever there is a radio to ask, which for the recorder is
+	// always. Without it the audio alone can open a transmission and keep it
+	// open, and that turns out not to survive contact with real hardware: a
+	// scanner's line output has more than one idle level, measured at -88 dBFS
+	// with the squelch shut and -77 at other times on one SDS150, and any fixed
+	// margin above the quieter of those reads the louder one as speech. A
+	// sixteen second recording of nothing but noise, from a transmission that
+	// actually lasted under a second, is what that looks like.
+	//
+	// The radio has no such ambiguity. It says plainly whether its audio gate
+	// is open, so it decides whether a recording exists and roughly when, and
+	// the audio is left to do what it is genuinely better at: finding the exact
+	// moment inside that window where the sound began and ended.
+	RequireRadio bool
 }
 
 // Transmission is one recording, as the gate understands it.
@@ -359,4 +402,8 @@ type transmission struct {
 	// lastLoud is when audio was last above the floor, which is where the
 	// recording is trimmed back to when it ends.
 	lastLoud time.Time
+
+	// lastRadio is when the radio was last seen receiving, and is what bounds
+	// the recording when the radio is the authority.
+	lastRadio time.Time
 }

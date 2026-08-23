@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -354,24 +355,50 @@ func Test_announceRecording(t *testing.T) {
 	}
 }
 
+// radio is a scanner the test turns on and off, so a transmission can be
+// started and finished the way a real one is.
+//
+// The recorder asks it several times a second from a goroutine, so the answer
+// has to be safe to change from the test while that is going on.
+type radio struct {
+	on atomic.Bool
+}
+
+// sample answers what the scanner is hearing right now.
+//
+// Returns:
+//   - a transmission on a fixed channel while the radio is on, nothing while
+//     it is off
+//   - error never
+func (r *radio) sample(context.Context) (device.Heard, error) {
+	if r.on.Load() {
+		return heardOn("MARLINTON DISPATCH"), nil
+	}
+	return device.Heard{}, nil
+}
+
+// settle waits long enough for the recorder to have asked the radio at least
+// once, so a change made by a test has reached the gate before audio does.
+func settle() { time.Sleep(3 * samplePeriod) }
+
 // Test_recordLoop tests the recordLoop function with 100% coverage.
 //
-// It is the whole recorder driven from a channel of frames, so a night of
-// scanner traffic runs through it in a millisecond and lands as real files.
+// It is the whole recorder driven from a channel of frames and a radio the test
+// controls, so a night of scanner traffic runs through it in a moment and lands
+// as real files.
 //
-// Coverage: 100% (6 test cases covering every branch)
+// Coverage: 100% (5 test cases covering every branch)
 //
 // Test cases:
-//   - Transmission: audio arrives, a file is written with its description
+//   - Transmission: the radio opens and closes one, and a file is written
 //   - AudioEnds: the feed closing ends the run without complaint
 //   - Cancelled: stopping part way through keeps the part that happened
-//   - ScannerFails: a radio that stops answering ends the run with an error
-//   - WriteFails: a destination that stops accepting recordings is reported
+//   - NoiseWithoutTheRadio: audio the radio never confirmed is not recorded
 //   - Quiet: audio that never rises above the floor writes nothing
 func Test_recordLoop(t *testing.T) {
-	// run drives the loop with the frames given and returns the destination.
-	run := func(t *testing.T, frames []audiofeed.Frame, sample func(context.Context) (device.Heard, error),
-		cancelAfter bool) (string, *bytes.Buffer, error) {
+	// start runs the loop against a channel and a radio the caller drives.
+	start := func(t *testing.T) (*radio, chan audiofeed.Frame, string, *bytes.Buffer,
+		context.CancelFunc, <-chan error) {
 		t.Helper()
 
 		app, out, _ := recorderApp()
@@ -380,152 +407,174 @@ func Test_recordLoop(t *testing.T) {
 		if err != nil {
 			t.Fatalf("opening the library: %v", err)
 		}
-		defer library.Close()
+		t.Cleanup(func() { library.Close() })
 
-		ch := make(chan audiofeed.Frame, len(frames)+1)
-		for _, f := range frames {
-			ch <- f
-		}
-		if !cancelAfter {
-			close(ch)
-		}
-
+		r := &radio{}
 		ctx, cancel := context.WithCancel(context.Background())
-		if cancelAfter {
-			// Let the frames be taken first, then stop, which is what Ctrl-C
-			// part way through a transmission looks like.
-			go func() {
-				for len(ch) > 0 {
-					time.Sleep(time.Millisecond)
-				}
-				cancel()
-			}()
-		} else {
-			defer cancel()
-		}
+		frames := make(chan audiofeed.Frame, 4096)
+		done := make(chan error, 1)
 
-		err = recordLoop(ctx, app, library, ch, sample, recordOptions{
-			hang:        200 * time.Millisecond,
-			minDuration: 100 * time.Millisecond,
-		})
-		return dir, out, err
+		go func() {
+			done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
+				hang:        200 * time.Millisecond,
+				minDuration: 100 * time.Millisecond,
+			})
+		}()
+		return r, frames, dir, out, cancel, done
 	}
 
-	// A scanner that is always receiving the same channel.
-	receiving := func(context.Context) (device.Heard, error) {
-		return heardOn("MARLINTON DISPATCH"), nil
-	}
-	// A scanner that is never receiving, which is what a quiet channel looks
-	// like and what makes a recording unlabelled.
-	idle := func(context.Context) (device.Heard, error) { return device.Heard{}, nil }
-
-	// Verify a transmission lands as a file with a description beside it.
-	t.Run("Transmission", func(t *testing.T) {
-		frames, next := feed(0, 30, quietLevel)
-		loud, next := feed(next, 60, loudLevel)
-		quiet, _ := feed(next, 60, quietLevel)
-		frames = append(append(frames, loud...), quiet...)
-
-		dir, out, err := run(t, frames, idle, false)
-		if err != nil {
-			t.Fatalf("recording: %v", err)
-		}
-
-		var found []string
+	// wavs counts the recordings written below dir.
+	wavs := func(t *testing.T, dir string) int {
+		t.Helper()
+		n := 0
 		filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 			if err == nil && strings.HasSuffix(path, ".wav") {
-				found = append(found, path)
+				n++
 			}
 			return nil
 		})
-		if len(found) != 1 {
-			t.Fatalf("wrote %d recordings, want 1", len(found))
+		return n
+	}
+
+	// Verify a transmission the radio confirmed lands as a file, described and
+	// indexed.
+	t.Run("Transmission", func(t *testing.T) {
+		r, frames, dir, out, cancel, done := start(t)
+		defer cancel()
+
+		quiet, next := feed(0, 30, quietLevel)
+		for _, f := range quiet {
+			frames <- f
+		}
+
+		// The radio stops on something, then the audio arrives.
+		r.on.Store(true)
+		settle()
+		loud, next := feed(next, 60, loudLevel)
+		for _, f := range loud {
+			frames <- f
+		}
+
+		// It moves on, and the audio falls back to the noise floor.
+		r.on.Store(false)
+		settle()
+		tail, _ := feed(next, 60, quietLevel)
+		for _, f := range tail {
+			frames <- f
+		}
+		close(frames)
+
+		if err := <-done; err != nil {
+			t.Fatalf("recording: %v", err)
+		}
+		if n := wavs(t, dir); n != 1 {
+			t.Fatalf("wrote %d recordings, want 1", n)
 		}
 		if out.Len() == 0 {
 			t.Error("nothing was printed for the finished recording")
 		}
 
-		// The index is the searchable part, so it has to have the line too.
 		raw, err := os.ReadFile(filepath.Join(dir, recordings.IndexName))
 		if err != nil || len(raw) == 0 {
 			t.Fatalf("the index holds nothing: %v", err)
+		}
+		var e recordings.Entry
+		if err := json.Unmarshal(bytes.Split(raw, []byte("\n"))[0], &e); err != nil {
+			t.Fatalf("the index line is not JSON: %v", err)
+		}
+		if e.Channel != "MARLINTON DISPATCH" || e.Samples == 0 {
+			t.Errorf("got %+v, want it labelled from the radio", e)
 		}
 	})
 
 	// Verify the audio ending is an ordinary ending rather than a failure.
 	t.Run("AudioEnds", func(t *testing.T) {
-		frames, _ := feed(0, 10, quietLevel)
-		if _, _, err := run(t, frames, idle, false); err != nil {
+		_, frames, _, _, cancel, done := start(t)
+		defer cancel()
+
+		quiet, _ := feed(0, 10, quietLevel)
+		for _, f := range quiet {
+			frames <- f
+		}
+		close(frames)
+
+		if err := <-done; err != nil {
 			t.Fatalf("the feed closing reported %v, want nil", err)
 		}
 	})
 
 	// Verify stopping part way through a transmission keeps what happened.
 	t.Run("Cancelled", func(t *testing.T) {
-		frames, next := feed(0, 30, quietLevel)
-		loud, _ := feed(next, 60, loudLevel)
-		frames = append(frames, loud...)
+		r, frames, dir, _, cancel, done := start(t)
 
-		dir, _, err := run(t, frames, receiving, true)
-		if err != nil {
-			t.Fatalf("recording: %v", err)
+		r.on.Store(true)
+		settle()
+		loud, _ := feed(0, 60, loudLevel)
+		for _, f := range loud {
+			frames <- f
+		}
+		for len(frames) > 0 {
+			time.Sleep(time.Millisecond)
 		}
 
-		var wavs int
-		filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-			if err == nil && strings.HasSuffix(path, ".wav") {
-				wavs++
-			}
-			return nil
-		})
-		if wavs != 1 {
-			t.Errorf("wrote %d recordings, want the interrupted one kept", wavs)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("recording: %v", err)
+		}
+		if n := wavs(t, dir); n != 1 {
+			t.Errorf("wrote %d recordings, want the interrupted one kept", n)
 		}
 	})
 
-	// Verify a radio that stops answering ends the run, since carrying on would
-	// mean writing files nothing confirms are scanner recordings.
+	// Verify audio the radio never confirmed is not recorded.
 	//
-	// The feed is left open and the run is bounded by a deadline instead, so
-	// the loop is still going when the poller next fires. Closing the audio
-	// would end it first and prove nothing.
-	t.Run("ScannerFails", func(t *testing.T) {
-		app, _, _ := recorderApp()
-		library, err := recordings.New(t.TempDir(), "")
-		if err != nil {
-			t.Fatalf("opening the library: %v", err)
-		}
-		defer library.Close()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// This is the regression the whole design turns on. A scanner's line output
+	// has more than one idle level, so audio well above the quietest of them is
+	// not evidence of anything, and treating it as evidence produced sixteen
+	// second recordings of a noise floor.
+	t.Run("NoiseWithoutTheRadio", func(t *testing.T) {
+		_, frames, dir, out, cancel, done := start(t)
 		defer cancel()
 
-		err = recordLoop(ctx, app, library, make(chan audiofeed.Frame),
-			func(context.Context) (device.Heard, error) {
-				return device.Heard{}, errors.New("the port closed")
-			}, recordOptions{})
-		if err == nil || !strings.Contains(err.Error(), "stopped answering") {
-			t.Fatalf("got %v, want the run to end with the radio", err)
+		// The floor settles on the quieter idle level, then the input moves to
+		// the louder one and stays there, with the radio silent throughout.
+		quiet, next := feed(0, 200, -88)
+		for _, f := range quiet {
+			frames <- f
+		}
+		noisy, _ := feed(next, 800, -77)
+		for _, f := range noisy {
+			frames <- f
+		}
+		close(frames)
+
+		if err := <-done; err != nil {
+			t.Fatalf("recording: %v", err)
+		}
+		if n := wavs(t, dir); n != 0 {
+			t.Errorf("wrote %d recordings of a noise floor, want none", n)
+		}
+		if out.Len() != 0 {
+			t.Errorf("printed %q for audio the radio never confirmed", out.String())
 		}
 	})
 
-	// Verify audio that never rises above the floor writes nothing at all.
+	// Verify a quiet channel with a quiet radio writes nothing at all.
 	t.Run("Quiet", func(t *testing.T) {
-		frames, _ := feed(0, 200, quietLevel)
-		dir, out, err := run(t, frames, idle, false)
-		if err != nil {
+		_, frames, dir, out, cancel, done := start(t)
+		defer cancel()
+
+		quiet, _ := feed(0, 200, quietLevel)
+		for _, f := range quiet {
+			frames <- f
+		}
+		close(frames)
+
+		if err := <-done; err != nil {
 			t.Fatalf("recording: %v", err)
 		}
-
-		var wavs int
-		filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-			if err == nil && strings.HasSuffix(path, ".wav") {
-				wavs++
-			}
-			return nil
-		})
-		if wavs != 0 || out.Len() != 0 {
-			t.Errorf("a quiet channel produced %d recordings and printed %q", wavs, out.String())
+		if n := wavs(t, dir); n != 0 || out.Len() != 0 {
+			t.Errorf("a quiet channel produced %d recordings and printed %q", n, out.String())
 		}
 	})
 }
@@ -1343,7 +1392,12 @@ func Test_recordLoopEndings(t *testing.T) {
 		}
 	}
 
-	idle := func(context.Context) (device.Heard, error) { return device.Heard{}, nil }
+	// Always receiving, because these tests are about what happens to a
+	// recording rather than about whether one starts. The radio is what opens
+	// one now, so it has to be saying something.
+	live := func(context.Context) (device.Heard, error) {
+		return heardOn("MARLINTON DISPATCH"), nil
+	}
 
 	// Verify a reading of the radio arrives and ends up on the recording.
 	//
@@ -1355,6 +1409,7 @@ func Test_recordLoopEndings(t *testing.T) {
 			return heardOn("MARLINTON DISPATCH"), nil
 		})
 
+		settle()
 		quiet, next := feed(0, 30, quietLevel)
 		loud, next := feed(next, 60, loudLevel)
 		send(frames, quiet)
@@ -1397,7 +1452,7 @@ func Test_recordLoopEndings(t *testing.T) {
 	// carrying on recording into nothing.
 	t.Run("RecordingFails", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "rec")
-		frames, cancel, done := start(t, dir, idle)
+		frames, cancel, done := start(t, dir, live)
 		defer cancel()
 
 		// Take the destination away now that the library has been opened.
@@ -1408,6 +1463,7 @@ func Test_recordLoopEndings(t *testing.T) {
 			t.Fatalf("putting a file where the destination was: %v", err)
 		}
 
+		settle()
 		quiet, next := feed(0, 30, quietLevel)
 		loud, _ := feed(next, 60, loudLevel)
 		go send(frames, append(quiet, loud...))
@@ -1426,8 +1482,9 @@ func Test_recordLoopEndings(t *testing.T) {
 	// the run is stopped, rather than the recording vanishing quietly.
 	t.Run("FlushFails", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "rec")
-		frames, cancel, done := start(t, dir, idle)
+		frames, cancel, done := start(t, dir, live)
 
+		settle()
 		quiet, next := feed(0, 30, quietLevel)
 		loud, _ := feed(next, 60, loudLevel)
 		send(frames, quiet)
@@ -1457,9 +1514,10 @@ func Test_recordLoopEndings(t *testing.T) {
 	// the same as being interrupted does.
 	t.Run("AudioEndsMidTransmission", func(t *testing.T) {
 		dir := t.TempDir()
-		frames, cancel, done := start(t, dir, idle)
+		frames, cancel, done := start(t, dir, live)
 		defer cancel()
 
+		settle()
 		quiet, next := feed(0, 30, quietLevel)
 		loud, _ := feed(next, 60, loudLevel)
 		send(frames, quiet)
@@ -1797,5 +1855,68 @@ func Test_meter(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "peak=-70") {
 		t.Errorf("logged %q, want the peak reset after a reading", logged.String())
+	}
+}
+
+// Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway checks the file
+// left behind when the scanner is unplugged mid-transmission.
+//
+// The run has to end, because a recording nothing can confirm is not a scanner
+// recording, and the half-written file has to go with it rather than being left
+// as something that will not play.
+func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
+	app, _, _ := recorderApp()
+	dir := t.TempDir()
+	library, err := recordings.New(dir, "")
+	if err != nil {
+		t.Fatalf("opening the library: %v", err)
+	}
+	defer library.Close()
+
+	// A scanner that answers once, so a recording opens, and then goes away.
+	var asked atomic.Int32
+	sample := func(context.Context) (device.Heard, error) {
+		if asked.Add(1) > 1 {
+			return device.Heard{}, errors.New("the port closed")
+		}
+		return heardOn("MARLINTON DISPATCH"), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	frames := make(chan audiofeed.Frame, 4096)
+	done := make(chan error, 1)
+	go func() {
+		done <- recordLoop(ctx, app, library, frames, sample, recordOptions{
+			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
+		})
+	}()
+
+	settle()
+	quiet, next := feed(0, 30, quietLevel)
+	loud, _ := feed(next, 120, loudLevel)
+	for _, f := range append(quiet, loud...) {
+		frames <- f
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "stopped answering") {
+			t.Fatalf("got %v, want the run to end with the radio", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run never ended")
+	}
+
+	// Nothing half written is left behind.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the destination: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != recordings.IndexName {
+			t.Errorf("%s was left behind", e.Name())
+		}
 	}
 }

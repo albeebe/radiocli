@@ -761,3 +761,130 @@ func TestRadioAloneOpensAndClosesATransmission(t *testing.T) {
 		t.Fatalf("got %d recordings, want 1 once the radio stopped", n)
 	}
 }
+
+// TestRadioIsTheAuthorityOnWhatIsATransmission is the regression that this
+// mode exists for, and the numbers in it are from a real recording.
+//
+// An SDS150's line output idles at about -88 dBFS with the squelch shut and at
+// about -77 at other times. A gate that decides for itself measures the floor
+// during the quiet stretch, puts the trigger eight decibels above it, and then
+// reads the louder idle level as speech for as long as it lasts. What that
+// produced was a sixteen second recording of nothing, from a transmission that
+// really lasted under a second, with the radio reporting it was receiving on
+// exactly one of the forty-eight times it was asked.
+//
+// With the radio as the authority there is no such recording, because there was
+// no such transmission.
+func TestRadioIsTheAuthorityOnWhatIsATransmission(t *testing.T) {
+	d := newDriver(Options{RequireRadio: true})
+
+	// The quieter idle level, which is what the floor settles on.
+	d.feed(200, -88)
+
+	// One brief transmission, confirmed by the radio, then the input moves to
+	// its louder idle level and stays there with the radio silent.
+	d.radio(true, "marlinton")
+	evs := d.feed(10, -43)
+	d.radio(false, "")
+	evs = append(evs, d.feed(800, -77)...)
+
+	// The transmission was shorter than the default minimum, so nothing is
+	// kept, and crucially nothing runs on into the noise.
+	if starts := only(evs, KindStart); len(starts) != 0 {
+		t.Fatalf("got %d recordings, want none: %+v", len(starts), starts)
+	}
+	if d.g.tx != nil {
+		t.Error("a transmission is still open on the noise floor")
+	}
+}
+
+// TestRadioOpensAndClosesTheRecording checks the ordinary path in the mode the
+// recorder uses: the radio says when, and the audio says exactly when.
+func TestRadioOpensAndClosesTheRecording(t *testing.T) {
+	d := newDriver(Options{RequireRadio: true, MinDuration: 100 * time.Millisecond,
+		Hang: 200 * time.Millisecond})
+
+	d.feed(50, quietLevel)
+
+	// Audio alone does nothing, however loud it is.
+	if evs := d.feed(50, loudLevel); len(evs) != 0 {
+		t.Fatalf("audio opened a recording with the radio silent: %d events", len(evs))
+	}
+
+	// The radio confirms, and the recording begins.
+	d.radio(true, "marlinton")
+	evs := d.feed(100, loudLevel)
+	d.radio(false, "")
+	evs = append(evs, d.feed(100, quietLevel)...)
+
+	ends := only(evs, KindEnd)
+	if len(ends) != 1 {
+		t.Fatalf("got %d recordings, want 1", len(ends))
+	}
+	if ends[0].Key != "marlinton" {
+		t.Errorf("the recording is labelled %q, want the radio's channel", ends[0].Key)
+	}
+	if ends[0].Reason != ReasonHang {
+		t.Errorf("ended for %q, want %q", ends[0].Reason, ReasonHang)
+	}
+}
+
+// TestTheLookBackIsBounded checks that the walk for the onset cannot run back
+// through the whole buffer.
+//
+// It is what stops a floor measured a little low from putting every second of
+// held audio at the front of a recording, which is the same failure as the one
+// above wearing a different hat.
+func TestTheLookBackIsBounded(t *testing.T) {
+	d := newDriver(Options{RequireRadio: true, MinDuration: 100 * time.Millisecond,
+		Hang: 200 * time.Millisecond})
+
+	// Settle the floor low, then fill the whole buffer with audio above it,
+	// with the radio saying nothing at all.
+	d.feed(200, -88)
+	d.feed(2*maxRingFrames, -70)
+
+	// Only now does the radio speak.
+	at := d.at
+	d.radio(true, "marlinton")
+	evs := d.feed(100, -30)
+	d.radio(false, "")
+	evs = append(evs, d.feed(100, -88)...)
+
+	ends := only(evs, KindEnd)
+	if len(ends) != 1 {
+		t.Fatalf("got %d recordings, want 1", len(ends))
+	}
+	if back := at.Sub(ends[0].Start); back > maxLookBack+padDuration {
+		t.Errorf("the recording reaches %v back before the radio spoke, want no more than %v",
+			back, maxLookBack+padDuration)
+	}
+}
+
+// TestTheTailIsBoundedByTheRadio checks that audio still reading as loud after
+// the radio has stopped is not kept.
+//
+// A recording should end where the transmission did, not where the input's own
+// noise happens to fall back below a threshold.
+func TestTheTailIsBoundedByTheRadio(t *testing.T) {
+	d := newDriver(Options{RequireRadio: true, MinDuration: 100 * time.Millisecond,
+		Hang: 200 * time.Millisecond})
+
+	d.feed(200, -88)
+	d.radio(true, "marlinton")
+	d.feed(100, -30)
+
+	// The radio stops, and the input settles at a level still above the floor.
+	off := d.at
+	d.radio(false, "")
+	evs := d.feed(300, -70)
+
+	ends := only(evs, KindEnd)
+	if len(ends) != 1 {
+		t.Fatalf("got %d recordings, want 1", len(ends))
+	}
+	if over := ends[0].End.Sub(off); over > radioSlack+padDuration {
+		t.Errorf("the recording runs %v past the radio, want no more than %v",
+			over, radioSlack+padDuration)
+	}
+}

@@ -413,6 +413,10 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 			Hang:        opts.hang,
 			MinDuration: opts.minDuration,
 			MaxDuration: opts.maxDuration,
+			// This command always has a scanner, so the scanner decides what
+			// is a transmission. Letting the audio decide as well is what
+			// produced sixteen second recordings of a noise floor.
+			RequireRadio: true,
 		}),
 	}
 
