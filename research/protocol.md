@@ -321,7 +321,61 @@ it receiving right now" and `Sig` is a measure of how strong the signal is once
 there is one. `Rssi` reads `-999` when nothing is coming in.
 
 `Property` also carries `Rec`, which is the state of the radio's own recorder,
-and `A_Led`, which is `Blue` while receiving and `Off` otherwise.
+and `A_Led`, the alert light. The specification presents that as a receive
+indicator, `Blue` while receiving and `Off` otherwise, and the captured document
+above agrees. A later capture does not: polling through two real transmissions
+on a Marlinton police channel, `A_Led` read `Off` for every document including
+the ones with the mute open. It is most likely following the channel's own alert
+colour rather than reception, and it is not a field to build on either way.
+`Mute` is.
+
+### `Mute` is the closest thing to a keyup event
+
+There is no keyup event. Nothing in the protocol is an edge or a notification:
+`GSI` is a poll and `PSI` is the same document pushed on a timer, not on a
+change. What there is instead is `Mute`, and it is enough, because it follows
+the carrier rather than the speech.
+
+That distinction is the whole value of it. A pause in the middle of somebody's
+transmission does not close the mute, because they are still keyed up. The gap
+between one person unkeying and the next answering does. So a mute that closes
+and reopens is two transmissions, reliably, in a way no amount of listening to
+the audio can establish.
+
+Polled flat out, through a dispatcher and a cruiser answering on
+155.550 MHz NFM, printing only the documents that differed from the one before:
+
+```
+ 59.907  mute=Mute    rssi=-999  sig=0  ch=Fire/EMS Operations - Analog
+ 60.112  mute=Mute    rssi=-999  sig=0  ch=Police Operations
+ 60.390  mute=Unmute  rssi=-86   sig=5  ch=Police Operations   <- dispatcher keys up
+ 61.921  mute=Mute    rssi=-999  sig=5  ch=Police Operations   <- and unkeys
+ 62.093  mute=Mute    rssi=-999  sig=0  ch=Police Operations
+ 62.557  mute=Unmute  rssi=-87   sig=5  ch=Police Operations   <- the unit answers
+ 63.708  mute=Mute    rssi=-999  sig=5  ch=Police Operations
+ 63.865  mute=Mute    rssi=-999  sig=0  ch=Police Operations
+```
+
+Three things are worth taking from it.
+
+**The gap is short.** 640 milliseconds of closed mute between the two. Anything
+polling a few times a second cannot tell that from two questions that happened
+to land either side of nothing, so the rate the radio is asked at decides
+whether the two speakers can be separated at all.
+
+**`Rssi` adds nothing over `Mute`.** They flip in the same document, in both
+directions, every time. `Rssi` looked like the better field on the theory that
+it reports the receiver while `Mute` reports the audio path, and that the
+scanner's channel delay would hold the mute open over a gap the RSSI could see
+through. It does not: the delay holds the *channel*, not the mute.
+
+**`Sig` lags on the way down as well as up.** It stayed at 5 for about 170
+milliseconds after the carrier went, in both transmissions, while `Rssi` had
+already gone to `-999`. It is late at both ends and should not be used as a
+receive indicator in either direction.
+
+The radio sustained 81 `GSI` documents per second on this cable, so polling fast
+enough to catch these edges costs less than it looks like it should.
 
 ### What is always there
 
