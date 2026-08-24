@@ -38,9 +38,9 @@ func TestHeadphone(t *testing.T) {
 	}
 }
 
-// TestHeadphoneRefusesAValueThatDoesNotExist checks that a typo is caught
+// TestHeadphone_RefusesAValueThatDoesNotExist checks that a typo is caught
 // before the scanner is touched, which is what makes it free.
-func TestHeadphoneRefusesAValueThatDoesNotExist(t *testing.T) {
+func TestHeadphone_RefusesAValueThatDoesNotExist(t *testing.T) {
 	needScanner(t)
 
 	res := mustFail(t, "there is no headphone setting called", "headphone", "set", "sideways")

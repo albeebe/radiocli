@@ -71,13 +71,13 @@ func TestReceiving(t *testing.T) {
 	}
 }
 
-// TestReceivingRunsAlongsideAnotherCommand checks the annotation that makes
+// TestReceiving_RunsAlongsideAnotherCommand checks the annotation that makes
 // this usable as a label source while something long is running.
 //
 // It is the property "audio record" depends on: it asks this several times a
 // second for as long as a recording lasts, through a daemon, without ever
 // making anything else wait.
-func TestReceivingRunsAlongsideAnotherCommand(t *testing.T) {
+func TestReceiving_RunsAlongsideAnotherCommand(t *testing.T) {
 	needScanner(t)
 
 	// Reading three times in quick succession is what a recorder does, and each

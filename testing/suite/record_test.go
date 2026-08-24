@@ -12,13 +12,13 @@ import (
 	"testing"
 )
 
-// TestAudioRecordRefusesWithoutAScanner checks the rule that this command
+// TestAudioRecord_RefusesWithoutAScanner checks the rule that this command
 // records a scanner rather than a sound card.
 //
 // It is the guard that stops somebody pointing the recorder at a microphone and
 // filling a disk with the room, so it is checked before anything else about the
 // command.
-func TestAudioRecordRefusesWithoutAScanner(t *testing.T) {
+func TestAudioRecord_RefusesWithoutAScanner(t *testing.T) {
 	// The suite puts --device in front of every command, so this passes an
 	// empty one after it: pflag takes the last it is given, which is how a test
 	// overrides the port the harness chose.
@@ -33,13 +33,13 @@ func TestAudioRecordRefusesWithoutAScanner(t *testing.T) {
 	}
 }
 
-// TestAudioRecordChecksItsTemplateFirst checks that a naming template that
+// TestAudioRecord_ChecksItsTemplateFirst checks that a naming template that
 // cannot work is refused before anything is opened.
 //
 // A typo found at startup costs a second. The same typo found on the first
 // transmission of the night costs the night, which is why this is checked
 // rather than assumed.
-func TestAudioRecordChecksItsTemplateFirst(t *testing.T) {
+func TestAudioRecord_ChecksItsTemplateFirst(t *testing.T) {
 	needScanner(t)
 
 	dir := t.TempDir()
@@ -64,22 +64,22 @@ func TestAudioRecordChecksItsTemplateFirst(t *testing.T) {
 	}
 }
 
-// TestAudioRecordRefusesATemplateThatNamesEveryFileTheSame checks the template
+// TestAudioRecord_RefusesATemplateThatNamesEveryFileTheSame checks the template
 // with no tokens in it, which would have every recording overwrite the last.
-func TestAudioRecordRefusesATemplateThatNamesEveryFileTheSame(t *testing.T) {
+func TestAudioRecord_RefusesATemplateThatNamesEveryFileTheSame(t *testing.T) {
 	needScanner(t)
 
 	mustFail(t, "no tokens in it", "--device", harness.device,
 		"audio", "record", t.TempDir(), "--template", "recording")
 }
 
-// TestAudioRecordWritesRecordings runs the recorder against whatever sound
+// TestAudioRecord_WritesRecordings runs the recorder against whatever sound
 // input the scanner's audio is cabled into and checks what lands on disk.
 //
 // It is skipped unless -audio names an input, because the audio reaches this
 // computer over a cable somebody has to have run, and nothing in the tool can
 // know whether they have.
-func TestAudioRecordWritesRecordings(t *testing.T) {
+func TestAudioRecord_WritesRecordings(t *testing.T) {
 	needScanner(t)
 	if *audioInput == "" {
 		t.Skip("no sound input named: pass -audio \"<input>\" to record from the scanner")
