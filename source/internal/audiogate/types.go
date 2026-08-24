@@ -284,14 +284,27 @@ const (
 	// transmission is a click, a squelch tail or a control channel burst rather
 	// than anything anybody wants to listen to.
 	//
+	// It has come down twice, and each time because something upstream got
+	// better at separating transmissions and left this floor standing above
+	// what it now had to catch.
+	//
 	// A second while an exchange was one recording, because the short half of
 	// it rode along inside the long half and nothing was lost by setting the
-	// floor above it. Cutting on the keyup takes that away: "ten four" is its
-	// own recording now, it runs well under a second, and a floor of a second
-	// does not merely fail to separate it but deletes it. Half a second keeps
-	// the acknowledgements and still discards the bursts, which are shorter
-	// again by an order of magnitude.
-	DefaultMinDuration = 500 * time.Millisecond
+	// floor above it. Cutting on the keyup took that away: "ten four" became
+	// its own recording, it runs well under a second, and a floor of a second
+	// did not merely fail to separate it but deleted it. Half a second kept
+	// the acknowledgements and still discarded the bursts.
+	//
+	// Cutting when the transmitting radio changes took it away again, and more
+	// completely. A repeater holds its carrier through a whole exchange, so an
+	// acknowledgement inside one used to ride along in the file before it even
+	// after the keyup rule arrived; now it is separated properly and has to
+	// clear this floor on its own. Measured live: a "ten four" answering a
+	// dispatcher was cut out correctly and then dropped for being shorter than
+	// half a second. A quarter of a second keeps those. Squelch tails and
+	// control bursts are shorter again by an order of magnitude, so they are
+	// still refused.
+	DefaultMinDuration = 250 * time.Millisecond
 )
 
 // Activity is what the radio says it is doing, as of the moment it was asked.

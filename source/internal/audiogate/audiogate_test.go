@@ -345,10 +345,10 @@ func TestRadioIntoADeadCableRecordsNothing(t *testing.T) {
 // which is what lets the caller create a file on KindStart without ever having
 // to delete one.
 func TestShortTransmissionIsDiscarded(t *testing.T) {
-	d := newDriver(Options{}) // A one second minimum.
+	d := newDriver(Options{}) // The default minimum, a quarter of a second.
 
 	d.feed(50, quietLevel)
-	evs := d.feed(20, loudLevel) // 400 ms.
+	evs := d.feed(10, loudLevel) // 200 ms, which is under it.
 	evs = append(evs, d.feed(200, quietLevel)...)
 
 	if len(evs) != 0 {
@@ -829,7 +829,13 @@ func TestRadioAloneOpensAndClosesATransmission(t *testing.T) {
 // With the radio as the authority there is no such recording, because there was
 // no such transmission.
 func TestRadioIsTheAuthorityOnWhatIsATransmission(t *testing.T) {
-	d := newDriver(Options{RequireRadio: true})
+	// The minimum is named rather than left at the default, because this is a
+	// test of who decides what a transmission is and not of where the floor
+	// sits. The floor came down to a quarter of a second so that a "ten four"
+	// survives being separated from the transmission it answers, and at that
+	// height the noise below would clear it: see DefaultMinDuration, which
+	// says what that gave up.
+	d := newDriver(Options{RequireRadio: true, MinDuration: 500 * time.Millisecond})
 
 	// The quieter idle level, which is what the floor settles on.
 	d.feed(200, -88)
@@ -837,12 +843,12 @@ func TestRadioIsTheAuthorityOnWhatIsATransmission(t *testing.T) {
 	// One brief transmission, confirmed by the radio, then the input moves to
 	// its louder idle level and stays there with the radio silent.
 	d.radio(true, "marlinton")
-	evs := d.feed(10, -43)
+	evs := d.feed(5, -43) // 100 ms, under the default minimum.
 	d.radio(false, "")
 	evs = append(evs, d.feed(800, -77)...)
 
-	// The transmission was shorter than the default minimum, so nothing is
-	// kept, and crucially nothing runs on into the noise.
+	// The transmission was shorter than the minimum, so nothing is kept, and
+	// crucially nothing runs on into the noise.
 	if starts := only(evs, KindStart); len(starts) != 0 {
 		t.Fatalf("got %d recordings, want none: %+v", len(starts), starts)
 	}

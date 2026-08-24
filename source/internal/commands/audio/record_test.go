@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -280,6 +281,74 @@ func Test_entryFrom(t *testing.T) {
 		}
 	})
 
+	// Verify that a transmission is labelled by the format most of its readings
+	// agreed on, rather than by whichever answer arrived first.
+	//
+	// Measured on a live P25 channel: a 29 second transmission was labelled
+	// "Link", a value the protocol documentation does not list, because one
+	// early reading said so and the three hundred after it were never asked.
+	t.Run("MostReportedFormat", func(t *testing.T) {
+		odd := heardOn("POLICE OPERATIONS")
+		odd.Digital = "Link"
+
+		p25 := heardOn("POLICE OPERATIONS")
+		p25.Digital = "P25"
+
+		undecided := heardOn("POLICE OPERATIONS")
+
+		e := entryFrom(tx, []device.Heard{undecided, odd, p25, p25, p25})
+
+		if e.Digital != "P25" {
+			t.Errorf("labelled the transmission %q, want what most readings said", e.Digital)
+		}
+	})
+
+	// Verify that a transmission nothing was ever decoded on stays unlabelled,
+	// rather than being called analog on the strength of a silence.
+	t.Run("NothingDecoded", func(t *testing.T) {
+		if e := entryFrom(tx, []device.Heard{heardOn("POLICE OPERATIONS")}); e.Digital != "" {
+			t.Errorf("labelled the transmission %q, want it left unlabelled", e.Digital)
+		}
+	})
+
+	// Verify that two formats seen equally often are settled by which came
+	// first, so the label does not depend on how the counting was ordered.
+	t.Run("TiedFormats", func(t *testing.T) {
+		first := heardOn("POLICE OPERATIONS")
+		first.Digital = "DMR"
+
+		second := heardOn("POLICE OPERATIONS")
+		second.Digital = "P25"
+
+		e := entryFrom(tx, []device.Heard{first, second})
+
+		if e.Digital != "DMR" {
+			t.Errorf("labelled the transmission %q, want the one it started with", e.Digital)
+		}
+	})
+
+	// Verify that the radio a recording is of is the one most of its readings
+	// named, not the one that happened to be named first.
+	//
+	// A recording is cut when the transmitting radio changes, but the
+	// identifier arrives a moment after the audio does, so the opening
+	// readings of a recording can still carry whoever was talking a second
+	// ago. Taking the first would label every recording with the previous
+	// speaker.
+	t.Run("MostReportedUnit", func(t *testing.T) {
+		previous := heardOn("DISPATCH")
+		previous.Unit = "640011"
+
+		speaking := heardOn("DISPATCH")
+		speaking.Unit = "201"
+
+		e := entryFrom(tx, []device.Heard{previous, speaking, speaking, speaking})
+
+		if e.Unit != "201" {
+			t.Errorf("labelled the recording %q, want the radio most of it was", e.Unit)
+		}
+	})
+
 	// Verify a labelled transmission carries the whole hierarchy.
 	t.Run("Labelled", func(t *testing.T) {
 		e := entryFrom(tx, []device.Heard{heardOn("MARLINTON DISPATCH"), heardOn("MARLINTON DISPATCH")})
@@ -348,23 +417,58 @@ func Test_contains(t *testing.T) {
 	}
 }
 
+// Test_keySplitsOnTheTransmittingRadio checks the boundary a repeater hides.
+//
+// The gate's other way of finding where one transmission ends is the radio's
+// mute closing. On a repeater the carrier stays up between overs, so the mute
+// never closes, and without this two speakers land in one recording: measured
+// live, a 22 second recording held two seconds of one radio and twenty of the
+// dispatcher answering.
+func Test_keySplitsOnTheTransmittingRadio(t *testing.T) {
+	one := heardOn("DISPATCH")
+	one.Unit = "640011"
+
+	other := heardOn("DISPATCH")
+	other.Unit = "201"
+
+	if key(one, "640011") == key(other, "201") {
+		t.Error("two radios on one channel share an identity, so a repeater would join them")
+	}
+
+	// And everything else about the channel still has to match, or a recording
+	// would be cut for the wrong reason.
+	same := heardOn("DISPATCH")
+	same.Unit = "640011"
+	if key(one, "640011") != key(same, "640011") {
+		t.Error("one radio on one channel changed identity between readings")
+	}
+
+	// Learning who is talking, which happens a moment into every transmission,
+	// must not read as a change. It did, and it cut a fragment off the front of
+	// every recording on a channel that reports identifiers.
+	unknown := heardOn("DISPATCH")
+	if key(unknown, "") != key(one, "") {
+		t.Error("learning the identifier changed the identity, so every transmission would be cut")
+	}
+}
+
 // Test_key tests the key function with 100% coverage.
 //
 // The identity is every part of where a channel sits rather than its name
 // alone, because two departments can each have a channel called Dispatch and
 // treating those as one would join two calls into a single file.
 func Test_key(t *testing.T) {
-	if got := key(device.Heard{Channel: "Dispatch"}); got != "" {
+	if got := key(device.Heard{Channel: "Dispatch"}, ""); got != "" {
 		t.Errorf("a scanner receiving nothing has the key %q, want none", got)
 	}
 
 	a, b := heardOn("Dispatch"), heardOn("Dispatch")
-	if key(a) != key(b) {
+	if key(a, "") != key(b, "") {
 		t.Error("the same channel gave two different keys")
 	}
 
 	b.Department = "FIRE RESCUE"
-	if key(a) == key(b) {
+	if key(a, "") == key(b, "") {
 		t.Error("the same channel name in two departments gave one key")
 	}
 }
@@ -482,6 +586,10 @@ func Test_announceRecording(t *testing.T) {
 // has to be safe to change from the test while that is going on.
 type radio struct {
 	on atomic.Bool
+
+	// unit is the radio the scanner names as transmitting, which a test
+	// changes mid-transmission the way a second speaker does.
+	unit atomic.Value
 }
 
 // sample answers what the scanner is hearing right now.
@@ -491,10 +599,15 @@ type radio struct {
 //     it is off
 //   - error never
 func (r *radio) sample(context.Context) (device.Heard, error) {
-	if r.on.Load() {
-		return heardOn("MARLINTON DISPATCH"), nil
+	if !r.on.Load() {
+		return device.Heard{}, nil
 	}
-	return device.Heard{}, nil
+
+	h := heardOn("MARLINTON DISPATCH")
+	if u, ok := r.unit.Load().(string); ok {
+		h.Unit = u
+	}
+	return h, nil
 }
 
 // settle waits long enough for the recorder to have asked the radio at least
@@ -2533,4 +2646,181 @@ func Test_recorderMonitor(t *testing.T) {
 			t.Errorf("%d bytes were played on the first loud frame, want it heard at once", p.played())
 		}
 	})
+}
+
+// Test_recordLoopCutsWhenTheRadioChanges checks the boundary a repeater hides.
+//
+// Two people talking on a repeated channel produce one continuous carrier, so
+// the mute never closes and the gate has nothing to cut on. The transmitting
+// radio changing is the only mark of the boundary, and without it a live 22
+// second recording held two seconds of one radio and twenty of the dispatcher
+// answering it.
+func Test_recordLoopCutsWhenTheRadioChanges(t *testing.T) {
+	app, _, _ := recorderApp()
+	dir := t.TempDir()
+	library, err := recordings.New(dir, "", false)
+	if err != nil {
+		t.Fatalf("opening the library: %v", err)
+	}
+
+	r := &radio{}
+	r.unit.Store("640011")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	frames := make(chan audiofeed.Frame, 4096)
+	done := make(chan error, 1)
+	go func() {
+		done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
+			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
+		}, nil)
+	}()
+
+	// Quiet first, so the gate has a noise floor to measure a transmission
+	// against, the way a real evening starts.
+	settle()
+	quiet, next := feed(0, 40, quietLevel)
+	for _, f := range quiet {
+		frames <- f
+	}
+
+	// One radio talks, then another takes over with no gap at all, which is
+	// what a repeater holding its carrier looks like.
+	r.on.Store(true)
+	settle()
+	first, next2 := feed(next, 60, loudLevel)
+	next = next2
+	for _, f := range first {
+		frames <- f
+	}
+
+	r.unit.Store("201")
+	settle()
+	second, _ := feed(next, 60, loudLevel)
+	for _, f := range second {
+		frames <- f
+	}
+
+	settle()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("recording: %v", err)
+	}
+
+	// Two recordings, one per radio, rather than one holding both.
+	// The default template files recordings under a folder per day, so the
+	// descriptions are found by walking rather than by listing.
+	var units []string
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var e recordings.Entry
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return err
+		}
+		units = append(units, e.Unit)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading the destination: %v", err)
+	}
+
+	if len(units) != 2 {
+		t.Fatalf("wrote %d recordings for two radios, want one each: %v", len(units), units)
+	}
+	sort.Strings(units)
+	if units[0] != "201" || units[1] != "640011" {
+		t.Errorf("the recordings are of %v, want one of each radio", units)
+	}
+}
+
+// Test_recordLoopKeepsOneTransmissionWhenTheRadioIsNamedLate checks the mistake
+// that cutting on the transmitting radio invites.
+//
+// The identifier arrives a moment after the audio does, so a transmission
+// always begins with nobody named. Reading that as a change of speaker cut a
+// fragment off the front of every recording: measured live, one exchange
+// became three files where the radio never changed at all.
+func Test_recordLoopKeepsOneTransmissionWhenTheRadioIsNamedLate(t *testing.T) {
+	app, _, _ := recorderApp()
+	dir := t.TempDir()
+	library, err := recordings.New(dir, "", false)
+	if err != nil {
+		t.Fatalf("opening the library: %v", err)
+	}
+
+	r := &radio{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	frames := make(chan audiofeed.Frame, 4096)
+	done := make(chan error, 1)
+	go func() {
+		done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
+			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
+		}, nil)
+	}()
+
+	settle()
+	quiet, next := feed(0, 40, quietLevel)
+	for _, f := range quiet {
+		frames <- f
+	}
+
+	// The transmission starts with the scanner naming nobody, which is how
+	// every transmission starts.
+	r.on.Store(true)
+	settle()
+	first, next2 := feed(next, 40, loudLevel)
+	for _, f := range first {
+		frames <- f
+	}
+
+	// Then it decodes the identifier, part way in.
+	r.unit.Store("640018")
+	settle()
+	rest, _ := feed(next2, 40, loudLevel)
+	for _, f := range rest {
+		frames <- f
+	}
+
+	settle()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("recording: %v", err)
+	}
+
+	var reasons []string
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var e recordings.Entry
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return err
+		}
+		reasons = append(reasons, e.Reason)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading the destination: %v", err)
+	}
+
+	if len(reasons) != 1 {
+		t.Fatalf("wrote %d recordings for one transmission, want one: %v", len(reasons), reasons)
+	}
+	if reasons[0] == "channel" {
+		t.Error("the recording was cut for a change of channel, so learning the radio read as a change")
+	}
 }

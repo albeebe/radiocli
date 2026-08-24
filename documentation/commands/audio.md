@@ -682,7 +682,7 @@ radiocli audio record [destination] [flags]
 | `--channel` | No | `auto` | Which side of the cable the scanner is on: `auto`, `left`, `right` or `mix`. |
 | `--template` | No | `{date}/{time}_{system}_{department}_{channel}` | How each recording is named, below the destination. |
 | `--hang` | No | `500ms` | How long the scanner must stop receiving before a transmission is called finished. |
-| `--min-duration` | No | `500ms` | Discard any transmission shorter than this. |
+| `--min-duration` | No | `250ms` | Discard any transmission shorter than this. |
 | `--max-duration` | No | `5m` | Split any transmission longer than this. |
 | `--normalize` | No | `true` | Scale each recording up so its loudest moment is just under full scale. `--normalize=false` keeps the level exactly as it arrived. |
 | `--listen` | No | `false` | Play each transmission on this computer's speakers as it is recorded. |
@@ -812,9 +812,12 @@ afterwards. It exists because a squelch tail or a control channel burst is not
 something anybody wants to listen to.
 
 Do not raise this much above the default without meaning to. Recordings are cut
-at the keyup, so a short reply is a file of its own rather than something riding
-along inside the dispatcher's, and anything set above its length deletes it
-instead of merging it. A unit answering "ten four" runs well under a second.
+at the keyup and again whenever the transmitting radio changes, so a short reply
+is a file of its own rather than something riding along inside the dispatcher's,
+and anything set above its length deletes it instead of merging it. A unit
+answering "ten four" runs well under half a second: one measured on a live P25
+channel was separated correctly and then dropped, which is what brought the
+default down to `250ms`.
 
 ```
 radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --min-duration 1s
@@ -1032,7 +1035,7 @@ The `.json` file beside each recording is the same object printed by
 | `modulation` | string | How the scanner was demodulating, such as `NFM`. |
 | `nac` | string | The network access code, such as `8A1h`, on a trunked P25 system and on a P25 conventional channel alike. Absent on anything that is not P25, and absent on a P25 transmission too short for the scanner to have decoded one: a measured 1.1 second transmission reported the format and no code. |
 | `rssi` | string | How strong the signal was, in the scanner's own units, taken from the strongest reading during the transmission. |
-| `digital` | string | The digital format the transmission carried, such as `P25` or `DMR`. Absent when it was analog. |
+| `digital` | string | The digital format the transmission carried, such as `P25` or `DMR`, taken from whichever answer most of the readings agreed on. Absent when it was analog. |
 | `reason` | string | Why the recording ended: `hang` when the scanner stopped receiving, `split` when it reached `--max-duration`, `channel` when the scanner moved to another channel, `stopped` when you stopped the command. |
 | `samples` | number | How many times the scanner was asked what it was hearing while this was being recorded. Always present. |
 | `channels` | array of strings | Every distinct channel seen during the recording. Present only when there was more than one. |
@@ -1060,6 +1063,15 @@ has decoded something, so an early answer is both unavoidable to wait for and
 unsafe to trust: one measured transmission of 29 seconds was labelled `Link`, a
 value this scanner's own documentation does not list, on the strength of a
 single reading while the three hundred after it agreed on `P25`.
+
+**Test `digital` for being present, not for being `P25`.** The value is whatever
+the scanner's decoder said, and it does not always say a format name: a P25
+conventional channel here was measured reporting `Link` for whole transmissions,
+alternating with `P25` between one transmission and the next on one frequency
+with one access code. Those recordings are ordinary voice and are digital. What
+`Link` means is not documented by the scanner's own protocol, which does not
+list the value at all. If you need to know a recording was P25 specifically,
+read `nac`: only a P25 transmission has one.
 
 **`digital` is how you tell a digital recording from an analog one.**
 `modulation` cannot answer it. It reports the demodulator's state, so a channel

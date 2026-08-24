@@ -206,6 +206,12 @@ type Entry struct {
 	// NAC is the network access code of the P25 system this was heard on, such
 	// as "8A1h", and is absent on anything that is not P25.
 	//
+	// It is also absent on a transmission too short to have decoded one. A
+	// measured 1.1 second transmission reported its format and no code, in the
+	// middle of a run of longer ones on the same channel that all reported
+	// both, so this is the scanner needing a moment rather than the channel
+	// changing.
+	//
 	// It identifies the system itself rather than the call, which is what makes
 	// it worth keeping beside a recording: two systems can use the same
 	// talkgroup numbers, and this is what tells their recordings apart.

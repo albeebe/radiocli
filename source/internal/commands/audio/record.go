@@ -204,6 +204,12 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 	// the scanner moves. Every distinct channel is still listed when there was
 	// more than one, because a recording naming two of them is worth knowing
 	// about rather than quietly resolving.
+	// Every reading of the digital format is collected rather than the first
+	// one taken, because they are not all answers to the same question. See
+	// mostReported.
+	var formats []string
+	var radios []string
+
 	for _, h := range seen {
 		if e.Channel == "" && h.Channel != "" {
 			e.List, e.System, e.Department, e.Site = h.List, h.System, h.Department, h.Site
@@ -211,18 +217,19 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 			e.Modulation = h.Modulation
 		}
 
-		// Taken from wherever it appears rather than from the labelling
-		// reading, for the same reason the unit id is: the scanner reports the
-		// format once it has decoded one, which is a moment into the
-		// transmission rather than at the start of it.
-		if e.Digital == "" {
-			e.Digital = h.Digital
+		// Collected rather than settled here. The scanner reports nothing until
+		// it has decoded something, so the first answer cannot simply be taken,
+		// and it cannot simply be trusted either.
+		if h.Digital != "" {
+			formats = append(formats, h.Digital)
 		}
-		// The unit id is taken from wherever it appears rather than from the
-		// first reading, because the scanner decodes it a moment into a
-		// transmission and reports nothing there until it has.
-		if e.Unit == "" {
-			e.Unit = h.Unit
+		// Collected rather than taken from the first reading. A recording is
+		// cut when the transmitting radio changes, but the identifier arrives
+		// a moment after the audio does, so the first readings of a recording
+		// can still name whoever was talking a second ago. What most of it
+		// agreed on is the radio the recording is of.
+		if h.Unit != "" {
+			radios = append(radios, h.Unit)
 		}
 		// The same goes for the network access code, which is decoded off the
 		// site rather than off the channel and can arrive a moment late.
@@ -240,12 +247,69 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 		}
 	}
 
+	e.Digital = mostReported(formats)
+	e.Unit = mostReported(radios)
+
 	// One channel is the ordinary case and says nothing worth saying, so the
 	// list is only kept when it disagrees with itself.
 	if len(e.Channels) < 2 {
 		e.Channels = nil
 	}
 	return e
+}
+
+// mostReported returns the value the readings agreed on most often.
+//
+// The digital format is the one label here that is a fresh observation on every
+// reading rather than a fact about the channel, so the first answer is not
+// necessarily the best one. Taking it was measured going wrong: a 29 second
+// transmission on a P25 channel was labelled "Link", a value the protocol
+// documentation does not even list, because one early reading said so and the
+// three hundred after it were never consulted.
+//
+// The cost is that a brief but correct reading can be outvoted by a longer
+// wrong one, which is the better way round: a transmission is labelled by what
+// it mostly was.
+//
+// Ties go to whichever was seen first, so that a transmission genuinely
+// carrying two formats is labelled by the one it started with rather than by
+// however the counting happened to be ordered.
+//
+// Parameters:
+//   - values: every reading taken during the transmission, in order, with the
+//     empty ones already left out
+//
+// Returns:
+//   - the most frequent value, or empty if there were none
+func mostReported(values []string) string {
+	type tally struct {
+		value string
+		count int
+	}
+
+	var counts []tally
+	for _, v := range values {
+		found := false
+		for i := range counts {
+			if counts[i].value == v {
+				counts[i].count++
+				found = true
+				break
+			}
+		}
+		if !found {
+			counts = append(counts, tally{value: v, count: 1})
+		}
+	}
+
+	best := ""
+	most := 0
+	for _, c := range counts {
+		if c.count > most {
+			best, most = c.value, c.count
+		}
+	}
+	return best
 }
 
 // stronger reports whether one signal reading beats another.
@@ -280,17 +344,37 @@ func stronger(candidate, best string) bool {
 // alone, because two departments can each have a channel called Dispatch and
 // treating those as one transmission would join two calls into a single file.
 //
+// A mark for the transmitting radio is part of it too, and that is what
+// separates two people talking on one channel. The gate's other way of finding
+// the boundary is the radio's mute closing, which works on a simplex channel
+// and fails on a repeater: the carrier stays up between overs, the mute never
+// closes, and two speakers land in one recording. Measured on a live P25
+// channel, a 22 second recording held two seconds of one radio and twenty of
+// the dispatcher answering it. Nothing in the audio marks that boundary, and
+// the identifier changes exactly on it.
+//
+// It is a mark rather than the identifier itself, and the difference matters.
+// The identifier is not known when a transmission starts: it arrives a moment
+// after the audio, so putting it here directly made learning who was talking
+// look identical to somebody else starting to talk, and every transmission was
+// cut into a fragment and a remainder. Measured against a live channel, that
+// turned three transmissions into five. The mark only changes when one known
+// radio is replaced by a different known one, which is the only thing that is
+// actually a boundary.
+//
 // Parameters:
 //   - h: what the scanner is hearing
+//   - speaker: the mark for the radio talking, from the caller which watches
+//     the identifier change
 //
 // Returns:
 //   - an opaque identity, empty when the scanner is on nothing
-func key(h device.Heard) string {
+func key(h device.Heard, speaker string) string {
 	if !h.Receiving {
 		return ""
 	}
 	return strings.Join([]string{h.System, h.Department, h.Site, h.Channel,
-		h.Frequency, h.Talkgroup}, "\x00")
+		h.Frequency, h.Talkgroup, speaker}, "\x00")
 }
 
 // newSampler returns something that can be asked what the scanner is hearing.
@@ -312,13 +396,9 @@ func key(h device.Heard) string {
 func newSampler(ctx context.Context, app *appcontext.App) (func(context.Context) (device.Heard, error), func(), error) {
 	client, err := app.Device(ctx)
 	if err == nil {
-		return func(ctx context.Context) (device.Heard, error) {
-			info, err := client.ScannerInfo(ctx)
-			if err != nil {
-				return device.Heard{}, err
-			}
-			return info.Heard(), nil
-		}, func() {}, nil
+		// Hearing rather than ScannerInfo, because on a conventional digital
+		// channel the transmitting radio is only on the screen. See its doc.
+		return client.Hearing, func() {}, nil
 	}
 	if !errors.Is(err, portlock.ErrBusy) {
 		return nil, nil, err
@@ -681,6 +761,19 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 		last  device.Heard
 		watch mismatch
 		level meter
+
+		// speaking is the last radio the scanner named, kept so that a reading
+		// which does not name one does not read as a different radio. The
+		// identifier arrives a moment into a transmission and can drop out of
+		// a reading in the middle of one, and treating either as a change
+		// would cut a recording in half for no reason.
+		speaking string
+
+		// speaker is what goes in the identity a recording is cut on. It
+		// changes only when one known radio replaces a different known one,
+		// so learning who is talking is not mistaken for somebody new
+		// starting to.
+		speaker string
 	)
 
 	for {
@@ -700,8 +793,31 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 			return fmt.Errorf("the scanner stopped answering, so recording has stopped: %w", err)
 
 		case h := <-heard:
+			// Carried forward while the transmission continues, and dropped
+			// the moment it ends so the next one cannot inherit it.
+			switch {
+			case !h.Receiving:
+				speaking, speaker = "", ""
+			case h.Unit == "":
+				// Nothing said, so nothing learned. Whoever was talking still
+				// is, as far as anything here knows.
+			case speaking == "":
+				// Learning the identifier for the first time is information
+				// about this transmission, not the start of another one.
+				speaking = h.Unit
+			case h.Unit != speaking:
+				// Worth a line, because this is what cuts a recording in two
+				// and a wrong one cuts a transmission in two. Anything odd
+				// here shows up as a recording ending for "channel" with the
+				// same radio on both sides of it.
+				app.Log.Debug("the transmitting radio changed",
+					"from", speaking, "to", h.Unit)
+				speaking, speaker = h.Unit, h.Unit
+			}
+			h.Unit = speaking
+
 			last = h
-			r.gate.Activity(time.Now(), audiogate.Activity{On: h.Receiving, Key: key(h)})
+			r.gate.Activity(time.Now(), audiogate.Activity{On: h.Receiving, Key: key(h, speaker)})
 			if h.Receiving {
 				r.seen = append(r.seen, h)
 			}
