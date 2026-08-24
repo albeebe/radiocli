@@ -25,6 +25,7 @@ import "strings"
 // was staler than the coverage it was meant to measure.
 var All = [][]string{
 	{"audio"},
+	{"audio", "listen"},
 	{"audio", "output"},
 	{"audio", "record"},
 	{"backlight"},

@@ -952,7 +952,7 @@ close them; a reader should not copy them.
 | `menu` | Worker named `show` rather than `run` |
 | `colors` | 39 lines of flag validation inline in `RunE` |
 | `scanning.md` | No `## Parameters`, `## Examples` or `## Output`; the flag table floats unheaded inside a subcommand section |
-| `audio.md` | Documents `audio output` as a second H1 instead of an H2, and heads its Errors table `Message` as `Error` |
+| `audio.md` | Documents `audio listen`, `audio output` and `audio record` as further H1s instead of H2s, and heads its Errors table `Message` as `Error` |
 | `beep.md` | Carries a `## Subcommands` section no other file has |
 | `daemon.md` | `Errors` is not last: it is followed by a `## See also`, which `WRITING_COMMAND_DOCS.md` bans by name |
 | `location.md` | `Errors` is not last: it is followed by `## A warning about the full database` |

@@ -144,19 +144,29 @@ run an audio cable from its headphone or record socket into an input, then find
 out what that input is called:
 
 ```
-radiocli audio                    # the sound inputs on this computer
+radiocli audio                    # the sound inputs and speakers on this computer
 ```
 
-With the cable in, you can listen:
+With the cable in, you can listen on this computer's own speakers:
+
+```
+radiocli audio listen --input "USB Audio CODEC"
+```
+
+That plays the transmissions and keeps the hiss between them out. Add
+`--squelch=false` to hear everything the input carries, which is how to tell a
+connected cable from one that is not.
+
+To send the audio to another program instead:
 
 ```
 radiocli audio output --input "USB Audio CODEC" | ffplay -f s16le -ar 48000 -ac 1 -i -
 ```
 
-Or keep what it hears, one file per transmission:
+Or keep what it hears, one file per transmission, playing each as it lands:
 
 ```
-radiocli --device $SDS audio record ~/scanner --input "USB Audio CODEC"
+radiocli --device $SDS audio record ~/scanner --input "USB Audio CODEC" --listen
 ```
 
 That writes a WAV every time the scanner stops on something, with a JSON file
@@ -182,11 +192,13 @@ radiocli --device $SDS headphone set in-phase     # the one to want   (writes)
 ```
 
 To listen and record at the same time, or to keep using the scanner while a
-recording runs, start a daemon holding both and leave `--input` off:
+recording runs, start a daemon holding both and leave `--input` off. A sound
+input can only be open once, and sharing it is what the daemon is for:
 
 ```
 radiocli daemon --device $SDS --audio "USB Audio CODEC" &
-radiocli --device $SDS audio record ~/scanner
+radiocli --device $SDS audio record ~/scanner        # in one terminal
+radiocli --device $SDS audio listen                  # in another, at the same time
 ```
 
 ## Listening to the weather

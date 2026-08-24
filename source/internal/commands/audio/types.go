@@ -11,6 +11,7 @@ import (
 	"github.com/albeebe/radiocli/internal/audiofeed"
 	"github.com/albeebe/radiocli/internal/audiogate"
 	"github.com/albeebe/radiocli/internal/audioin"
+	"github.com/albeebe/radiocli/internal/audioout"
 	"github.com/albeebe/radiocli/internal/device"
 	"github.com/albeebe/radiocli/internal/recordings"
 )
@@ -22,6 +23,19 @@ import (
 // channel is around 32 to 48 kbps rather than the 16 to 24 that libopus would
 // hold up at. See the opusenc package.
 const defaultBitrate = 32000
+
+// listenAttack is how much audio has to be there before the speakers open.
+//
+// The gate's own minimum is half a second, which is the length of the shortest
+// transmission worth keeping as a file. Nothing is being kept here, and half a
+// second of a person's first word is a great deal to lose, so this is one frame
+// instead: enough for the gate to have something to judge, and short enough
+// that what is missing is the click rather than the word.
+const listenAttack = 20 * time.Millisecond
+
+// playedBytesPerSecond is how much audio one second of playing is, used to say
+// how much was dropped in a unit a person can picture.
+const playedBytesPerSecond = audiofeed.SampleRate * 2
 
 // The formats this can write.
 const (
@@ -121,9 +135,25 @@ const recordQueue = 2000 / audiofeed.FrameMS
 // asked flat out, so this is an eighth of what it can do.
 const samplePeriod = 100 * time.Millisecond
 
+// listSinks lists the speakers this computer can play on. It is a var so tests
+// can substitute a fake and never enumerate a real sound card.
+var listSinks = audioout.Sinks
+
 // listSources lists the sound inputs this computer can record from. It is a
 // var so tests can substitute a fake and never enumerate a real sound card.
 var listSources = audioin.Sources
+
+// openPlayer opens the speakers and starts playing on them. It is a var so
+// tests can substitute a fake and never make a noise in the room the tests are
+// running in.
+//
+// A failed open hands back a nil *audioout.Player wrapped in this interface,
+// which is not a nil interface however it reads. That is harmless in both
+// directions: every caller checks the error before it touches the player, and
+// every method on *audioout.Player is safe on nil anyway.
+var openPlayer = func(name string) (player, error) {
+	return audioout.Open(name)
+}
 
 // startCapture opens the sound card and begins publishing frames into out. It
 // is a var so tests can substitute a fake and never open a real sound card,
@@ -142,6 +172,53 @@ type capture interface {
 	// Source is what the operating system calls the input this is recording
 	// from.
 	Source() string
+}
+
+// listenOptions is what the flags asked for.
+type listenOptions struct {
+	input   string // Sound input to open directly, empty to take the audio from a daemon
+	channel string // Which side of the cable the scanner is on, as --channel gave it
+	speaker string // Speakers to play on, empty for whichever this computer is already using
+	squelch bool   // Play only the transmissions, off when --squelch=false
+
+	// hang is how long the audio has to stay quiet before a transmission is
+	// called finished, as --hang gave it. Only the squelch uses it.
+	hang time.Duration
+}
+
+// listing is what the bare "audio" command has to say: both halves of what this
+// computer can do with sound.
+//
+// Two named lists rather than one list with a kind on each row. A reader asking
+// for the speakers should not have to filter, and the two are genuinely
+// different things rather than two flavours of one: only one of them can carry
+// a scanner in, and only the other can be played out of.
+type listing struct {
+	// Inputs is everything this computer can record from.
+	Inputs []audioin.Source `json:"inputs"`
+
+	// Outputs is everywhere it can play.
+	Outputs []audioout.Sink `json:"outputs"`
+}
+
+// player is the part of an open sound output the commands here use. It is an
+// interface rather than *audioout.Player so that openPlayer can be faked.
+//
+// A command holds a nil one when nobody asked to hear anything, and a nil
+// interface has no methods to call however forgiving the type behind it is, so
+// everything reaching for one checks first.
+type player interface {
+	// Close stops the device and gives back what the library allocated.
+	Close()
+
+	// Name is what the operating system calls the output being played on.
+	Name() string
+
+	// Play hands over audio to be played as soon as the speakers ask for it.
+	Play(pcm []byte)
+
+	// Stats says what the ring had to do to keep the speakers fed.
+	Stats() audioout.Stats
 }
 
 // outputOptions is what the flags asked for.
@@ -203,6 +280,8 @@ type recordOptions struct {
 	minDuration time.Duration // Shortest recording worth keeping
 	maxDuration time.Duration // Longest a recording may run before it is split
 	normalize   bool          // Scale each recording up to just under full scale once it has ended, on unless --normalize=false
+	listen      bool          // Play the transmissions as they are recorded, off unless --listen
+	speaker     string        // Speakers to play on with --listen, empty for whichever this computer is already using
 }
 
 // recorder is the state one run of "audio record" carries: what it is writing
@@ -248,4 +327,8 @@ type recorder struct {
 	// whether the input was overloaded while it was being written.
 	clipped int
 	samples int
+
+	// player is the speakers the transmissions are being played on, nil unless
+	// --listen asked for them.
+	player player
 }

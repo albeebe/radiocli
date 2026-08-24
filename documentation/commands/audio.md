@@ -1,13 +1,16 @@
 # audio
 
-Lists the sound inputs your computer can record from. Run it to find out which
-input a scanner's audio cable is plugged into, and what that input is called.
+Lists the sound inputs your computer can record from and the speakers it can
+play on. Run it to find out which input a scanner's audio cable is plugged into,
+what that input is called, and where the audio can be played back.
 
 ## Overview
 
-`audio` asks your computer what it can record sound from and lists what it
-finds: line inputs, microphones, and any virtual inputs that other applications
-provide. The scanner's own audio does not travel over the USB cable that
+`audio` asks your computer what it can do with sound and lists what it finds in
+two tables. The first is what it can record from: line inputs, microphones, and
+any virtual inputs that other applications provide. The second is where it can
+play: speakers, headphones, and any virtual outputs. The scanner's own audio
+does not travel over the USB cable that
 `radiocli` uses to control it. It leaves the scanner as an ordinary sound
 signal from the headphone or record socket, so it only reaches your computer if
 you have run a cable into one of these inputs, and no command can work out which
@@ -16,14 +19,21 @@ why it never causes your computer to ask for permission to use the microphone,
 and it does not touch the scanner at all, so it works with no scanner attached
 and while another `radiocli` is busy with one. Finding nothing is a complete
 answer rather than a failure, so the command still succeeds and prints advice on
-what to check. To record from one of these inputs rather than merely list them,
-run [`audio output`](#audio-output).
+what to check, and each half is reported on its own because a computer can
+perfectly well have one and not the other.
+
+To use one of these rather than merely list them, run
+[`audio listen`](#audio-listen) to hear the scanner on the speakers,
+[`audio output`](#audio-output) to send its audio to another program, or
+[`audio record`](#audio-record) to write its transmissions to files.
 
 ## Usage
 
 ```
 radiocli audio [flags]
+radiocli audio listen [flags]
 radiocli audio output [flags]
+radiocli audio record [destination] [flags]
 ```
 
 ## Parameters
@@ -37,8 +47,8 @@ radiocli audio output [flags]
 
 ### Global flags that change this command
 
-- `-o`, `--output` selects whether the list is printed as a table or as JSON.
-  Both contain the same inputs.
+- `-o`, `--output` selects whether the lists are printed as tables or as JSON.
+  Both contain the same devices.
 - `-v`, `--verbose` adds one debug line to stderr before the list.
 
 The remaining global flags have no effect here. `--device`, `--config`,
@@ -47,91 +57,119 @@ it, so passing them changes nothing about the list.
 
 ## Examples
 
-Listing the sound inputs on a computer with a USB audio interface attached:
+Listing the sound devices on a computer with a USB audio interface attached:
 
 ```
 $ radiocli audio
-NAME
+SOUND INPUTS
 Cubilux CB5 Line In
 MacBook Pro Microphone
 Microsoft Teams Audio
+
+SPEAKERS
+Cubilux CB5 Headphones
+MacBook Pro Speakers
 ```
 
-The same list as JSON, which is the form to read from a script because it has no
-header row and quotes names that contain spaces:
+The same lists as JSON, which is the form to read from a script because it has
+no header rows and quotes names that contain spaces. The two halves are named
+separately, so nothing has to guess which is which:
 
 ```
 $ radiocli audio -o json
-[
-  {
-    "name": "Cubilux CB5 Line In"
-  },
-  {
-    "name": "MacBook Pro Microphone"
-  },
-  {
-    "name": "Microsoft Teams Audio"
-  }
-]
+{
+  "inputs": [
+    {
+      "name": "Cubilux CB5 Line In"
+    },
+    {
+      "name": "MacBook Pro Microphone"
+    },
+    {
+      "name": "Microsoft Teams Audio"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Cubilux CB5 Headphones"
+    },
+    {
+      "name": "MacBook Pro Speakers"
+    }
+  ]
+}
 ```
 
-Piping the table to another program. Everything on stdout is the header and the
-rows, so nothing has to be filtered out:
+Reading one half of it from a script:
 
 ```
-$ radiocli audio 2>/dev/null | cat
-NAME
-Cubilux CB5 Line In
-MacBook Pro Microphone
-Microsoft Teams Audio
+$ radiocli audio -o json | jq -r '.outputs[].name'
+Cubilux CB5 Headphones
+MacBook Pro Speakers
 ```
 
 Confirming that the command never reaches for the scanner. The port named here
-does not exist, and the list is produced anyway:
+does not exist, and the lists are produced anyway:
 
 ```
 $ radiocli --device /dev/nonexistent audio
-NAME
+SOUND INPUTS
 Cubilux CB5 Line In
 MacBook Pro Microphone
 Microsoft Teams Audio
+
+SPEAKERS
+Cubilux CB5 Headphones
+MacBook Pro Speakers
 ```
 
 Watching what the command does before it prints:
 
 ```
 $ radiocli -v audio
-time=2026-08-09T13:29:47.730-04:00 level=DEBUG msg="listing the sound inputs"
-NAME
+time=2026-08-09T13:29:47.730-04:00 level=DEBUG msg="listing the sound devices"
+SOUND INPUTS
 Cubilux CB5 Line In
 MacBook Pro Microphone
 Microsoft Teams Audio
+
+SPEAKERS
+Cubilux CB5 Headphones
+MacBook Pro Speakers
 ```
 
 ## Output
 
-The list goes to stdout. The advice printed when nothing is found goes to
-stderr. Nothing else is written to stderr, so under `--output text` a successful
-run puts the header and the rows on stdout and nothing anywhere else.
+The lists go to stdout. The advice printed when nothing is found goes to stderr.
+Nothing else is written to stderr, so under `--output text` a successful run puts
+the headings and the rows on stdout and nothing anywhere else.
 
-Inputs are listed in alphabetical order by name, ignoring case. That is this
+Both halves are listed in alphabetical order by name, ignoring case. That is this
 tool's order and not your computer's: the order your computer reports changes as
 devices are plugged and unplugged, and sorting keeps two runs comparable.
 
-Under `--output text`, stdout holds a header row and one row per input:
+Under `--output text`, stdout holds a `SOUND INPUTS` heading with one row per
+input, then a blank line, then a `SPEAKERS` heading with one row per speaker. A
+heading with nothing under it is not printed, so a computer with no speakers
+shows the inputs alone:
 
 | Column | Description |
 | ------ | ----------- |
-| `NAME` | What your computer calls the input, such as `Cubilux CB5 Line In`. |
+| `SOUND INPUTS` | What your computer calls each input, such as `Cubilux CB5 Line In`. |
+| `SPEAKERS` | What it calls each output, such as `MacBook Pro Speakers`. |
 
-Under `--output json`, stdout holds an array with one object per input. The
-array is empty when nothing is found:
+Under `--output json`, stdout holds one object with both halves named. Each is
+an array with one object per device, and an array is empty rather than absent
+when that half found nothing:
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
-| `name` | string | What your computer calls the input. |
+| `inputs` | array | Everything your computer can record from. |
+| `inputs[].name` | string | What your computer calls the input. |
+| `outputs` | array | Everywhere it can play. |
+| `outputs[].name` | string | What your computer calls the speaker. |
 
-An input is described by its name and nothing else. Your computer has its own
+A device is described by its name and nothing else. Your computer has its own
 internal identifier for each one, and `radiocli` does not report it, because it
 is far too long to type and it is less stable than the name: on macOS it records
 which USB socket the device was plugged into, so moving an interface to a
@@ -142,21 +180,30 @@ A name is not guaranteed to be unique. Two identical audio interfaces report the
 same name, and they appear as two rows that read the same. There is nothing in
 this list that tells them apart.
 
-Your computer treats one of its inputs as the one to hand to programs that do
-not ask for a particular one. That input is not marked here and is not treated
-differently, because on a laptop it is almost always the built-in microphone,
-which is not what a scanner is plugged into.
+The same name can appear in both halves. A headset is an input and an output,
+and an application such as Microsoft Teams often presents one of each under the
+same name. They are different devices that happen to be called the same thing.
 
-Finding no inputs prints `[]` under `--output json`, and under `--output text`
-prints nothing to stdout, while this goes to stderr:
+Your computer treats one of its inputs and one of its outputs as the ones to
+hand to programs that do not ask for a particular one. Neither is marked here.
+The default input is almost always the built-in microphone, which is not what a
+scanner is plugged into, and the default output is simply where
+[`audio listen`](#audio-listen) plays when `--speaker` is not given.
+
+Finding nothing prints an empty array for that half under `--output json`, and
+under `--output text` prints no table for it, while the advice goes to stderr:
 
 ```
 No sound inputs found. Connect a sound card or an audio interface, or check that
 this computer's own microphone is not switched off in its sound settings.
+No speakers found. Connect some, or check that this computer's own output is not
+switched off in its sound settings.
 ```
 
-Both exit with status `0`. A valid JSON document is written to stdout whatever
-was found, so `--output json` never produces empty output.
+Each half is reported separately, so a computer with an input and no speakers
+hears about the speakers alone. All of it exits with status `0`. A valid JSON
+document is written to stdout whatever was found, so `--output json` never
+produces empty output.
 
 ## Errors
 
@@ -167,13 +214,219 @@ the command prints advice to stderr and exits with status `0`.
 | ----- | ------- | --- |
 | `error: opening the audio system: ...` | Your computer's sound system could not be started, so nothing could be asked about. The text after the colon comes from the operating system. | This is a fault on the computer rather than in the command. On Linux, check that a sound server is running. Otherwise restart the computer and try again. |
 | `error: listing the audio inputs: ...` | The sound system started but refused to say what it could record from. The text after the colon comes from the operating system. | As above. |
+| `error: listing the speakers: ...` | The sound system started but refused to say what it could play on. The text after the colon comes from the operating system. | As above. |
+| `error: this copy of radiocli was built without audio support, ...` | The binary was built with `CGO_ENABLED=0`, which leaves out the library that talks to sound cards. Everything that does not touch sound still works. | Rebuild with `CGO_ENABLED=1`, or use a release binary. |
 | `error: invalid output format "yaml": want "text" or "json"` | `--output` was given something other than `text` or `json`. | Pass `-o text` or `-o json`. |
 
-All three exit with status `1`.
+All of them exit with status `1`.
 
 This command never asks your operating system for permission to use the
-microphone, because listing the inputs does not require it. `audio output` does,
-because opening an input requires it.
+microphone, because listing the devices does not require it. `audio listen`,
+`audio output` and `audio record` do, because opening an input requires it.
+
+---
+
+# audio listen
+
+Plays the scanner on this computer's speakers, until you stop it. Run it when
+you want to hear the radio at your desk rather than pipe it somewhere or keep
+it.
+
+## Overview
+
+`audio listen` takes the scanner's audio and plays it, which is the shortest
+path from a radio on a shelf to a speaker on a desk. It keeps nothing and writes
+nothing.
+
+By default it plays only the transmissions. Between them a scanner's output is
+hiss, and an evening of that is not worth listening to, so the same detector
+that decides where a recording begins decides when to open the speakers. This
+and [`audio record`](#audio-record) therefore agree about what a transmission
+is: if one would write a file, the other would play it. Pass `--squelch=false`
+to hear the input exactly as it arrives, hiss included, the way the scanner's
+own speaker does.
+
+**The audio comes from a daemon, not from this command.** A sound input can only
+be open once, and sharing it is the daemon's whole job, which is what lets this
+run while something else is recording the same radio:
+
+```
+$ radiocli daemon --device /dev/cu.usbmodem00000000000011 --audio "Cubilux CB5 Line In"
+$ radiocli audio record ~/scanner-recordings    # in one terminal
+$ radiocli audio listen                         # in another, at the same time
+```
+
+`--input` is the exception, and it is there for checking a cable rather than for
+ordinary use. It opens the named input directly, without a daemon and without a
+scanner, which is the quickest way to find out whether the lead is in the right
+socket and whether there is anything on it. Only one thing can hold an input, so
+nothing else can listen or record while it does. To hear and record at once from
+a single directly opened input, use [`audio record --listen`](#audio-record)
+instead.
+
+There is a small delay, and it is deliberate. About 60 ms of audio is held in
+front of the speakers so that a frame arriving late is absorbed rather than
+heard as a gap. The squelch costs a little at the front of each transmission as
+well, because the detector has to hear something before it can open, which is
+the same trade a scanner's own speaker makes.
+
+## Usage
+
+```
+radiocli audio listen [flags]
+```
+
+## Parameters
+
+| Parameter | Required | Default | Description |
+| --------- | -------- | ------- | ----------- |
+| `--speaker` | No | this computer's own | Which speakers to play on, as `radiocli audio` names them. |
+| `--squelch` | No | `true` | Play only the transmissions. `--squelch=false` plays everything. |
+| `--hang` | No | `2s` | How long the audio must stay quiet before the speakers close again. |
+| `--input` | No | none | Open this sound input directly instead of asking a daemon. |
+| `--channel` | No | `auto` | Which side of the cable the scanner is on, for `--input`. |
+
+### `--speaker`
+
+The name of an output, spelled the way `radiocli audio` spells it under
+`SPEAKERS`. Matching ignores case and surrounding spaces, so a name copied out
+of that list works whatever the shell did to it.
+
+Left out, the audio goes wherever everything else on this computer goes. That is
+the ordinary case and it is not a fallback: unlike a sound input, where the
+default is the built-in microphone and almost never the one a scanner is cabled
+into, the default output is exactly where somebody expects sound to come out. It
+also follows the computer's own choice, so plugging in headphones moves the
+scanner with everything else.
+
+A name matching two attached devices is refused rather than guessed at, because
+two identical interfaces cannot be told apart by name and choosing one would be
+a coin toss you could not see.
+
+### `--squelch`
+
+On by default. The speakers open when a transmission starts and close once the
+audio has been quiet for `--hang`.
+
+`--squelch=false` plays every sample the input carries, which is worth having
+when you are checking a cable: hiss means the lead is connected and carrying
+something, and digital silence means it is not.
+
+### `--hang`
+
+How long the audio has to stay quiet before the speakers close again. Written as
+a Go duration, such as `500ms`, `2s` or `1m`.
+
+Two seconds by default, which is longer than the half second
+[`audio record`](#audio-record) uses. That command has the radio to ask and can
+watch its mute close, while this one has only the audio to go on, so the quiet
+has to be long enough to carry a pause in speech without cutting the speaker
+off mid-sentence.
+
+### `--input`
+
+Opens the named sound input directly, without a daemon and without a scanner.
+For checking a cable. Only one thing can hold an input at a time, so a daemon
+must not already be holding this one.
+
+### `--channel`
+
+Which side of the stereo cable the scanner's mono audio is on: `auto`, `left`,
+`right` or `mix`. Only meaningful with `--input`, since a daemon has already
+made this decision for the audio it serves. `auto` measures both sides and
+chooses, which is what handles a lead wired for one channel and a headphone
+socket wired out of phase.
+
+### Global flags that change this command
+
+- `--device` names the scanner whose daemon holds the audio. Required unless
+  `--input` is given.
+- `-v`, `--verbose` adds debug lines, including what the speakers had to do to
+  keep up.
+
+`-o`, `--output` has no effect. This command produces sound rather than a
+document, and the only thing it writes is the running commentary on stderr.
+
+## Examples
+
+Listening to the scanner a daemon is holding:
+
+```
+$ radiocli audio listen --device /dev/cu.usbmodem00000000000011
+Playing the transmissions from "Cubilux CB5 Line In" on this computer's own speakers. Press Ctrl-C to stop.
+```
+
+Listening while recording the same radio, which is what the daemon is for:
+
+```
+$ radiocli daemon --device /dev/cu.usbmodem00000000000011 --audio "Cubilux CB5 Line In"
+$ radiocli audio record ~/scanner-recordings &
+$ radiocli audio listen
+```
+
+Playing on a named set of speakers rather than this computer's own:
+
+```
+$ radiocli audio listen --speaker "Cubilux CB5 Headphones"
+Playing the transmissions from "Cubilux CB5 Line In" on "Cubilux CB5 Headphones". Press Ctrl-C to stop.
+```
+
+Checking a cable, with no scanner and no daemon involved. The hiss is the point:
+
+```
+$ radiocli audio listen --input "Cubilux CB5 Line In" --squelch=false
+Playing everything the input carries from "Cubilux CB5 Line In" on this computer's own speakers. Press Ctrl-C to stop.
+```
+
+Holding the speakers open a little longer between overs:
+
+```
+$ radiocli audio listen --hang 4s
+```
+
+## Output
+
+Nothing is written to stdout. The audio goes to the speakers, and the running
+commentary goes to stderr, so this command can be left running beside anything
+that reads stdout without disturbing it.
+
+Stopping the command with Ctrl-C is how it ends and is not a failure: it exits
+with status `0`. Audio still waiting in front of the speakers when you stop is
+not played out first, so the command exits at once rather than a fraction of a
+second later.
+
+If audio arrived faster than the speakers could take it, that is reported on the
+way out:
+
+```
+1.4 seconds of audio arrived faster than the speakers could play it and was dropped.
+This computer is struggling to keep up, or the sound output is.
+```
+
+It should never happen on a machine that is keeping up, because the audio
+arrives in real time and is played in real time.
+
+## Errors
+
+| Error | Meaning | Fix |
+| ----- | ------- | --- |
+| `error: no scanner named: name one with --device, or pass --input to listen to a sound input directly` | Neither a scanner nor a sound input was given, so there is nothing to play. | Pass `--device`, or `--input` to open an input directly. |
+| `error: no radiocli daemon is running for this scanner. ...` | Nothing is holding this scanner's sound input. | Start a daemon with `--audio`, or pass `--input` to open one directly. |
+| `error: this daemon is not holding a sound input, ...` | A daemon is running, but it was started without `--audio`. | Stop it and start it again with `--audio`. |
+| `error: no speaker by that name: "..."` | `--speaker` named something not attached. | Run `radiocli audio` to see the names under `SPEAKERS`. |
+| `error: more than one speaker by that name: ...` | Two identical outputs report one name and cannot be told apart. | Unplug one, or rename it in your computer's sound settings. |
+| `error: no sound input by that name: "..."` | `--input`, or the daemon's `--audio`, named something not attached. | Run `radiocli audio` to see the names. |
+| `error: "audio listen" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. A daemon lends a command its output for the length of the command, which only works because commands end. |
+| `error: a hang of ... is not a length of quiet to wait for` | `--hang` was zero or negative. | Pass a positive duration, such as `2s`. |
+| `error: this copy of radiocli was built without audio support` | The build has cgo switched off, so it cannot open speakers. | Rebuild with `CGO_ENABLED=1`. |
+
+All of them exit with status `1`.
+
+Hearing nothing at all, with no error, means the audio is silent rather than
+absent. With `--squelch=false` a working cable hisses, so silence there is the
+lead, the scanner's volume, or on macOS the microphone permission having been
+refused. The same warning `audio output` prints appears here too when an input
+delivers perfect digital zero for several seconds.
 
 ---
 
@@ -361,7 +614,7 @@ having been refused, which otherwise presents as a cable that does not work.
 
 Writes one file per transmission, with a description of what it is beside it,
 until you stop it. Run it when you want to keep what the scanner hears rather
-than only listen to it.
+than only listen to it. Pass `--listen` to do both at once.
 
 ## Overview
 
@@ -414,6 +667,8 @@ radiocli audio record [destination] [flags]
 | `--min-duration` | No | `500ms` | Discard any transmission shorter than this. |
 | `--max-duration` | No | `5m` | Split any transmission longer than this. |
 | `--normalize` | No | `true` | Scale each recording up so its loudest moment is just under full scale. `--normalize=false` keeps the level exactly as it arrived. |
+| `--listen` | No | `false` | Play each transmission on this computer's speakers as it is recorded. |
+| `--speaker` | No | this computer's own | Which speakers `--listen` plays on, as `radiocli audio` names them. |
 
 ### `[destination]`
 
@@ -601,6 +856,33 @@ brought all the way up. Anything fainter is left short of the target.
 is scaled by its own loudest moment, so where a long recording is cut into two
 the level can step at the join. Pass `--normalize=false` if you are recording
 something long enough to be split and the join matters.
+
+### `--listen`
+
+Plays each transmission on this computer's speakers while it is being recorded.
+Off by default, because a recorder is usually left running somewhere nobody is
+sitting.
+
+It is the same audio, played rather than written, so nothing is opened twice and
+a directly opened `--input` still works: this is the way to hear and record at
+once without a daemon. What you hear is exactly what is being kept, which makes
+it a way of checking a recording setup as well as a way of listening to one.
+
+The speakers open when a recording opens and close when it closes, so
+`--hang`, `--min-duration` and the rest shape what is played as well as what is
+written. A transmission discarded for being shorter than `--min-duration` is
+never heard, and the front of each one is missing up to the point the recorder
+is sure enough to open a file. To listen without those, and without recording
+anything, use [`audio listen`](#audio-listen).
+
+### `--speaker`
+
+The name of an output, spelled the way `radiocli audio` spells it under
+`SPEAKERS`. Matching ignores case and surrounding spaces.
+
+Left out, the audio goes wherever everything else on this computer goes. Naming
+one without `--listen` is refused rather than ignored, because a flag that
+quietly does nothing reads as a flag that did something.
 
 ### Global flags that change this command
 
@@ -801,6 +1083,8 @@ The colour is dropped when stderr is not a terminal, and when `NO_COLOR` is set.
 | `error: no radiocli daemon is running for this scanner. ...` | No `--input` was given and nothing is holding this scanner's sound input. | Start a daemon with `--audio`, or pass `--input`. |
 | `error: no sound input by that name: "..."` | `--input` named something not attached. | Run [`radiocli audio`](#audio) to see the names. |
 | `error: "audio record" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. |
+| `error: --speaker says where to play the transmissions, which only means something with --listen` | `--speaker` was given on its own. | Add `--listen`, or drop `--speaker`. |
+| `error: no speaker by that name: "..."` | `--speaker` named something not attached. | Run [`radiocli audio`](#audio) to see the names under `SPEAKERS`. |
 | `error: the scanner stopped answering, so recording has stopped: ...` | The scanner was unplugged or switched off while recording. | Reconnect it and start again. The transmission in progress is written out before the command exits. |
 | `error: <port> is in use by another radiocli` | Another invocation has the scanner and no daemon is sharing it. | Wait for it, or start a [`daemon`](daemon.md). |
 

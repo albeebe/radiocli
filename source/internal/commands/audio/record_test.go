@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -377,16 +378,52 @@ func Test_reportRecording(t *testing.T) {
 
 // Test_announceRecording tests the announceRecording function with 100%
 // coverage, and that it writes to stderr rather than stdout.
+//
+// Coverage: 100% (3 test cases covering every branch)
+//
+// Test cases:
+//   - Recording: the input and the destination are named, on stderr
+//   - Listening: the speakers are named as well when there are any
+//   - DefaultSpeakers: an unnamed default is described rather than left blank
 func Test_announceRecording(t *testing.T) {
-	app, out, errs := recorderApp()
-	announceRecording(app, "USB Audio CODEC", "./rec")
+	// Verify that what is being recorded and where it is going are said, and
+	// that stdout is left for the recordings themselves.
+	t.Run("Recording", func(t *testing.T) {
+		app, out, errs := recorderApp()
+		announceRecording(app, "USB Audio CODEC", "./rec", nil)
 
-	if out.Len() != 0 {
-		t.Errorf("wrote %q to stdout, want it kept for the recordings", out.String())
-	}
-	if !strings.Contains(errs.String(), "USB Audio CODEC") || !strings.Contains(errs.String(), "./rec") {
-		t.Errorf("wrote %q, want the input and the destination named", errs.String())
-	}
+		if out.Len() != 0 {
+			t.Errorf("wrote %q to stdout, want it kept for the recordings", out.String())
+		}
+		if !strings.Contains(errs.String(), "USB Audio CODEC") || !strings.Contains(errs.String(), "./rec") {
+			t.Errorf("wrote %q, want the input and the destination named", errs.String())
+		}
+		if strings.Contains(errs.String(), "Playing") {
+			t.Errorf("wrote %q, want nothing about playing when nobody is listening", errs.String())
+		}
+	})
+
+	// Verify that the speakers are said too, since --listen is easy to have
+	// left on and the audio may be going somewhere unexpected.
+	t.Run("Listening", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{name: "MacBook Pro Speakers"})
+
+		if !strings.Contains(errs.String(), "MacBook Pro Speakers") {
+			t.Errorf("wrote %q, want the speakers named", errs.String())
+		}
+	})
+
+	// Verify that the system's own output, which the library does not always
+	// put a name to, is described rather than quoted as nothing.
+	t.Run("DefaultSpeakers", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{})
+
+		if !strings.Contains(errs.String(), "this computer's own speakers") {
+			t.Errorf("wrote %q, want the default speakers described", errs.String())
+		}
+	})
 }
 
 // radio is a scanner the test turns on and off, so a transmission can be
@@ -451,7 +488,7 @@ func Test_recordLoop(t *testing.T) {
 			done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
 				hang:        200 * time.Millisecond,
 				minDuration: 100 * time.Millisecond,
-			})
+			}, nil)
 		}()
 		return r, frames, dir, out, cancel, done
 	}
@@ -1143,6 +1180,39 @@ func Test_runRecord(t *testing.T) {
 		}
 	})
 
+	// Verify that naming speakers without asking to hear anything is caught
+	// rather than quietly ignored, since a flag that does nothing reads as a
+	// flag that did something.
+	t.Run("SpeakerWithoutListen", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+
+		err := runRecord(context.Background(), app, recordOptions{
+			destination: t.TempDir(), speaker: "MacBook Pro Speakers"})
+		if err == nil || !strings.Contains(err.Error(), "--listen") {
+			t.Fatalf("got %v, want it to say --speaker needs --listen", err)
+		}
+	})
+
+	// Verify that speakers which will not open stop the run before a
+	// recordings folder is made for it.
+	t.Run("SpeakersFail", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+		fakeOpenPlayer(t, nil, errors.New("no speaker by that name"))
+
+		dir := filepath.Join(t.TempDir(), "recordings")
+		err := runRecord(context.Background(), app, recordOptions{
+			destination: dir, channel: audiofeed.ChannelAuto,
+			listen: true, speaker: "Kitchen Radio"})
+		if err == nil || !strings.Contains(err.Error(), "no speaker by that name") {
+			t.Fatalf("got %v, want the speakers' own failure", err)
+		}
+		if _, err := os.Stat(dir); err == nil {
+			t.Error("a recordings folder was made for a run that could not start")
+		}
+	})
+
 	t.Run("BadChannel", func(t *testing.T) {
 		app, _, _ := recorderApp()
 		app.Config.Device = "/dev/example"
@@ -1438,7 +1508,7 @@ func Test_recordLoopEndings(t *testing.T) {
 			done <- recordLoop(ctx, app, library, frames, sample, recordOptions{
 				hang:        200 * time.Millisecond,
 				minDuration: 100 * time.Millisecond,
-			})
+			}, nil)
 		}()
 		return frames, cancel, done
 	}
@@ -1623,6 +1693,11 @@ func Test_runRecordRecords(t *testing.T) {
 	app.Config.Device = "/dev/example"
 	app.SetDevice(device.New(recordConn{doc: `<ScannerInfo Mode="Scan Mode"/>`}))
 
+	// --listen as well, so the whole path is exercised: the speakers are
+	// opened, said, and given back with the rest of it.
+	p := &fakePlayer{name: "MacBook Pro Speakers"}
+	fakeOpenPlayer(t, p, nil)
+
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -1631,8 +1706,17 @@ func Test_runRecordRecords(t *testing.T) {
 		destination: dir,
 		input:       "USB Audio CODEC",
 		channel:     audiofeed.ChannelAuto,
+		listen:      true,
+		speaker:     "MacBook Pro Speakers",
 	}); err != nil {
 		t.Fatalf("recording: %v", err)
+	}
+
+	if p.closes != 1 {
+		t.Errorf("the speakers were closed %d times, want them given back", p.closes)
+	}
+	if !strings.Contains(errs.String(), "MacBook Pro Speakers") {
+		t.Errorf("wrote %q, want the speakers named", errs.String())
 	}
 
 	if !strings.Contains(errs.String(), "USB Audio CODEC") {
@@ -1940,7 +2024,7 @@ func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
 	go func() {
 		done <- recordLoop(ctx, app, library, frames, sample, recordOptions{
 			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
-		})
+		}, nil)
 	}()
 
 	settle()
@@ -1994,7 +2078,12 @@ func Test_openAudioReportsWhatTheFeedSays(t *testing.T) {
 		return fakeCapture{source: "USB Audio CODEC"}, nil
 	}
 
-	app, _, errs := recorderApp()
+	// The reporting happens on a goroutine of its own while this test reads
+	// what it wrote, so the buffer they share has to be safe for both.
+	app, _, _ := recorderApp()
+	errs := &lockedBuffer{}
+	app.Stderr = errs
+
 	_, _, done, err := openAudio(context.Background(), app, "USB Audio CODEC", audiofeed.ChannelAuto)
 	if err != nil {
 		t.Fatalf("opening the audio: %v", err)
@@ -2003,15 +2092,38 @@ func Test_openAudioReportsWhatTheFeedSays(t *testing.T) {
 
 	<-published
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && errs.Len() == 0 {
+	for time.Now().Before(deadline) && errs.String() == "" {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if !strings.Contains(errs.String(), "out of phase") {
-		t.Errorf("said %q, want the out of phase cable called out", errs.String())
+
+	said := errs.String()
+	if !strings.Contains(said, "out of phase") {
+		t.Errorf("said %q, want the out of phase cable called out", said)
 	}
-	if !strings.Contains(errs.String(), "Headphone L/R output") {
-		t.Errorf("said %q, want the menu that fixes it named", errs.String())
+	if !strings.Contains(said, "Headphone L/R output") {
+		t.Errorf("said %q, want the menu that fixes it named", said)
 	}
+}
+
+// lockedBuffer is a stream two goroutines may use at once: one reporting what
+// the feed said, and a test watching for it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// String is everything written so far.
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Write takes what is written, under the lock String reads through.
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
 }
 
 // Test_volumeNow tests the volumeNow function with 100% coverage.
@@ -2265,4 +2377,49 @@ func Test_recorderReportsAFailedReport(t *testing.T) {
 	}); err == nil {
 		t.Fatal("a report that could not be written reported nothing")
 	}
+}
+
+// Test_recorderMonitor tests the recorder.monitor method with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering every branch)
+//
+// Test cases:
+//   - NobodyListening: with no speakers open, nothing is played
+//   - BetweenTransmissions: the quiet between transmissions is not played
+//   - Transmitting: the frame that has just arrived is played as it is recorded
+func Test_recorderMonitor(t *testing.T) {
+	frames, _ := feed(0, 1, loudLevel)
+
+	// Verify that the ordinary run, with no --listen, does not reach for
+	// speakers that were never opened.
+	t.Run("NobodyListening", func(t *testing.T) {
+		r := &recorder{}
+		r.monitor(frames[0])
+	})
+
+	// Verify that the squelch a listener hears is the same decision the
+	// recorder is making: no open recording, nothing played.
+	t.Run("BetweenTransmissions", func(t *testing.T) {
+		p := &fakePlayer{}
+		r := &recorder{player: p}
+
+		r.monitor(frames[0])
+
+		if p.played() != 0 {
+			t.Errorf("%d bytes were played with nothing being recorded", p.played())
+		}
+	})
+
+	// Verify that the live frame is what reaches the speakers, rather than
+	// whatever the gate is holding back for the end of the recording.
+	t.Run("Transmitting", func(t *testing.T) {
+		p := &fakePlayer{}
+		r := &recorder{player: p, open: &recordings.Recording{}}
+
+		r.monitor(frames[0])
+
+		if p.played() != len(frames[0].PCM) {
+			t.Errorf("%d bytes were played, want the frame that arrived", p.played())
+		}
+	})
 }

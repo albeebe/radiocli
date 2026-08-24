@@ -53,7 +53,10 @@ func newRecord(app *appcontext.App) *cobra.Command {
 			"arriving late cannot clip the beginning of a transmission and nothing is\n" +
 			"padded with silence to make sure it does not.\n\n" +
 			"Each recording is a WAV, with a JSON file of the same name beside it\n" +
-			"saying what it is: when it was, which channel, and how long it ran.",
+			"saying what it is: when it was, which channel, and how long it ran.\n\n" +
+			"Pass --listen to hear each transmission on this computer's speakers while it\n" +
+			"is being recorded. That is the same audio, played rather than written, so\n" +
+			"nothing has to be opened twice.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
@@ -78,6 +81,11 @@ func newRecord(app *appcontext.App) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.normalize, "normalize", true,
 		"scale each recording up so its loudest moment is just under full scale; "+
 			"--normalize=false keeps the level exactly as it arrived")
+	cmd.Flags().BoolVar(&opts.listen, "listen", false,
+		"play each transmission on this computer's speakers as it is recorded")
+	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
+		"speakers to play on with --listen, as \"radiocli audio\" names them "+
+			"(default: this computer's own)")
 
 	return cmd
 }
@@ -102,10 +110,24 @@ func (r *recorder) abandon() {
 //   - app: the application context whose Stderr receives the lines
 //   - source: the name of the sound input the audio is coming from
 //   - dir: the destination recordings are written into
-func announceRecording(app *appcontext.App, source, dir string) {
+//   - p: the speakers each transmission is being played on as well, nil when
+//     nobody asked to hear them
+func announceRecording(app *appcontext.App, source, dir string, p player) {
 	app.Notef("Recording from %q into %s\n"+
 		"One file per transmission, with a description beside it. Press Ctrl-C to stop.\n",
 		source, dir)
+
+	if p == nil {
+		return
+	}
+
+	// The name is empty when the system's own choice of output was opened and
+	// the library did not put a name to it.
+	where := fmt.Sprintf("%q", p.Name())
+	if p.Name() == "" {
+		where = "this computer's own speakers"
+	}
+	app.Notef("Playing each transmission on %s as it is recorded.\n", where)
 }
 
 // apply acts on what the gate said.
@@ -122,66 +144,6 @@ func (r *recorder) apply(events []audiogate.Event) error {
 		}
 	}
 	return nil
-}
-
-// audioViaDaemon takes a copy of the audio a daemon is already holding.
-//
-// Parameters:
-//   - ctx: context that ends the audio when it is cancelled
-//   - app: the application context holding the device setting
-//
-// Returns:
-//   - a channel of frames, closed when the daemon stops sending
-//   - the name of the sound input the daemon is recording from
-//   - a function closing the stream, which is never nil
-//   - error if there is no daemon or it will not send audio
-func audioViaDaemon(ctx context.Context, app *appcontext.App) (
-	<-chan audiofeed.Frame, string, func(), error) {
-
-	stream, err := broker.DialAudio(app.Config.Device, formatPCM, 0)
-	if err != nil {
-		if errors.Is(err, broker.ErrNoDaemon) {
-			return nil, "", nil, fmt.Errorf("%w.\n"+
-				"Audio comes from a daemon, because a sound input can only be open once and\n"+
-				"sharing it is what the daemon is for. Start one with:\n"+
-				"  radiocli daemon --device %s --audio \"<sound input>\"\n"+
-				"Or pass --input to open a sound input directly, without sharing it",
-				err, app.Config.Device)
-		}
-		return nil, "", nil, err
-	}
-
-	frames := make(chan audiofeed.Frame, recordQueue)
-	go func() {
-		defer close(frames)
-		// The daemon sends samples with no level and no timestamp, so both are
-		// worked out here. The level is measured with the same function the
-		// capture uses, because a gate tuned against one definition of loudness
-		// must not behave differently depending on where its audio came from.
-		for {
-			seq, audio, event, err := stream.Next()
-			if err != nil {
-				return
-			}
-			if event != nil {
-				relayEvent(app, event)
-				continue
-			}
-
-			select {
-			case frames <- audiofeed.Frame{
-				Seq:   seq,
-				PCM:   audio,
-				Level: audiofeed.LevelOf(audio),
-				At:    time.Now(),
-			}:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return frames, stream.Info().Source, func() { stream.Close() }, nil
 }
 
 // contains reports whether values already holds want.
@@ -418,6 +380,28 @@ func (m *meter) observe(app *appcontext.App, frame audiofeed.Frame, floor float6
 	m.seen, m.peak = 0, 0
 }
 
+// monitor plays the frame that has just arrived, if a transmission is open and
+// somebody asked to hear it.
+//
+// Nothing is playing unless --listen asked for it, so the usual case is the
+// first line and nothing else.
+//
+// The live frame rather than the one the gate is holding. The gate hands audio
+// back only once it has aged past the hang, so that the end of a recording can
+// be trimmed, and playing what it hands back would put the speakers a hang
+// behind the radio. What is lost instead is the front of each transmission, up
+// to the point the gate is sure enough to open a file, which is the same thing
+// a scanner's own speaker does.
+//
+// Parameters:
+//   - frame: the audio that has just arrived
+func (r *recorder) monitor(frame audiofeed.Frame) {
+	if r.player == nil || r.open == nil {
+		return
+	}
+	r.player.Play(frame.PCM)
+}
+
 // one acts on a single thing the gate said.
 //
 // Parameters:
@@ -554,51 +538,6 @@ func (r *recorder) warnIfClipped() {
 		percent, volume, device.MaxLevel)
 }
 
-// openAudio starts the audio arriving, either from a sound card this process
-// opens or from a daemon already holding one.
-//
-// Parameters:
-//   - ctx: context that ends the audio when it is cancelled
-//   - app: the application context holding the device setting and the logger
-//   - input: the sound input to open, empty to take the audio from a daemon
-//   - channel: the side of the cable to take, as audiofeed.ParseChannel gave it
-//
-// Returns:
-//   - a channel of frames, closed when the audio ends
-//   - the name of the sound input the audio is coming from
-//   - a function releasing whatever was opened, which is never nil
-//   - error if the sound input or the daemon cannot be reached
-func openAudio(ctx context.Context, app *appcontext.App, input, channel string) (
-	<-chan audiofeed.Frame, string, func(), error) {
-
-	if input == "" {
-		return audioViaDaemon(ctx, app)
-	}
-
-	feed := audiofeed.New(app.Log)
-	capture, err := startCapture(audiofeed.Options{Source: input, Channel: channel, Log: app.Log}, feed)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	sub := feed.Subscribe(recordQueue)
-
-	// The feed has things to say that are not audio, and every one of them is
-	// about the recording being wrong rather than about the radio: a cable in
-	// the wrong socket, a permission never granted, two sides that cancel. They
-	// reach a person here or not at all.
-	go func() {
-		for ev := range sub.Events() {
-			report(app, ev)
-		}
-	}()
-
-	return sub.Frames(), capture.Source(), func() {
-		capture.Close()
-		sub.Close()
-	}, nil
-}
-
 // poll asks the scanner what it is hearing, over and over, until ctx ends.
 //
 // Parameters:
@@ -655,17 +594,20 @@ func poll(ctx context.Context, sample func(context.Context) (device.Heard, error
 //   - frames: the audio arriving
 //   - sample: reads what the scanner is hearing
 //   - opts: what the flags asked for
+//   - p: the speakers to play each transmission on, nil when nobody asked to
+//     hear them
 //
 // Returns:
 //   - error if a recording cannot be written or the scanner stops answering;
 //     nil once ctx is cancelled or the audio ends
 func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Library,
 	frames <-chan audiofeed.Frame, sample func(context.Context) (device.Heard, error),
-	opts recordOptions) error {
+	opts recordOptions, p player) error {
 
 	r := &recorder{
 		app:     app,
 		library: library,
+		player:  p,
 		volume:  func() int { return volumeNow(ctx, app) },
 		gate: audiogate.New(audiogate.Options{
 			Hang:        opts.hang,
@@ -724,6 +666,7 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 				r.abandon()
 				return err
 			}
+			r.monitor(frame)
 		}
 	}
 }
@@ -784,6 +727,11 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 			appcontext.ErrNoDevice)
 	}
 
+	if opts.speaker != "" && !opts.listen {
+		return errors.New("--speaker says where to play the transmissions, which only means " +
+			"something with --listen:\nadd --listen, or drop --speaker")
+	}
+
 	channel, err := audiofeed.ParseChannel(opts.channel)
 	if err != nil {
 		return err
@@ -794,6 +742,18 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	// that is never going to happen leaves no folder behind.
 	if err := recordings.ValidateTemplate(opts.template); err != nil {
 		return err
+	}
+
+	// The speakers are opened before the recordings folder is made, so that a
+	// typo in --speaker costs a moment rather than leaving a folder behind for
+	// a run that was never going to happen.
+	var p player
+	if opts.listen {
+		if p, err = openPlayer(opts.speaker); err != nil {
+			return err
+		}
+		defer p.Close()
+		defer reportPlayback(app, p)
 	}
 
 	sample, closeSampler, err := newSampler(ctx, app)
@@ -823,6 +783,6 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	}
 	defer closeAudio()
 
-	announceRecording(app, source, library.Dir())
-	return recordLoop(ctx, app, library, frames, sample, opts)
+	announceRecording(app, source, library.Dir(), p)
+	return recordLoop(ctx, app, library, frames, sample, opts, p)
 }
