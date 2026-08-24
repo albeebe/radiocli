@@ -539,6 +539,68 @@ func TestSetMenuValue(t *testing.T) {
 	})
 }
 
+// TestScannerInfoReadsAConventionalAccessCode checks that a P25 conventional
+// channel reports its network access code.
+//
+// A conventional channel can be digital, and when it is the code lives in the
+// same two attributes an analog channel keeps its tone squelch in. Reading it
+// only off the trunked element, which is where it was found first, left every
+// P25 conventional recording without one while cheerfully saying it was P25.
+//
+// Coverage: 3 test cases covering both spellings and the analog case
+//
+// Test cases:
+//   - Decoded: the code the radio actually heard is reported
+//   - Programmed: with nothing decoded yet, the channel's setting stands in
+//   - Analog: a tone squelch is not an access code
+func TestScannerInfoReadsAConventionalAccessCode(t *testing.T) {
+	doc := func(sas, sad string) string {
+		return `<ScannerInfo Mode="Scan Mode" V_Screen="conventional_scan">` +
+			`<System Name="Rockingham" Index="1" SystemType="Conventional"/>` +
+			`<Department Name="Municipalities - Londonderry" Index="2"/>` +
+			`<ConvFrequency Name="Police Operations" Index="3" Freq=" 155.865000MHz" Mod="NFM"` +
+			` SAS="` + sas + `" SAD="` + sad + `" TGID="TGID None" U_Id="UID None"/>` +
+			`<Property Sig="4" P25Status="P25" Mute="Unmute" Rssi="-86"/>` +
+			`</ScannerInfo>`
+	}
+
+	// Verify the ordinary digital case: the radio decoded a code and it is
+	// reported alongside the frequency.
+	t.Run("Decoded", func(t *testing.T) {
+		info, err := answeringXML(doc("NAC 293h", "NAC 293h")).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("reading the scanner info: %v", err)
+		}
+		if h := info.Heard(); h.NAC != "293h" {
+			t.Errorf("got NAC %q, want it read off the conventional channel", h.NAC)
+		}
+	})
+
+	// Verify that a channel programmed for a code the radio has not heard yet
+	// still reports what it is looking for, rather than nothing.
+	t.Run("Programmed", func(t *testing.T) {
+		info, err := answeringXML(doc("NAC 293h", "None")).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("reading the scanner info: %v", err)
+		}
+		if h := info.Heard(); h.NAC != "293h" {
+			t.Errorf("got NAC %q, want the programmed code when nothing was decoded", h.NAC)
+		}
+	})
+
+	// Verify that an analog channel's tone squelch is not mistaken for an
+	// access code, which is the whole reason the prefix is checked.
+	t.Run("Analog", func(t *testing.T) {
+		info, err := answeringXML(doc("All", "None")).ScannerInfo(context.Background())
+		if err != nil {
+			t.Fatalf("reading the scanner info: %v", err)
+		}
+		if h := info.Heard(); h.NAC != "" {
+			t.Errorf("got NAC %q from an analog channel, want none", h.NAC)
+		}
+	})
+}
+
 // TestScannerInfoReadsATrunkedTalkgroup tests the elements a trunked system
 // reports, with 100% coverage of the tidying done to them.
 //
@@ -928,6 +990,154 @@ func TestHeardCarriesTheDigitalFormat(t *testing.T) {
 		h := info.Heard()
 		if h.Digital != "P25" || h.Unit != "101" {
 			t.Errorf("Heard() gave digital %q unit %q, want \"P25\" and \"101\"", h.Digital, h.Unit)
+		}
+	})
+}
+
+// TestHearing tests the Hearing method with 100% coverage.
+//
+// It is the reading the recorder takes, and what it adds over ScannerInfo is
+// the transmitting radio on a conventional digital channel, which the protocol
+// reply does not carry and the screen does.
+//
+// Coverage: 100% (5 test cases covering every branch)
+//
+// Test cases:
+//   - FromTheScreen: a conventional digital call gets its unit off the display
+//   - ReplyWins: a unit already in the reply costs no second command
+//   - Analog: an analog transmission does not reach for the screen
+//   - Silent: neither does a scanner that is not receiving
+//   - ScreenFails: a screen that cannot be read costs the unit and nothing else
+func TestHearing(t *testing.T) {
+	// digital is a conventional P25 document, with and without a unit id in it.
+	digital := func(unit string) string {
+		return `<ScannerInfo Mode="Scan Mode" V_Screen="conventional_scan">` +
+			`<System Name="Rockingham" Index="1" SystemType="Conventional"/>` +
+			`<Department Name="Londonderry" Index="2"/>` +
+			`<ConvFrequency Name="Police Operations" Index="3" Freq=" 155.865000MHz" Mod="NFM"` +
+			` SAS="NAC 293h" SAD="NAC 293h" TGID="TGID None" U_Id="` + unit + `"/>` +
+			`<Property Sig="4" P25Status="P25" Mute="Unmute" Rssi="-86"/>` +
+			`</ScannerInfo>`
+	}
+
+	// answering builds a scanner that replies to GSI with doc and to GST with
+	// a screen, recording which commands it was asked for.
+	answering := func(doc, screen string, screenErr error) (*Scanner, *stubConn) {
+		c := &stubConn{
+			execXML: func(string) (string, error) { return doc, nil },
+			exec: func(string) (string, error) {
+				if screenErr != nil {
+					return "", screenErr
+				}
+				return screen, nil
+			},
+		}
+		return New(c), c
+	}
+
+	// A GST reply: the display form, two lines of text and attributes, then the
+	// status fields the parser needs.
+	screen := "00,UID:640006      RSSI: -98dBm,,PUBLIC SAFETY,," +
+		"0,SCAN,0,0,0,0,0,0,0,0,0,0"
+
+	// Verify the case this exists for: the reply says the radio decoded
+	// nothing, and the screen names it.
+	t.Run("FromTheScreen", func(t *testing.T) {
+		s, c := answering(digital("UID None"), screen, nil)
+
+		h, err := s.Hearing(context.Background())
+		if err != nil {
+			t.Fatalf("Hearing: %v", err)
+		}
+		if h.Unit != "640006" {
+			t.Errorf("got unit %q, want it read off the screen", h.Unit)
+		}
+		if len(c.commands) == 0 {
+			t.Error("the screen was never asked for")
+		}
+	})
+
+	// Verify that a reply carrying a unit is enough, so a trunked call costs
+	// one command rather than two.
+	t.Run("ReplyWins", func(t *testing.T) {
+		s, c := answering(digital("UID:101"), screen, nil)
+
+		h, err := s.Hearing(context.Background())
+		if err != nil {
+			t.Fatalf("Hearing: %v", err)
+		}
+		if h.Unit != "101" {
+			t.Errorf("got unit %q, want the reply's own", h.Unit)
+		}
+		for _, sent := range c.commands {
+			if sent == "GST" {
+				t.Error("the screen was asked for when the reply already had the unit")
+			}
+		}
+	})
+
+	// Verify that an analog transmission does not pay for a screen reading,
+	// since there is no identifier to find on one.
+	t.Run("Analog", func(t *testing.T) {
+		analog := `<ScannerInfo Mode="Scan Mode" V_Screen="conventional_scan">` +
+			`<ConvFrequency Name="Fire" Index="3" Freq=" 153.980000MHz" Mod="NFM"` +
+			` SAS="CTCSS 103.5Hz" TGID="TGID None" U_Id="UID None"/>` +
+			`<Property Sig="4" P25Status="None" Mute="Unmute" Rssi="-87"/>` +
+			`</ScannerInfo>`
+		s, c := answering(analog, screen, nil)
+
+		if _, err := s.Hearing(context.Background()); err != nil {
+			t.Fatalf("Hearing: %v", err)
+		}
+		for _, sent := range c.commands {
+			if sent == "GST" {
+				t.Error("the screen was asked for on an analog transmission")
+			}
+		}
+	})
+
+	// Verify that a quiet scanner is not polled twice either. Between
+	// transmissions is most of an evening.
+	t.Run("Silent", func(t *testing.T) {
+		quiet := strings.Replace(digital("UID None"), `Mute="Unmute"`, `Mute="Mute"`, 1)
+		s, c := answering(quiet, screen, nil)
+
+		if _, err := s.Hearing(context.Background()); err != nil {
+			t.Fatalf("Hearing: %v", err)
+		}
+		for _, sent := range c.commands {
+			if sent == "GST" {
+				t.Error("the screen was asked for with nothing coming in")
+			}
+		}
+	})
+
+	// Verify that a scanner which cannot be asked at all is reported, since
+	// that is a real failure rather than a missing extra.
+	t.Run("ReplyFails", func(t *testing.T) {
+		c := &stubConn{execXML: func(string) (string, error) {
+			return "", errors.New("the scanner would not answer")
+		}}
+
+		if _, err := New(c).Hearing(context.Background()); err == nil {
+			t.Error("Hearing succeeded with a scanner that would not answer")
+		}
+	})
+
+	// Verify that a screen which cannot be read costs the identifier and not
+	// the reading, since everything else in it is still true.
+	t.Run("ScreenFails", func(t *testing.T) {
+		s, _ := answering(digital("UID None"), "", errors.New("the scanner would not answer"))
+
+		h, err := s.Hearing(context.Background())
+		if err != nil {
+			t.Fatalf("Hearing gave %v, want the reading anyway", err)
+		}
+		if h.Unit != "" {
+			t.Errorf("got unit %q, want none", h.Unit)
+		}
+		if h.Channel != "Police Operations" {
+			t.Errorf("got channel %q, want the reading to have survived", h.Channel)
 		}
 	})
 }

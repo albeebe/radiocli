@@ -1030,7 +1030,7 @@ The `.json` file beside each recording is the same object printed by
 | `talkgroup` | string | The talkgroup number on a trunked system. Absent on a conventional system. |
 | `unit` | string | The radio heard transmitting, when the scanner decoded one. |
 | `modulation` | string | How the scanner was demodulating, such as `NFM`. |
-| `nac` | string | The network access code of the P25 system, such as `8A1h`. Absent on anything that is not P25, and on a site the scanner had not decoded. |
+| `nac` | string | The network access code, such as `8A1h`, on a trunked P25 system and on a P25 conventional channel alike. Absent on anything that is not P25, and absent on a P25 transmission too short for the scanner to have decoded one: a measured 1.1 second transmission reported the format and no code. |
 | `rssi` | string | How strong the signal was, in the scanner's own units, taken from the strongest reading during the transmission. |
 | `digital` | string | The digital format the transmission carried, such as `P25` or `DMR`. Absent when it was analog. |
 | `reason` | string | Why the recording ended: `hang` when the scanner stopped receiving, `split` when it reached `--max-duration`, `channel` when the scanner moved to another channel, `stopped` when you stopped the command. |
@@ -1048,9 +1048,18 @@ receiver heard. It comes off the site rather than off the channel, because a
 trunked reply carries no conventional channel element at all.
 
 **`nac` identifies the system rather than the call.** Two P25 systems can use
-the same talkgroup numbers, and this is what tells their recordings apart. The
+the same talkgroup numbers, and this is what tells their recordings apart. On a
+conventional P25 channel it does the job a tone squelch does on an analog one,
+and the scanner keeps it in the same two fields. The
 other identifiers on the scanner's detailed display, `WACN`, `Sys ID`, `RFSS ID`
 and `Site ID`, are not in the reply this command reads, so they are not here.
+
+**`digital` is the answer most of the readings gave**, not the first one. The
+scanner decides afresh on every reading, and it reports nothing at all until it
+has decoded something, so an early answer is both unavoidable to wait for and
+unsafe to trust: one measured transmission of 29 seconds was labelled `Link`, a
+value this scanner's own documentation does not list, on the strength of a
+single reading while the three hundred after it agreed on `P25`.
 
 **`digital` is how you tell a digital recording from an analog one.**
 `modulation` cannot answer it. It reports the demodulator's state, so a channel

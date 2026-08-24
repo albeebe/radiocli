@@ -817,6 +817,17 @@ type ConvFrequency struct {
 	// "Off".
 	Held string `xml:"Hold,attr" json:"held,omitempty"`
 
+	// SubAudio is what the channel is set to decode below the audio, and
+	// SubAudioDecoded is what it actually found there.
+	//
+	// On an analog channel these carry the tone squelch, spelled "All" when the
+	// channel accepts anything and "None" when nothing was found. On a P25
+	// conventional channel they carry the network access code instead, spelled
+	// "NAC 293h", which is the same idea doing the same job: a code that says
+	// which traffic on this frequency is meant for this receiver.
+	SubAudio        string `xml:"SAS,attr" json:"subAudio,omitempty"`
+	SubAudioDecoded string `xml:"SAD,attr" json:"subAudioDecoded,omitempty"`
+
 	// Talkgroup and UnitID carry the identifiers decoded out of a digital
 	// signal on this frequency, and are empty when there are none.
 	//

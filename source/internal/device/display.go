@@ -30,6 +30,53 @@ func (l Line) Selected() bool {
 	return strings.ContainsRune(l.Attributes, rune(AttrReverse))
 }
 
+// UnitID reads the transmitting radio's identifier off the screen.
+//
+// It is here because the scanner does not always send it any other way. On a
+// trunked call the identifier arrives in the protocol reply, on its own
+// element. On a conventional P25 channel it does not: measured across seven
+// complete transmissions on an SDS150, a hundred and six readings taken while
+// the radio reported it was decoding P25 carried "UID None" every time, in
+// every attribute the reply has for it, while the screen beside them read
+// "UID:640006".
+//
+// So this is a screen scrape, with the honesty that implies. It reads what a
+// person would read, and it can only see what the scanner has drawn: the field
+// exists on the detailed scanning display and not on the others, so a scanner
+// set to a different display mode reports nothing here and nothing is wrong.
+//
+// The line is found by its label rather than by its position, because the
+// position is a property of one display mode on one model and the label is what
+// the field is.
+//
+// Returns:
+//   - the identifier alone, such as "640006", or empty when the screen does not
+//     show one
+func (d Display) UnitID() string {
+	for _, l := range d.Lines {
+		// The field shares its line with the signal reading, as
+		// "UID:640006      RSSI: -98dBm", so what follows is cut at the first
+		// space rather than taken to the end.
+		_, after, found := strings.Cut(l.Text, "UID:")
+		if !found {
+			continue
+		}
+
+		id := strings.TrimSpace(after)
+		if cut := strings.IndexFunc(id, func(r rune) bool { return r == ' ' || r == '\t' }); cut >= 0 {
+			id = id[:cut]
+		}
+
+		// "UID: ---" is the screen's way of saying nothing has been decoded,
+		// which arrives here as dashes once the label is cut away.
+		if id == "" || strings.Trim(id, "-") == "" {
+			continue
+		}
+		return id
+	}
+	return ""
+}
+
 // String renders the screen as the user sees it, one line per line, with
 // trailing blank lines removed.
 //

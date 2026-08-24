@@ -84,11 +84,10 @@ func run(ctx context.Context, app *appcontext.App) error {
 		return err
 	}
 
-	info, err := client.ScannerInfo(ctx)
+	r, err := client.Hearing(ctx)
 	if err != nil {
 		return fmt.Errorf("asking the scanner what it is hearing: %w", err)
 	}
-	r := info.Heard()
 
 	if app.Config.Output == appcontext.OutputJSON {
 		return render.JSON(app.Stdout, r)

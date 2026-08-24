@@ -475,7 +475,7 @@ enough.
 | `Att` | Off, On, G-Att |
 | `Rec` | Off, On |
 | `KeyLock` | Off, On |
-| `P25Status` | None, Data, P25, DMR, CAP, CON, DT3, XPT, NX9, NX4, ND9, ND4, IDS, NXD. The only field that says whether what is coming in right now is digital, and the values run past P25 despite the name. `Mod` cannot answer it, since it reports the demodulator rather than the programming. It describes the transmission, not the channel: one conventional frequency was measured reading `None` across 84 polls of live audio and `P25` a quarter of an hour later, so a channel can carry both and only the reading taken during a given transmission means anything |
+| `P25Status` | None, Data, P25, DMR, CAP, CON, DT3, XPT, NX9, NX4, ND9, ND4, IDS, NXD, and **`Link`**, which is not in the documented list but was read off an SDS150 on a P25 conventional channel. It is sustained rather than transient: transmissions on one frequency, with one access code, alternate between reporting `P25` and reporting `Link` seconds apart, and a `Link` transmission reports it across most of its readings rather than in one stray poll. Whatever it describes belongs to the transmission and not to the channel, and it is not a reception problem: it was captured on a five bar signal at -82 dBm, the strongest reading of the night, and on two different systems minutes apart. What it means is not known here. The only field that says whether what is coming in right now is digital, and the values run past P25 despite the name. `Mod` cannot answer it, since it reports the demodulator rather than the programming. It describes the transmission, not the channel: one conventional frequency was measured reading `None` across 84 polls of live audio and `P25` a quarter of an hour later, so a channel can carry both and only the reading taken during a given transmission means anything |
 | `Mute` | Unmute, Mute |
 | `A_Led` | Off, Blue, Red, Magenta, Green, Cyan, Yellow, White |
 | `Dir` | Up, Down |
@@ -496,7 +496,7 @@ off or priority only).
 | `System` | Name, Index, Avoid, SystemType, quick key, number tag, Hold |
 | `Department` | Name, Index, Avoid, quick key, Hold |
 | `Site` | Name, Index, Avoid, quick key, Hold, Mod (Auto, NFM, FM) |
-| `UnitID` | Name and `U_Id`, both carrying the transmitting radio as `UID:101`. Sent bare, `<UnitID />`, between calls rather than carrying the `UID None` the conventional element uses. It is an element of its own and **not** an attribute of `TGID`, which is where `ConvFrequency` puts the same idea |
+| `UnitID` | Name and `U_Id`, both carrying the transmitting radio as `UID:101`. **Trunked documents only.** Six documents captured during live P25 conventional calls, across two systems, carried no `UnitID` element at all and reported `U_Id="UID None"` on `ConvFrequency`, the same spelling an analog channel uses. So a conventional P25 recording having no unit id is the radio saying it has none, not something missed on the way out. Sent bare, `<UnitID />`, between calls rather than carrying the `UID None` the conventional element uses. It is an element of its own and **not** an attribute of `TGID`, which is where `ConvFrequency` puts the same idea |
 
 Avoid is always one of `Off`, `T-Avoid` or `Avoid`.
 

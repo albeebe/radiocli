@@ -206,6 +206,52 @@ func (s *Scanner) ScannerInfo(ctx context.Context) (ScannerInfo, error) {
 	return info, nil
 }
 
+// Hearing reports what the scanner is hearing, filling in what the protocol
+// reply leaves out.
+//
+// It exists because the reply is not the whole truth about a conventional
+// digital call. The transmitting radio's identifier reaches ScannerInfo on a
+// trunked system, on an element of its own, and on a conventional P25 channel
+// it never arrives at all: measured across seven complete transmissions on an
+// SDS150, a hundred and six readings taken while the scanner reported it was
+// decoding P25 said "UID None" in every attribute the reply has for one. The
+// screen said "UID:640006" throughout.
+//
+// So when the reply has no identifier and there is a digital transmission to
+// have one, the screen is read as well. That costs a second command, and it is
+// spent narrowly: never on an analog channel, never between transmissions, and
+// never on a trunked call, where the reply already carries it.
+//
+// A screen that cannot be read costs the identifier and nothing else. It is
+// worth having and not worth failing a reading over, and the scanner's display
+// mode decides whether the field is even drawn.
+//
+// Parameters:
+//   - ctx: context for the exchanges with the scanner
+//
+// Returns:
+//   - what the scanner is hearing, with the identifier filled in from the
+//     screen when the reply had none to give
+//   - error if the scanner cannot be asked what it is hearing
+func (s *Scanner) Hearing(ctx context.Context) (Heard, error) {
+	info, err := s.ScannerInfo(ctx)
+	if err != nil {
+		return Heard{}, err
+	}
+
+	h := info.Heard()
+	if h.Unit != "" || !h.Receiving || h.Digital == "" {
+		return h, nil
+	}
+
+	scr, err := s.Screen(ctx)
+	if err != nil {
+		return h, nil
+	}
+	h.Unit = scr.Display.UnitID()
+	return h, nil
+}
+
 // Decoding reports the digital format the scanner is decoding, or empty when
 // the transmission is analog.
 //
@@ -266,8 +312,17 @@ func (i ScannerInfo) Heard() Heard {
 	if i.Talkgroup.ID != "" {
 		h.Frequency = i.SiteFrequency.Frequency
 		h.Modulation = i.Site.Modulation
-		h.NAC = nac(i.SiteFrequency)
 	}
+
+	// The access code comes off whichever element describes what the radio is
+	// tuned to, which is the site on a trunked system and the channel on a
+	// conventional one. A conventional P25 channel has one too, in the fields
+	// an analog channel keeps its tone squelch in, and reading only the trunked
+	// element left every P25 conventional recording without one.
+	h.NAC = either(
+		nac(i.SiteFrequency.SubAudioDecoded, i.SiteFrequency.SubAudio),
+		nac(i.Frequency.SubAudioDecoded, i.Frequency.SubAudio),
+	)
 
 	// A conventional system answers with a frequency and a trunked one with a
 	// talkgroup, and they are not the same kind of number, so they are reported
@@ -354,25 +409,26 @@ func either(first, second string) string {
 	return second
 }
 
-// nac reads the network access code out of a site's sub-audio fields.
+// nac reads the network access code out of a pair of sub-audio fields.
 //
-// The scanner writes it as "NAC 8A1h", in the same fields a conventional
-// channel uses for CTCSS and DCS, so what is wanted is the part after the name
-// and only when the name is the P25 one. Anything else there is a tone or a
-// code for some other mode, and reporting one of those as a NAC would be
+// The scanner writes it as "NAC 8A1h", in the same fields it keeps CTCSS and
+// DCS in on an analog channel, so what is wanted is the part after the name and
+// only when the name is the P25 one. Anything else there is a tone or a code
+// for some other mode, and reporting one of those as an access code would be
 // worse than reporting nothing.
 //
-// The decoded field is preferred over the setting. They usually agree, and when
-// they do not it is because the site is programmed for a code the radio has not
-// heard yet, in which case what arrived is the honest answer.
+// The values are tried in the order given, and callers pass the decoded field
+// first. The two usually agree, and when they do not it is because the channel
+// is programmed for a code the radio has not heard yet, in which case what
+// actually arrived is the honest answer.
 //
 // Parameters:
-//   - f: the site frequency element, as the scanner sent it
+//   - values: the sub-audio fields to read, most trustworthy first
 //
 // Returns:
 //   - the code alone, such as "8A1h", or empty when there is not one
-func nac(f SiteFrequency) string {
-	for _, value := range []string{f.SubAudioDecoded, f.SubAudio} {
+func nac(values ...string) string {
+	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if rest, found := strings.CutPrefix(value, "NAC "); found {
 			if code := strings.TrimSpace(rest); code != "" {
