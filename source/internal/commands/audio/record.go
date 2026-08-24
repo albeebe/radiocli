@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -223,6 +224,17 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 		if e.Unit == "" {
 			e.Unit = h.Unit
 		}
+		// The same goes for the network access code, which is decoded off the
+		// site rather than off the channel and can arrive a moment late.
+		if e.NAC == "" {
+			e.NAC = h.NAC
+		}
+		// The strongest reading rather than the first, since a transmission
+		// rises and falls across its length. Compared as numbers because these
+		// are negative and "-100" sorts before "-97" as text.
+		if stronger(h.RSSI, e.RSSI) {
+			e.RSSI = h.RSSI
+		}
 		if h.Channel != "" && !contains(e.Channels, h.Channel) {
 			e.Channels = append(e.Channels, h.Channel)
 		}
@@ -234,6 +246,31 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 		e.Channels = nil
 	}
 	return e
+}
+
+// stronger reports whether one signal reading beats another.
+//
+// The readings arrive as text, they are negative, and "-999" is the scanner
+// saying it has nothing to report rather than a measurement. Comparing them as
+// text puts "-100" above "-97", which is backwards, so both are read as numbers
+// and anything unreadable loses.
+//
+// Parameters:
+//   - candidate: the reading being offered
+//   - best: the strongest reading so far, empty when there is none yet
+//
+// Returns:
+//   - true if candidate is a real reading and beats best
+func stronger(candidate, best string) bool {
+	got, err := strconv.Atoi(strings.TrimSpace(candidate))
+	if err != nil || got <= noSignalRSSI {
+		return false
+	}
+	if best == "" {
+		return true
+	}
+	have, err := strconv.Atoi(strings.TrimSpace(best))
+	return err != nil || got > have
 }
 
 // key builds the identity the gate compares one transmission against the next

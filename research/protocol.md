@@ -301,6 +301,33 @@ A trunked document, from the same radio on the full database:
 <SiteFrequency Freq=" 859.487500MHz" IFX="Off" SAS="NAC 8A1h" SAD="None" />
 ```
 
+Captured again on a live P25 call, which fills in what the waiting document
+leaves out:
+
+```xml
+<ScannerInfo Mode="Trunk Scan" V_Screen="trunk_scan">
+  <System Name="City of Manchester" Index="20031" Avoid="Off" SystemType="P25 Trunk" .../>
+  <Department Name="Fire" Index="20049" Avoid="Off" Q_Key="None" Hold="Off" />
+  <TGID Name="Fire Tac 3" Index="20061" Avoid="Off" TGID="TGID:10007" SvcType="Fire-Tac" .../>
+  <UnitID Name="UID:100045" U_Id="UID:100045" />
+  <Site Name="Manchester" Index="20034" Avoid="Off" Q_Key="None" Hold="Off" Mod="NFM" />
+  <SiteFrequency Freq=" 856.762500MHz" IFX="Off" SAS="NAC 8A1h" SAD="NAC 8A1h" />
+  <Property ... Sig="4" P25Status="P25" Mute="Unmute" Rssi="-97" />
+</ScannerInfo>
+```
+
+Three things worth taking from it. `SiteFrequency` carries the **voice** channel
+the site handed out for this call, not the control channel, and it matches the
+frequency on the radio's own screen. The modulation is on `Site` rather than
+anywhere else, since a trunked document has no `ConvFrequency` to read it from.
+And the network access code arrives in the sub-audio fields, spelled `NAC 8A1h`,
+in the same attributes a conventional channel uses for CTCSS and DCS.
+
+**`SystemStatus` is not in a `GSI` reply**, on an SDS150 at least, in either
+mode. The elements listed for it below carry `WACN`, the system and sub ids and
+the site id, which the radio's detailed display does show, so those cost a
+different command rather than being free alongside everything above.
+
 Note that the `TGID` element carries no `Name` while it is waiting, and gains
 one once the scanner stops on a talkgroup. The index of the full database, and
 of a talkgroup within it, is `4294967295`, which is the same all-ones value the

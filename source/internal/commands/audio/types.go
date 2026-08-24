@@ -67,6 +67,14 @@ const (
 	clipFraction = 0.001
 )
 
+// noSignalRSSI is the reading the scanner gives when nothing is coming in.
+//
+// It is not a measurement. A scanning radio with nothing on the channel reports
+// this whatever the noise floor is doing, so anything keeping the strongest
+// reading of a transmission has to refuse it rather than record it as the
+// strongest thing it saw.
+const noSignalRSSI = -999
+
 // meterFrames is how many frames go by between playback readings under
 // --verbose, which is one a second.
 const meterFrames = 1000 / audiofeed.FrameMS

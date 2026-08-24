@@ -231,6 +231,55 @@ func Test_entryFrom(t *testing.T) {
 		Dropped: 3,
 	}
 
+	// Verify that the strongest signal reading is the one kept, and that the
+	// network access code is taken from wherever it appears.
+	//
+	// A transmission from a moving vehicle rises and falls across its length,
+	// so what is worth keeping is the best the receiver managed rather than
+	// whatever the reading happened to be when the recording opened. The
+	// readings arrive as text and are negative, which is why "-100" must not
+	// beat "-97", and "-999" is the scanner saying it has nothing to report
+	// rather than a measurement.
+	t.Run("StrongestSignal", func(t *testing.T) {
+		nothing := heardOn("FIRE DISPATCH")
+		nothing.RSSI = "-999"
+
+		weak := heardOn("FIRE DISPATCH")
+		weak.RSSI = "-100"
+
+		best := heardOn("FIRE DISPATCH")
+		best.RSSI = "-97"
+		best.NAC = "8A1h"
+
+		later := heardOn("FIRE DISPATCH")
+		later.RSSI = "-101"
+		later.NAC = "ignored"
+
+		unreadable := heardOn("FIRE DISPATCH")
+		unreadable.RSSI = "not a number"
+
+		e := entryFrom(tx, []device.Heard{nothing, weak, best, later, unreadable})
+
+		if e.RSSI != "-97" {
+			t.Errorf("kept a signal of %q, want the strongest reading", e.RSSI)
+		}
+		if e.NAC != "8A1h" {
+			t.Errorf("kept a NAC of %q, want the first one decoded", e.NAC)
+		}
+	})
+
+	// Verify that a transmission nothing was ever measured on keeps no signal
+	// at all, rather than recording the scanner's "nothing to report" as a
+	// measurement.
+	t.Run("NoSignalReading", func(t *testing.T) {
+		nothing := heardOn("FIRE DISPATCH")
+		nothing.RSSI = "-999"
+
+		if e := entryFrom(tx, []device.Heard{nothing}); e.RSSI != "" {
+			t.Errorf("kept a signal of %q, want none", e.RSSI)
+		}
+	})
+
 	// Verify a labelled transmission carries the whole hierarchy.
 	t.Run("Labelled", func(t *testing.T) {
 		e := entryFrom(tx, []device.Heard{heardOn("MARLINTON DISPATCH"), heardOn("MARLINTON DISPATCH")})

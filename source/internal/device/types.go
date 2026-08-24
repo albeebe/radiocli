@@ -879,6 +879,51 @@ type Talkgroup struct {
 	Held string `xml:"Hold,attr" json:"held,omitempty"`
 }
 
+// Site is the trunked site being listened to.
+//
+// It is a type of its own rather than a Named, because it carries one thing
+// beyond the name that nothing else reports: on a trunked call there is no
+// ConvFrequency to read the modulation from, and this is where it lives:
+//
+//	<Site Name="Manchester" Index="20034" Avoid="Off" Q_Key="None" Hold="Off" Mod="NFM" />
+type Site struct {
+	// Name is what the site is called, such as "Manchester".
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the site.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Modulation is how the scanner is demodulating the site, such as "NFM".
+	Modulation string `xml:"Mod,attr" json:"modulation,omitempty"`
+}
+
+// SiteFrequency is the frequency a trunked site is on, and what it is decoding
+// there.
+//
+// It is where a trunked call's frequency lives, which is not obvious: the
+// conventional side puts it on ConvFrequency, and a document with a talkgroup
+// in it has no ConvFrequency at all. Read off an SDS150 on a P25 call, this is
+// the voice channel the scanner has followed rather than the site's control
+// channel, and it matches the frequency on the radio's own screen:
+//
+//	<SiteFrequency Freq=" 856.762500MHz" IFX="Off" SAS="NAC 8A1h" SAD="NAC 8A1h" />
+type SiteFrequency struct {
+	// Frequency is the frequency the site is on, carrying its own unit and a
+	// leading space, such as " 856.762500MHz".
+	Frequency string `xml:"Freq,attr" json:"frequency,omitempty"`
+
+	// SubAudio is what the channel is set to decode below the audio, and
+	// SubAudioDecoded is what it actually found there. On a P25 system both
+	// carry the network access code, spelled "NAC 8A1h".
+	//
+	// Both are read because they are not the same claim. The setting says what
+	// the scanner was told to expect and the decode says what arrived, and on a
+	// site the radio has not decoded yet the second is "None" while the first
+	// still names a code.
+	SubAudio        string `xml:"SAS,attr" json:"subAudio,omitempty"`
+	SubAudioDecoded string `xml:"SAD,attr" json:"subAudioDecoded,omitempty"`
+}
+
 // UnitID is the radio heard transmitting on a trunked call.
 //
 // It is an element rather than an attribute of the talkgroup, which is the
@@ -939,9 +984,14 @@ type Heard struct {
 	// Channel is the channel alpha tag, such as "Marlinton Dispatch".
 	Channel string `json:"channel,omitempty"`
 
-	// Frequency is what the scanner is tuned to on a conventional system,
-	// carrying its own unit. Talkgroup is the number on a trunked one. Only one
-	// of the two is ever set.
+	// Frequency is the frequency the scanner is tuned to, carrying its own
+	// unit, and Talkgroup is the number on a trunked system.
+	//
+	// A trunked call has both, and that is deliberate. The talkgroup says who
+	// is talking and the frequency says where the radio actually is, which on a
+	// trunked system changes from one call to the next as the site hands out
+	// voice channels. Anything comparing a recording against a spectrum
+	// capture, or against what another receiver heard, needs the second one.
 	Frequency string `json:"frequency,omitempty"`
 	Talkgroup string `json:"talkgroup,omitempty"`
 
@@ -959,6 +1009,11 @@ type Heard struct {
 	// "NFM", because that is what the demodulator settled on, so nothing else
 	// here distinguishes a digital transmission from an analog one.
 	Digital string `json:"digital,omitempty"`
+
+	// NAC is the network access code a P25 system is using, spelled the way the
+	// scanner spells it, such as "8A1h". It is empty on anything that is not
+	// P25, and on a P25 site the radio has not decoded yet.
+	NAC string `json:"nac,omitempty"`
 
 	// Signal is the number of bars the scanner is showing, from "0" to "5".
 	Signal string `json:"signal,omitempty"`
@@ -1096,7 +1151,12 @@ type ScannerInfo struct {
 
 	// Site is the trunked site being listened to, and is absent on a
 	// conventional system.
-	Site Named `xml:"Site" json:"site,omitempty"`
+	Site Site `xml:"Site" json:"site,omitempty"`
+
+	// SiteFrequency is the frequency a trunked site is on, present only in
+	// trunked modes. It is where a trunked call's frequency comes from, since
+	// such a document carries no ConvFrequency at all.
+	SiteFrequency SiteFrequency `xml:"SiteFrequency" json:"siteFrequency,omitempty"`
 
 	// Frequency is the conventional channel the scanner is on, present only in
 	// conventional modes.

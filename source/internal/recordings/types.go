@@ -182,8 +182,13 @@ type Entry struct {
 	Channel string `json:"channel,omitempty"`
 
 	// Frequency is what the scanner was tuned to on a conventional system,
-	// carrying its own unit. Talkgroup is the number on a trunked one. Only one
-	// of the two is ever set.
+	// carrying its own unit. Talkgroup is the number on a trunked one.
+	//
+	// A trunked recording carries both. The talkgroup says who was talking and
+	// the frequency says where the radio actually was, which on a trunked
+	// system is a voice channel the site handed out for that call and a
+	// different one next time. It is what lines a recording up against a
+	// spectrum capture, or against what another receiver heard.
 	Frequency string `json:"frequency,omitempty"`
 	Talkgroup string `json:"talkgroup,omitempty"`
 
@@ -197,6 +202,23 @@ type Entry struct {
 
 	// Modulation is how the scanner was demodulating, such as "NFM".
 	Modulation string `json:"modulation,omitempty"`
+
+	// NAC is the network access code of the P25 system this was heard on, such
+	// as "8A1h", and is absent on anything that is not P25.
+	//
+	// It identifies the system itself rather than the call, which is what makes
+	// it worth keeping beside a recording: two systems can use the same
+	// talkgroup numbers, and this is what tells their recordings apart.
+	NAC string `json:"nac,omitempty"`
+
+	// RSSI is how strong the signal was, in the scanner's own units, taken from
+	// the loudest reading during the transmission.
+	//
+	// The strongest rather than the first or the last, because a transmission
+	// from a moving vehicle rises and falls across it, and what is worth
+	// keeping is the best the receiver managed rather than wherever the reading
+	// happened to be when the recording opened.
+	RSSI string `json:"rssi,omitempty"`
 
 	// Digital is the digital format the transmission was carrying, such as
 	// "P25" or "DMR", and is absent when it was analog.

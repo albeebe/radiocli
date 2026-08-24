@@ -579,10 +579,22 @@ func TestScannerInfoReadsATrunkedTalkgroup(t *testing.T) {
 		if info.Talkgroup.ID != "10003" {
 			t.Errorf("got talkgroup ID %q, want the scanner's prefix stripped", info.Talkgroup.ID)
 		}
+		// Both, deliberately. The talkgroup says who was talking and the
+		// frequency says where the radio was, which on a trunked system is a
+		// voice channel handed out for this call and a different one next time.
+		// It comes off the site rather than off the channel, because a trunked
+		// document has no ConvFrequency in it at all.
 		h := info.Heard()
-		if h.Talkgroup != "10003" || h.Frequency != "" {
-			t.Errorf("got talkgroup %q and frequency %q, want the bare number and no frequency",
+		if h.Talkgroup != "10003" || h.Frequency != "859.487500MHz" {
+			t.Errorf("got talkgroup %q and frequency %q, want the bare number and the site's frequency",
 				h.Talkgroup, h.Frequency)
+		}
+		if h.Modulation != "NFM" {
+			t.Errorf("got modulation %q, want the site's, since there is no channel to read it from",
+				h.Modulation)
+		}
+		if h.NAC != "8A1h" {
+			t.Errorf("got NAC %q, want it read out of the site's sub-audio field", h.NAC)
 		}
 		if h.Channel != "Fire Dispatch" || h.Site != "Cass" {
 			t.Errorf("got channel %q at site %q, want the talkgroup's name and its site", h.Channel, h.Site)
@@ -729,7 +741,7 @@ func TestHeard(t *testing.T) {
 
 	t.Run("Trunked", func(t *testing.T) {
 		info := ScannerInfo{
-			Site:      Named{Name: "Bald Knob"},
+			Site:      Site{Name: "Bald Knob"},
 			Talkgroup: Talkgroup{Name: "FIREGROUND", ID: "24944", UnitID: "32"},
 			Property:  Property{Mute: "Mute"},
 		}

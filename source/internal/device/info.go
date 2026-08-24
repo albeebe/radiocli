@@ -195,6 +195,7 @@ func (s *Scanner) ScannerInfo(ctx context.Context) (ScannerInfo, error) {
 	// recordings was labelled with the scanner's spelling rather than the
 	// number.
 	info.Frequency.Frequency = strings.TrimSpace(info.Frequency.Frequency)
+	info.SiteFrequency.Frequency = strings.TrimSpace(info.SiteFrequency.Frequency)
 	info.Frequency.Talkgroup = present(info.Frequency.Talkgroup)
 	info.Frequency.UnitID = present(info.Frequency.UnitID)
 	info.Talkgroup.ID = present(info.Talkgroup.ID)
@@ -255,6 +256,17 @@ func (i ScannerInfo) Heard() Heard {
 		Signal:     i.Property.Signal,
 		RSSI:       i.Property.RSSI,
 		Mode:       i.Mode,
+	}
+
+	// A trunked call carries both: the talkgroup from the element above, and
+	// the voice channel the site handed out, which lives on a different element
+	// and is the frequency the radio's own screen shows. The modulation comes
+	// from the site for the same reason, since there is no ConvFrequency to
+	// take it from.
+	if i.Talkgroup.ID != "" {
+		h.Frequency = i.SiteFrequency.Frequency
+		h.Modulation = i.Site.Modulation
+		h.NAC = nac(i.SiteFrequency)
 	}
 
 	// A conventional system answers with a frequency and a trunked one with a
@@ -340,6 +352,35 @@ func either(first, second string) string {
 		return first
 	}
 	return second
+}
+
+// nac reads the network access code out of a site's sub-audio fields.
+//
+// The scanner writes it as "NAC 8A1h", in the same fields a conventional
+// channel uses for CTCSS and DCS, so what is wanted is the part after the name
+// and only when the name is the P25 one. Anything else there is a tone or a
+// code for some other mode, and reporting one of those as a NAC would be
+// worse than reporting nothing.
+//
+// The decoded field is preferred over the setting. They usually agree, and when
+// they do not it is because the site is programmed for a code the radio has not
+// heard yet, in which case what arrived is the honest answer.
+//
+// Parameters:
+//   - f: the site frequency element, as the scanner sent it
+//
+// Returns:
+//   - the code alone, such as "8A1h", or empty when there is not one
+func nac(f SiteFrequency) string {
+	for _, value := range []string{f.SubAudioDecoded, f.SubAudio} {
+		value = strings.TrimSpace(value)
+		if rest, found := strings.CutPrefix(value, "NAC "); found {
+			if code := strings.TrimSpace(rest); code != "" {
+				return code
+			}
+		}
+	}
+	return ""
 }
 
 // present turns the scanner's several ways of writing an identifier into

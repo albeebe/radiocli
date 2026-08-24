@@ -1026,16 +1026,31 @@ The `.json` file beside each recording is the same object printed by
 | `department` | string | The department the channel belongs to. |
 | `site` | string | The trunked site. Absent on a conventional system. |
 | `channel` | string | The channel's alpha tag. |
-| `frequency` | string | What the scanner was tuned to on a conventional system, carrying its unit. Absent on a trunked system. |
+| `frequency` | string | The frequency the scanner was on, carrying its unit. On a trunked system this is the voice channel the site handed out for this call, which is a different one next time. |
 | `talkgroup` | string | The talkgroup number on a trunked system. Absent on a conventional system. |
 | `unit` | string | The radio heard transmitting, when the scanner decoded one. |
 | `modulation` | string | How the scanner was demodulating, such as `NFM`. |
+| `nac` | string | The network access code of the P25 system, such as `8A1h`. Absent on anything that is not P25, and on a site the scanner had not decoded. |
+| `rssi` | string | How strong the signal was, in the scanner's own units, taken from the strongest reading during the transmission. |
 | `digital` | string | The digital format the transmission carried, such as `P25` or `DMR`. Absent when it was analog. |
 | `reason` | string | Why the recording ended: `hang` when the scanner stopped receiving, `split` when it reached `--max-duration`, `channel` when the scanner moved to another channel, `stopped` when you stopped the command. |
 | `samples` | number | How many times the scanner was asked what it was hearing while this was being recorded. Always present. |
 | `channels` | array of strings | Every distinct channel seen during the recording. Present only when there was more than one. |
 | `dropped` | number | Frames of audio the sound card produced that never arrived. Present only when some were lost. Each frame is 20 ms. |
 | `normalized` | boolean | The audio was scaled up after the transmission ended so its loudest sample sits just under full scale. Present unless `--normalize=false` turned that off. |
+
+**A trunked recording carries a frequency as well as a talkgroup.** They answer
+different questions: the talkgroup says who was talking, and the frequency says
+where the radio actually was. On a trunked system that is a voice channel the
+site handed out for that call and will hand to someone else next time, so it is
+what lines a recording up against a spectrum capture or against what another
+receiver heard. It comes off the site rather than off the channel, because a
+trunked reply carries no conventional channel element at all.
+
+**`nac` identifies the system rather than the call.** Two P25 systems can use
+the same talkgroup numbers, and this is what tells their recordings apart. The
+other identifiers on the scanner's detailed display, `WACN`, `Sys ID`, `RFSS ID`
+and `Site ID`, are not in the reply this command reads, so they are not here.
 
 **`digital` is how you tell a digital recording from an analog one.**
 `modulation` cannot answer it. It reports the demodulator's state, so a channel
