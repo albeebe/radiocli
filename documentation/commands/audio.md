@@ -264,11 +264,20 @@ nothing else can listen or record while it does. To hear and record at once from
 a single directly opened input, use [`audio record --listen`](#audio-record)
 instead.
 
-There is a small delay, and it is deliberate. About 60 ms of audio is held in
-front of the speakers so that a frame arriving late is absorbed rather than
-heard as a gap. The squelch costs a little at the front of each transmission as
-well, because the detector has to hear something before it can open, which is
-the same trade a scanner's own speaker makes.
+This is meant to be as live as the scanner's own speaker, and the delay is kept
+to what it takes to play audio at all: about 40 ms is held in front of the
+speakers so that a frame arriving late is absorbed rather than heard as a gap,
+which with the cutting and the sound cards at either end puts the whole path
+somewhere under a tenth of a second. That matters because you are probably
+sitting next to the radio, comparing the two.
+
+The squelch costs nothing on top of it: the speakers open on the first frame
+above the noise floor, rather than waiting for the transmission to prove itself
+long enough to be worth a file.
+
+That is the one place this and `audio record` deliberately disagree. A blip too
+short to be recorded is still heard, the way it would be on the scanner's own
+speaker.
 
 ## Usage
 
@@ -395,16 +404,25 @@ with status `0`. Audio still waiting in front of the speakers when you stop is
 not played out first, so the command exits at once rather than a fraction of a
 second later.
 
-If audio arrived faster than the speakers could take it, that is reported on the
-way out:
+What the speakers had to do to keep up is reported on the way out, and between
+them the two lines name every way playback can be choppy while the recording of
+the same audio is perfect:
+
+```
+The speakers ran dry 3 time(s), and played silence until the audio caught up.
+Once per transmission is expected, since the audio stops between them. Many
+more than that is what choppy playback sounds like.
+```
 
 ```
 1.4 seconds of audio arrived faster than the speakers could play it and was dropped.
 This computer is struggling to keep up, or the sound output is.
 ```
 
-It should never happen on a machine that is keeping up, because the audio
-arrives in real time and is played in real time.
+Running dry once per transmission is the buffer working rather than failing:
+the audio stops between transmissions, so the cushion in front of the speakers
+empties and has to be built again. Dropped audio should not happen at all, since
+what arrives in real time is played in real time.
 
 ## Errors
 
@@ -865,15 +883,17 @@ sitting.
 
 It is the same audio, played rather than written, so nothing is opened twice and
 a directly opened `--input` still works: this is the way to hear and record at
-once without a daemon. What you hear is exactly what is being kept, which makes
-it a way of checking a recording setup as well as a way of listening to one.
+once without a daemon.
 
-The speakers open when a recording opens and close when it closes, so
-`--hang`, `--min-duration` and the rest shape what is played as well as what is
-written. A transmission discarded for being shorter than `--min-duration` is
-never heard, and the front of each one is missing up to the point the recorder
-is sure enough to open a file. To listen without those, and without recording
-anything, use [`audio listen`](#audio-listen).
+The speakers open on the first frame above the noise floor and stay open for as
+long as the transmission does, `--hang` included. They deliberately do not wait
+for a recording to open, which happens only once a transmission has outlived
+`--min-duration`: waiting cost the first half second of every transmission,
+which in back and forth traffic is most of the first word each time.
+
+So what you hear and what you keep are not quite the same. A transmission
+shorter than `--min-duration` is heard and not written, which is what a
+scanner's own speaker does with a blip. Everything that is written is heard.
 
 ### `--speaker`
 

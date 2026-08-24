@@ -4,6 +4,11 @@
 
 package audioout
 
+import (
+	"encoding/binary"
+	"math"
+)
+
 // newRing builds the jitter buffer a Player is opened with.
 //
 // The whole thing is allocated once, here, and never grows. Growing it would
@@ -14,7 +19,64 @@ package audioout
 // Returns:
 //   - *ring holding bufferFrames of audio at most, empty and not yet primed
 func newRing() *ring {
-	return &ring{buf: make([]byte, bufferFrames*FrameBytes)}
+	return &ring{buf: make([]byte, bufferFrames*FrameBytes), gain: 1}
+}
+
+// fade ramps a run of samples between silence and full, in place.
+//
+// It is what stops the speakers clicking at the edges of a burst. Audio does
+// not start or end at zero, so handing the device a step from silence to the
+// middle of a waveform is handing it a click, and doing that at both ends of
+// every over is what somebody hears as a run that pops.
+//
+// Linear rather than anything shaped, because over 5 ms the difference is not
+// audible and the arithmetic is a multiply per sample on a path the audio
+// thread runs.
+//
+// Parameters:
+//   - pcm: the samples to ramp, signed 16-bit little-endian
+//   - in: true to ramp up from silence, false to ramp down to it
+func fade(pcm []byte, in bool) {
+	samples := len(pcm) / 2
+	if samples == 0 {
+		return
+	}
+
+	for i := range samples {
+		at := i * 2
+		v := int16(binary.LittleEndian.Uint16(pcm[at:]))
+
+		// The step along the ramp, counted from the silent end so that both
+		// directions are the same arithmetic read backwards.
+		step := i
+		if !in {
+			step = samples - 1 - i
+		}
+		binary.LittleEndian.PutUint16(pcm[at:], uint16(int16(int(v)*step/samples)))
+	}
+}
+
+// scale multiplies every sample by the ring's gain, in place, holding anything
+// that would overflow at full scale.
+//
+// Clamped rather than allowed to wrap, because a sample that wraps does not
+// come back quieter, it comes back inverted, which is a far worse noise than
+// the loud one it was meant to be.
+//
+// Parameters:
+//   - pcm: the samples to scale, signed 16-bit little-endian
+//   - gain: what to multiply each of them by
+func scale(pcm []byte, gain float64) {
+	for at := 0; at+1 < len(pcm); at += 2 {
+		v := float64(int16(binary.LittleEndian.Uint16(pcm[at:]))) * gain
+		if v > math.MaxInt16 {
+			v = math.MaxInt16
+		}
+		if v < math.MinInt16 {
+			v = math.MinInt16
+		}
+		binary.LittleEndian.PutUint16(pcm[at:], uint16(int16(v)))
+	}
 }
 
 // Close stops the device and gives back everything the library allocated.
@@ -73,6 +135,33 @@ func (p *Player) Play(pcm []byte) {
 	p.ring.write(pcm)
 }
 
+// SetGain multiplies everything played from now on by gain decibels.
+//
+// It is here because the live audio and the recording of it are not the same
+// loudness and cannot be. A recording is scaled once it has ended, by its own
+// loudest moment, which is a number nobody has yet while the transmission is
+// still arriving. So a file comes out just under full scale and the same audio
+// played as it arrives comes out wherever the radio and the cable left it,
+// which on a line input measured 15 to 25 dB quieter. Somebody comparing the
+// two turns their speakers up, and then every edge in the audio is 20 dB louder
+// as well.
+//
+// A number rather than anything automatic. An automatic gain would have to
+// decide, in the first moment of a transmission, how loud the rest of it is
+// going to be, and it would be wrong at the start of every one.
+//
+// Parameters:
+//   - dB: decibels to apply, 0 for the audio exactly as it arrived
+func (p *Player) SetGain(dB float64) {
+	if p == nil {
+		return
+	}
+
+	p.ring.mu.Lock()
+	defer p.ring.mu.Unlock()
+	p.ring.gain = math.Pow(10, dB/20)
+}
+
 // Stats says what the ring had to do to keep the speakers fed.
 //
 // Neither number is a fault on its own, and a caller reporting them to a person
@@ -85,6 +174,9 @@ func (p *Player) Play(pcm []byte) {
 //   - Dropped counts audio thrown away because it arrived faster than the
 //     speakers took it. That is the one worth looking at, because in a stream
 //     that arrives in real time it should never happen at all.
+//   - Played is the one that makes the other two readable. Nothing dropped and
+//     nothing starved means the speakers kept up with whatever they were given,
+//     which is also true of speakers that were given nothing.
 //
 // Returns:
 //   - Stats as of this moment, or the zero value for a nil Player
@@ -118,12 +210,14 @@ func (r *ring) read(out []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	starting := false
 	if !r.primed {
 		if r.length < primeFrames*FrameBytes {
 			clear(out)
 			return
 		}
 		r.primed = true
+		starting = true
 	}
 
 	n := min(len(out), r.length)
@@ -138,11 +232,18 @@ func (r *ring) read(out []byte) {
 
 	r.start = (r.start + n) % len(r.buf)
 	r.length -= n
+	r.stats.Played += uint64(n)
+
+	// The two edges of a burst, ramped so that neither is a step. See fade.
+	if starting {
+		fade(out[:min(fadeBytes, n)], true)
+	}
 
 	if n < len(out) {
 		// Running dry costs the cushion as well as the audio. Playing straight
 		// on from whatever arrives next would leave the ring empty again, so
 		// the next arrival has to build the cushion back up before it is heard.
+		fade(out[n-min(fadeBytes, n):n], false)
 		clear(out[n:])
 		r.primed = false
 		r.stats.Starved++
@@ -181,6 +282,15 @@ func (r *ring) write(pcm []byte) {
 		r.start = (r.start + drop) % len(r.buf)
 		r.length -= drop
 		r.stats.Dropped += uint64(drop)
+	}
+
+	if r.gain != 1 {
+		// Copied first, because the caller's slice is theirs and often belongs
+		// to a capture callback that is about to write over it anyway.
+		scaled := make([]byte, len(pcm))
+		copy(scaled, pcm)
+		scale(scaled, r.gain)
+		pcm = scaled
 	}
 
 	at := (r.start + r.length) % len(r.buf)

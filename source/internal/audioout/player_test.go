@@ -6,6 +6,7 @@ package audioout
 
 import (
 	"bytes"
+	"encoding/binary"
 	"sync"
 	"testing"
 )
@@ -118,6 +119,10 @@ func TestPlayerName(t *testing.T) {
 func TestPlayerPlay(t *testing.T) {
 	// Verify that audio handed to the player is what the device is given when
 	// it asks.
+	//
+	// Past the ramp at the front, which is not the audio arriving differently
+	// but the first few milliseconds of it being faded up from silence so the
+	// speakers do not click. See fade.
 	t.Run("Queued", func(t *testing.T) {
 		p := &Player{out: &fakeOutput{}, ring: newRing()}
 		want := tone(0, primeFrames*FrameBytes)
@@ -125,7 +130,7 @@ func TestPlayerPlay(t *testing.T) {
 
 		got := make([]byte, len(want))
 		p.ring.read(got)
-		if !bytes.Equal(got, want) {
+		if !bytes.Equal(got[fadeBytes:], want[fadeBytes:]) {
 			t.Error("what came out of the ring is not what was played into it")
 		}
 	})
@@ -216,13 +221,14 @@ func TestRingRead(t *testing.T) {
 	})
 
 	// Verify that the cushion arriving is what starts the playing, and that
-	// nothing was lost while it was being built.
+	// nothing was lost while it was being built. Past the ramp at the front,
+	// which is the audio being faded up rather than arriving differently.
 	t.Run("Primes", func(t *testing.T) {
 		r := primedRing()
 
 		out := make([]byte, FrameBytes)
 		r.read(out)
-		if !bytes.Equal(out, tone(0, FrameBytes)) {
+		if !bytes.Equal(out[fadeBytes:], tone(0, FrameBytes)[fadeBytes:]) {
 			t.Error("the first frame played is not the first frame that arrived")
 		}
 	})
@@ -239,8 +245,11 @@ func TestRingRead(t *testing.T) {
 
 		r.write(tone(100, len(r.buf)))
 		got := make([]byte, len(r.buf))
+		r.primed = true
 		r.read(got)
-		if !bytes.Equal(got, tone(100, len(r.buf))) {
+
+		want := tone(100, len(r.buf))
+		if !bytes.Equal(got[:len(got)-fadeBytes], want[:len(want)-fadeBytes]) {
 			t.Error("audio that wrapped around the end of the buffer came out in the wrong order")
 		}
 	})
@@ -413,4 +422,191 @@ func TestRingUnderRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// sample reads one signed 16-bit little-endian sample out of pcm.
+//
+// Parameters:
+//   - pcm: the audio to read from
+//   - at: which sample, counting from zero
+//
+// Returns:
+//   - the sample's value
+func sample(pcm []byte, at int) int16 {
+	return int16(binary.LittleEndian.Uint16(pcm[at*2:]))
+}
+
+// loudFrame builds a frame of samples all at level, which is what a ramp or a
+// gain can be measured against.
+//
+// Parameters:
+//   - n: how many samples
+//   - level: the value to give every one of them
+//
+// Returns:
+//   - the samples, signed 16-bit little-endian
+func loudFrame(n int, level int16) []byte {
+	pcm := make([]byte, n*2)
+	for i := range n {
+		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(level))
+	}
+	return pcm
+}
+
+// TestPlayerSetGain tests the Player.SetGain method with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering both branches)
+//
+// Test cases:
+//   - LouderPCM: what is played comes out scaled
+//   - Zero: no gain leaves the audio exactly as it arrived
+//   - Nil: a player nobody opened takes the setting and does nothing
+func TestPlayerSetGain(t *testing.T) {
+	// Verify that decibels reach the samples. 6 dB is a little under double, so
+	// a quarter-scale sample lands a little under half scale.
+	t.Run("LouderPCM", func(t *testing.T) {
+		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p.SetGain(6)
+		p.Play(loudFrame(primeFrames*FrameSamples, 8000))
+
+		out := make([]byte, FrameBytes)
+		p.ring.read(out)
+
+		// Past the ramp at the front, which is deliberately not at full level.
+		if got := sample(out, FrameSamples-1); got < 15000 || got > 16400 {
+			t.Errorf("a sample of 8000 played back as %d, want it near doubled", got)
+		}
+	})
+
+	// Verify that the default costs the audio nothing, since scaling every
+	// sample by one would be arithmetic done for no reason.
+	t.Run("Zero", func(t *testing.T) {
+		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p.SetGain(0)
+
+		if p.ring.gain != 1 {
+			t.Errorf("no gain left the ring multiplying by %v, want 1", p.ring.gain)
+		}
+	})
+
+	// Verify that the nil player a command holds when nobody is listening
+	// takes the setting without complaint.
+	t.Run("Nil", func(t *testing.T) {
+		var p *Player
+		p.SetGain(12)
+	})
+}
+
+// Test_fade tests the fade function with 100% coverage.
+//
+// Coverage: 100% (4 test cases covering every branch)
+//
+// Test cases:
+//   - In: a ramp up starts at silence and ends near full
+//   - Out: a ramp down starts near full and ends at silence
+//   - Nothing: an empty run is not a ramp
+//   - Monotonic: every step of a ramp up is at least as loud as the last
+func Test_fade(t *testing.T) {
+	// Verify that a burst begins at silence rather than at whatever sample the
+	// audio happened to be at, which is the step that clicks.
+	t.Run("In", func(t *testing.T) {
+		pcm := loudFrame(100, 10000)
+		fade(pcm, true)
+
+		if got := sample(pcm, 0); got != 0 {
+			t.Errorf("the first sample is %d, want silence", got)
+		}
+		if got := sample(pcm, 99); got < 9800 {
+			t.Errorf("the last sample is %d, want it back at full level", got)
+		}
+	})
+
+	// Verify the same at the other end, which is the click when the squelch
+	// closes.
+	t.Run("Out", func(t *testing.T) {
+		pcm := loudFrame(100, 10000)
+		fade(pcm, false)
+
+		if got := sample(pcm, 0); got < 9800 {
+			t.Errorf("the first sample is %d, want it still at full level", got)
+		}
+		if got := sample(pcm, 99); got != 0 {
+			t.Errorf("the last sample is %d, want silence", got)
+		}
+	})
+
+	// Verify that nothing to ramp is not an error, since a burst can be shorter
+	// than the ramp.
+	t.Run("Nothing", func(t *testing.T) {
+		fade(nil, true)
+		fade([]byte{}, false)
+	})
+
+	// Verify that the ramp only ever goes one way. A ramp that went up and down
+	// would be audible as a warble rather than inaudible as a fade.
+	t.Run("Monotonic", func(t *testing.T) {
+		pcm := loudFrame(240, 10000)
+		fade(pcm, true)
+
+		for i := 1; i < 240; i++ {
+			if sample(pcm, i) < sample(pcm, i-1) {
+				t.Fatalf("sample %d is quieter than the one before it, so the ramp is not a ramp", i)
+			}
+		}
+	})
+}
+
+// Test_scale tests the scale function with 100% coverage.
+//
+// Coverage: 100% (4 test cases covering every branch)
+//
+// Test cases:
+//   - Louder: samples come back multiplied
+//   - Quieter: a gain below one comes back smaller
+//   - ClampsHigh: a sample that would overflow is held at full scale
+//   - ClampsLow: and the same at the negative end
+func Test_scale(t *testing.T) {
+	// Verify the ordinary case, which is turning the audio up.
+	t.Run("Louder", func(t *testing.T) {
+		pcm := loudFrame(4, 1000)
+		scale(pcm, 2)
+
+		if got := sample(pcm, 0); got != 2000 {
+			t.Errorf("a sample of 1000 scaled to %d, want 2000", got)
+		}
+	})
+
+	// Verify that scaling down works too, since a gain is a number and nothing
+	// stops somebody passing a negative one in decibels.
+	t.Run("Quieter", func(t *testing.T) {
+		pcm := loudFrame(4, 1000)
+		scale(pcm, 0.5)
+
+		if got := sample(pcm, 0); got != 500 {
+			t.Errorf("a sample of 1000 scaled to %d, want 500", got)
+		}
+	})
+
+	// Verify that a sample too loud to fit is held at full scale rather than
+	// allowed to wrap. A wrapped sample does not come back quieter, it comes
+	// back inverted, which is a far worse noise than the loud one.
+	t.Run("ClampsHigh", func(t *testing.T) {
+		pcm := loudFrame(4, 30000)
+		scale(pcm, 4)
+
+		if got := sample(pcm, 0); got != 32767 {
+			t.Errorf("an overflowing sample came back as %d, want full scale", got)
+		}
+	})
+
+	// Verify the same at the negative end, which is a different constant and
+	// therefore a different mistake to make.
+	t.Run("ClampsLow", func(t *testing.T) {
+		pcm := loudFrame(4, -30000)
+		scale(pcm, 4)
+
+		if got := sample(pcm, 0); got != -32768 {
+			t.Errorf("an overflowing sample came back as %d, want full scale", got)
+		}
+	})
 }

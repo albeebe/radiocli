@@ -32,6 +32,9 @@ type fakePlayer struct {
 	// heard is every byte handed over, in order.
 	heard []byte
 
+	// gain is the last thing SetGain was asked for.
+	gain float64
+
 	// name is what Name reports, empty for the system's own output.
 	name string
 
@@ -55,6 +58,13 @@ func (f *fakePlayer) Play(pcm []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.heard = append(f.heard, pcm...)
+}
+
+// SetGain records what it was asked for rather than applying it.
+func (f *fakePlayer) SetGain(dB float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gain = dB
 }
 
 // Stats answers with whatever the test put there.
@@ -126,7 +136,7 @@ func Test_newListen(t *testing.T) {
 		if cmd.Use != "listen" {
 			t.Errorf("the command is %q, wanted %q", cmd.Use, "listen")
 		}
-		for _, name := range []string{"input", "channel", "speaker", "squelch", "hang"} {
+		for _, name := range []string{"input", "channel", "speaker", "squelch", "hang", "gain"} {
 			if cmd.Flags().Lookup(name) == nil {
 				t.Errorf("the command has no --%s flag", name)
 			}
@@ -239,10 +249,11 @@ func Test_listenLoop(t *testing.T) {
 	// Verify that the squelch being off means exactly what it says: what
 	// arrives is what is played, hiss included.
 	t.Run("Everything", func(t *testing.T) {
+		app, _, _ := recorderApp()
 		quiet, _ := feed(0, 20, quietLevel)
 		p := &fakePlayer{}
 
-		err := listenLoop(context.Background(), listenFrames(quiet), p, listenOptions{})
+		err := listenLoop(context.Background(), app, listenFrames(quiet), p, listenOptions{})
 		if err != nil {
 			t.Fatalf("listening gave %v, want it to end quietly", err)
 		}
@@ -258,10 +269,11 @@ func Test_listenLoop(t *testing.T) {
 		loud, next := feed(next, 60, loudLevel)
 		tail, _ := feed(next, 40, quietLevel)
 
+		app, _, _ := recorderApp()
 		p := &fakePlayer{}
 		frames := append(append(append([]audiofeed.Frame{}, quiet...), loud...), tail...)
 
-		err := listenLoop(context.Background(), listenFrames(frames), p,
+		err := listenLoop(context.Background(), app, listenFrames(frames), p,
 			listenOptions{squelch: true, hang: 200 * time.Millisecond})
 		if err != nil {
 			t.Fatalf("listening gave %v, want it to end quietly", err)
@@ -282,11 +294,12 @@ func Test_listenLoop(t *testing.T) {
 	// Verify that the audio ending, which is what a daemon going away looks
 	// like, finishes the command rather than failing it.
 	t.Run("AudioEnds", func(t *testing.T) {
+		app, _, _ := recorderApp()
 		p := &fakePlayer{}
 		ch := make(chan audiofeed.Frame)
 		close(ch)
 
-		if err := listenLoop(context.Background(), ch, p, listenOptions{}); err != nil {
+		if err := listenLoop(context.Background(), app, ch, p, listenOptions{}); err != nil {
 			t.Errorf("listening gave %v, want the audio ending to be an ending", err)
 		}
 	})
@@ -294,11 +307,12 @@ func Test_listenLoop(t *testing.T) {
 	// Verify that Ctrl-C leaves the exit status alone, since stopping is how a
 	// command with no natural end is meant to finish.
 	t.Run("Cancelled", func(t *testing.T) {
+		app, _, _ := recorderApp()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
 		p := &fakePlayer{}
-		if err := listenLoop(ctx, make(chan audiofeed.Frame), p, listenOptions{}); err != nil {
+		if err := listenLoop(ctx, app, make(chan audiofeed.Frame), p, listenOptions{}); err != nil {
 			t.Errorf("listening gave %v, want stopping to be quiet", err)
 		}
 	})
@@ -306,21 +320,37 @@ func Test_listenLoop(t *testing.T) {
 
 // Test_reportPlayback tests the reportPlayback function with 100% coverage.
 //
-// Coverage: 100% (2 test cases covering both branches)
+// Coverage: 100% (3 test cases covering every branch)
 //
 // Test cases:
-//   - Clean: speakers that kept up say nothing
+//   - Clean: a run where nothing went wrong says nothing
 //   - Dropped: audio thrown away is reported, in seconds
+//   - Starved: holes are reported with the yardstick that reads them
 func Test_reportPlayback(t *testing.T) {
-	// Verify that the ordinary run is silent. Running dry happens at the end of
-	// every transmission with the squelch on, and reporting it would be a
-	// complaint about the buffer working.
+	// Verify that a run where neither thing happened is silent, since there is
+	// nothing to say and this prints as a command is exiting.
 	t.Run("Clean", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		reportPlayback(app, &fakePlayer{stats: audioout.Stats{Starved: 12}})
+		reportPlayback(app, &fakePlayer{})
 
 		if errs.Len() != 0 {
 			t.Errorf("wrote %q, want nothing said about a run that kept up", errs.String())
+		}
+	})
+
+	// Verify that running dry is reported with what makes the number mean
+	// something. One per transmission is the buffer working; a hundred of them
+	// is what somebody hears as choppy audio.
+	t.Run("Starved", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		reportPlayback(app, &fakePlayer{stats: audioout.Stats{Starved: 12}})
+
+		said := errs.String()
+		if !strings.Contains(said, "ran dry 12 time(s)") {
+			t.Errorf("wrote %q, want the number of holes", said)
+		}
+		if !strings.Contains(said, "per transmission") {
+			t.Errorf("wrote %q, want the yardstick that reads the number", said)
 		}
 	})
 
@@ -459,13 +489,16 @@ func Test_runListen(t *testing.T) {
 
 		err := runListen(ctx, app, listenOptions{
 			input: "Line In", channel: audiofeed.ChannelAuto,
-			speaker: "MacBook Pro Speakers", hang: time.Second,
+			speaker: "MacBook Pro Speakers", hang: time.Second, gain: 6,
 		})
 		if err != nil {
 			t.Fatalf("listening gave %v, want stopping to be quiet", err)
 		}
 		if *asked != "MacBook Pro Speakers" {
 			t.Errorf("the speakers asked for were %q, want the ones named", *asked)
+		}
+		if p.gain != 6 {
+			t.Errorf("the speakers were set to %v dB, want what --gain asked for", p.gain)
 		}
 		if !strings.Contains(errs.String(), "Cubilux CB5 Line In") {
 			t.Errorf("wrote %q, want the input it settled on named", errs.String())

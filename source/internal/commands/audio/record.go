@@ -86,6 +86,9 @@ func newRecord(app *appcontext.App) *cobra.Command {
 	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
 		"speakers to play on with --listen, as \"radiocli audio\" names them "+
 			"(default: this computer's own)")
+	cmd.Flags().Float64Var(&opts.gain, "gain", 0,
+		"decibels to turn the audio up by with --listen, which does not change what is "+
+			"recorded")
 
 	return cmd
 }
@@ -380,26 +383,39 @@ func (m *meter) observe(app *appcontext.App, frame audiofeed.Frame, floor float6
 	m.seen, m.peak = 0, 0
 }
 
-// monitor plays the frame that has just arrived, if a transmission is open and
-// somebody asked to hear it.
+// monitor plays the frame that has just arrived, if it is part of a
+// transmission and somebody asked to hear it.
 //
 // Nothing is playing unless --listen asked for it, so the usual case is the
 // first line and nothing else.
 //
-// The live frame rather than the one the gate is holding. The gate hands audio
-// back only once it has aged past the hang, so that the end of a recording can
-// be trimmed, and playing what it hands back would put the speakers a hang
-// behind the radio. What is lost instead is the front of each transmission, up
-// to the point the gate is sure enough to open a file, which is the same thing
-// a scanner's own speaker does.
+// Three things could decide what reaches the speakers here, and only one of
+// them is right. The audio the gate hands back is a hang behind the radio,
+// because it is held so that the end of a recording can be trimmed. The
+// recording being open is most of a second behind, because a file is not opened
+// until the transmission has proved itself worth one. Both were tried, and both
+// sound like holes rather than like a radio. What is played is the frame that
+// has just arrived, while the gate says a transmission is live, which starts at
+// the first frame above the noise floor.
+//
+// The consequence is that the speakers and the files no longer agree exactly: a
+// blip too short to be worth keeping is heard and not written. That is the
+// right way round. A scanner's own speaker plays every blip, and somebody
+// listening while they record is listening to the radio rather than auditioning
+// the disk.
 //
 // Parameters:
-//   - frame: the audio that has just arrived
+//   - frame: the audio that has just arrived, already offered to the gate
 func (r *recorder) monitor(frame audiofeed.Frame) {
-	if r.player == nil || r.open == nil {
+	if r.player == nil {
 		return
 	}
-	r.player.Play(frame.PCM)
+
+	live := r.gate.Live(frame)
+	if live {
+		r.player.Play(frame.PCM)
+	}
+	r.speakers.observe(r.app, r.player, live)
 }
 
 // one acts on a single thing the gate said.
@@ -731,6 +747,11 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 		return errors.New("--speaker says where to play the transmissions, which only means " +
 			"something with --listen:\nadd --listen, or drop --speaker")
 	}
+	if opts.gain != 0 && !opts.listen {
+		return errors.New("--gain turns up what is played, which only means something with " +
+			"--listen:\nit does not change what is recorded, since --normalize already " +
+			"scales that")
+	}
 
 	channel, err := audiofeed.ParseChannel(opts.channel)
 	if err != nil {
@@ -753,6 +774,7 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 			return err
 		}
 		defer p.Close()
+		p.SetGain(opts.gain)
 		defer reportPlayback(app, p)
 	}
 

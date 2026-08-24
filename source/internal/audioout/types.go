@@ -47,27 +47,56 @@ const (
 // How much audio may be waiting in front of the speakers, and how much has to
 // be waiting before they start.
 //
-// Both are latency, and latency is the whole trade this package makes. Audio
-// arrives here in 20 ms frames off a socket or a capture callback, and the
-// sound card asks for audio on its own schedule, which is neither the same
-// schedule nor a steady one. Without something in between, every jitter in the
-// arrivals is an audible gap.
+// Both were measured rather than picked, and they are measured against
+// different things, which is why one is generous and the other is mean.
+//
+// The device asks for audio like a metronome: 10 ms every 10 ms, and across two
+// seconds of callbacks the longest gap between two requests was 10.19 ms. So
+// nothing needs holding back for the speakers' sake. What has to be covered is
+// the other end, where audio can arrive late, or all at once.
 const (
-	// bufferFrames is how much the ring holds, at 20 ms each. 240 ms is far
-	// more than the arrivals ever drift by, and it is a ceiling rather than a
-	// target: what is actually standing in it is primeFrames, because the
-	// reader takes out exactly what the writer puts in. It matters only when
-	// something stalls, and then it is the difference between a stutter and a
-	// gap.
-	bufferFrames = 12
+	// bufferFrames is how much the ring holds, at 20 ms each.
+	//
+	// One second, and it costs nothing to be that big. It is a ceiling rather
+	// than a target: what actually stands in the ring is primeFrames, because
+	// the reader takes out exactly what the writer puts in, so a deep ring adds
+	// no delay at all. It matters when the writer stops for a while and then
+	// catches up, which the recorder does every time it finishes a file:
+	// normalizing a whole WAV and filing a description beside it happen between
+	// two frames. At 240 ms a 300 ms stall lost a quarter of a second of audio
+	// outright. At one second a 600 ms stall loses nothing. It costs 96 KB.
+	bufferFrames = 50
 
 	// primeFrames is how much has to arrive before playing starts, and how much
-	// therefore stands between the audio and the speakers from then on. 60 ms
-	// is the cushion: three frames of slack before a late arrival is a hole,
-	// and a delay short enough that nobody listening to a scanner would notice
-	// it.
-	primeFrames = 3
+	// therefore stands between the audio and the speakers from then on.
+	//
+	// 40 ms, and this one is spent as narrowly as the jitter allows, because it
+	// is the only part of this package a listener can hear. Somebody playing a
+	// scanner on their computer is very often sitting next to the scanner, and
+	// what they are comparing it against is the radio's own speaker in the same
+	// room. A recording being late costs nothing, since nobody knows when it
+	// was written. Audio being late costs the thing it is for.
+	//
+	// Two frames rather than one, because one leaves no room at all for a
+	// producer that is a single frame late, and running dry costs this much
+	// silence again while the cushion is rebuilt. The stalls longer than this
+	// are the recorder's, and they land after a transmission has ended, when
+	// the speakers are closed and there is nothing to interrupt.
+	primeFrames = 2
 )
+
+// fadeBytes is how much audio the edges of a burst are ramped over.
+//
+// 5 ms, and it is there to stop the speakers clicking. Audio does not begin and
+// end at zero: a squelch that opens mid-waveform steps from silence to whatever
+// sample it landed on, and one that closes steps back, and a step is a click.
+// A scanner listening to dispatch traffic does that several times in a
+// conversation, once at each end of every over, and measured against real
+// traffic that was six clicks in twenty seconds.
+//
+// Short enough that nothing audible is lost from either end of the speech, long
+// enough to turn the step into a slope.
+const fadeBytes = SampleRate * 2 * 5 / 1000
 
 // Why a name can fail to name one sound output.
 //
@@ -120,6 +149,16 @@ type Stats struct {
 	// faster than the speakers took them.
 	Dropped uint64 `json:"dropped"`
 
+	// Played is how many bytes of audio the speakers actually took, which is
+	// not the same as how many were handed over: it excludes anything dropped,
+	// and anything still waiting when the device was closed.
+	//
+	// It is here because silence has two causes and the other two numbers
+	// cannot tell them apart. A squelched run that plays nothing all evening
+	// and a squelched run that is working perfectly on a quiet channel both
+	// report nothing dropped and nothing starved.
+	Played uint64 `json:"played"`
+
 	// Starved is how many times the ring ran dry and silence was played
 	// instead.
 	Starved uint64 `json:"starved"`
@@ -154,5 +193,6 @@ type ring struct {
 	start  int        // Where the oldest byte sits in buf
 	length int        // How many bytes are waiting
 	primed bool       // Whether enough has arrived to start playing, see primeFrames
+	gain   float64    // What every sample is multiplied by on the way in, 1 for none
 	stats  Stats      // What has been dropped and how often it has run dry
 }

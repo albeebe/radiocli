@@ -1060,3 +1060,92 @@ func TestFullScaleAudioIsHeard(t *testing.T) {
 		t.Error("full scale audio never advanced the last-heard time")
 	}
 }
+
+// TestLive checks the question something playing audio as it arrives has to
+// ask, which is not the question something writing a file asks.
+//
+// Coverage: 100% (4 test cases covering both branches)
+//
+// Test cases:
+//   - Quiet: the noise floor between transmissions is not live
+//   - AtTheFirstLoudFrame: with no radio to ask, audio is live before anything
+//     is worth a file
+//   - ThroughTheHang: it stays live while a transmission is open, tail included
+//   - StaticWithNoRadio: with a radio to ask, audio alone does not open the
+//     speakers, however loud it is
+func TestLive(t *testing.T) {
+	// frame builds one frame at the driver's current position without moving
+	// it, so a test can ask about the frame it is about to feed.
+	frame := func(d *driver, level float64) audiofeed.Frame {
+		return audiofeed.Frame{Seq: d.seq, PCM: []byte{byte(d.seq)}, Level: level, At: d.at}
+	}
+
+	// Verify that the hiss a scanner puts out between transmissions is not
+	// something to open the speakers for.
+	t.Run("Quiet", func(t *testing.T) {
+		d := newDriver(Options{})
+		d.feed(60, quietLevel)
+
+		f := frame(d, quietLevel)
+		d.g.Offer(f)
+		if d.g.Live(f) {
+			t.Error("the noise floor reads as live, so the squelch would never close")
+		}
+	})
+
+	// Verify the whole reason this exists: with nothing but the audio to go on,
+	// the first loud frame is live, long before the gate has decided the
+	// transmission is worth a file. A listener following KindStart instead
+	// loses the front of every transmission.
+	t.Run("AtTheFirstLoudFrame", func(t *testing.T) {
+		d := newDriver(Options{MinDuration: 500 * time.Millisecond})
+		d.feed(60, quietLevel)
+
+		f := frame(d, loudLevel)
+		events := d.g.Offer(f)
+
+		for _, ev := range events {
+			if ev.Kind == KindStart {
+				t.Fatal("a file opened on the first loud frame, so this proves nothing")
+			}
+		}
+		if !d.g.Live(f) {
+			t.Error("the first loud frame is not live, so the speakers would open late")
+		}
+	})
+
+	// Verify that a transmission stays live once it is open, including the
+	// quiet inside it and the hang at the end, which is the tail a speaker
+	// wants and what stops the speakers shutting between two words.
+	t.Run("ThroughTheHang", func(t *testing.T) {
+		d := newDriver(Options{Hang: 2 * time.Second})
+		d.feed(60, quietLevel)
+		d.feed(30, loudLevel)
+
+		f := frame(d, quietLevel)
+		d.g.Offer(f)
+		if !d.g.Live(f) {
+			t.Error("a quiet frame inside an open transmission is not live, so the tail would be cut")
+		}
+	})
+
+	// Verify that with a radio to ask, loud audio on its own opens nothing.
+	//
+	// This is the case that produced choppy playback in the field: a squelch
+	// that opened on static measured against a floor taken while the radio was
+	// muted, playing fourteen seconds of hiss between two transmissions of
+	// three. A scanner's own output has more than one noise floor, which is why
+	// the recorder requires the radio, and why what is heard has to follow the
+	// same rule as what is kept.
+	t.Run("StaticWithNoRadio", func(t *testing.T) {
+		d := newDriver(Options{RequireRadio: true})
+		d.feed(60, quietLevel)
+		d.radio(false, "")
+
+		f := frame(d, loudLevel)
+		d.g.Offer(f)
+		if d.g.Live(f) {
+			t.Error("static opened the speakers with the radio saying it is receiving nothing")
+		}
+	})
+}

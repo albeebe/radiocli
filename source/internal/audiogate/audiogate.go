@@ -138,6 +138,45 @@ func (g *Gate) Floor() float64 {
 	return g.floor.level()
 }
 
+// Live reports whether a transmission is running right now, for something
+// playing audio as it arrives rather than keeping it.
+//
+// It exists because the events this gate emits are the wrong answer to that
+// question, and answering it with them produced audio full of holes. A
+// KindStart is held back until the transmission has outlived MinDuration and
+// proved itself worth a file, which on the defaults is most of a second, and
+// KindAudio is held back further still so that the end of a recording can be
+// trimmed. Both are right for a file, which is written once and played later.
+// Neither is right for a speaker, where half a second late is not late, it is
+// missing: measured against the defaults, a listener following the events lost
+// the first 480 ms of every transmission, which in the back and forth of
+// dispatch traffic is most of the first word each time.
+//
+// So it reports the transmission rather than the recording, which is open from
+// the moment something opened it. What it deliberately does not do is ask the
+// audio directly, and that is worth stating because the first version of this
+// did. Offering "or this frame is loud" gets the attack down to nothing, and it
+// is wrong for the reason Offer gives above: a scanner's own output has more
+// than one noise floor, so the static of an open squelch reads as loud against
+// a floor measured while the radio was muted. Playing that put fourteen seconds
+// of hiss through the speakers between two transmissions of three, which is
+// what somebody listening hears as choppy.
+//
+// The cost is whatever the transmission took to open, which is the honest
+// answer either way: with a radio to ask, the radio is asked ten times a
+// second, and without one the audio opens it on the first frame above the
+// floor.
+//
+// Parameters:
+//   - f: unused, and kept so that a caller asks about the frame it has, rather
+//     than about whatever the gate happens to have seen last
+//
+// Returns:
+//   - true if the audio arriving now should be heard
+func (g *Gate) Live(f audiofeed.Frame) bool {
+	return g.tx != nil
+}
+
 // Flush ends any transmission still open, and reports it.
 //
 // It is what the recorder calls on the way out, so that stopping part way

@@ -31,11 +31,11 @@ func newListen(app *appcontext.App) *cobra.Command {
 		Short: "Play the scanner's audio on this computer's speakers",
 		Long: "Listen plays the scanner on this computer, until you stop it.\n\n" +
 			"By default it plays only the transmissions. The hiss between them is not\n" +
-			"worth listening to for an evening, and the same detector that decides where\n" +
-			"a recording begins decides when to open the speakers, so this and\n" +
-			"\"audio record\" agree about what a transmission is. Pass --squelch=false to\n" +
-			"hear the input exactly as it arrives, hiss included, the way the scanner's\n" +
-			"own speaker does.\n\n" +
+			"worth listening to for an evening, and the same detector that finds them for\n" +
+			"\"audio record\" decides when to open the speakers. It opens them on the first\n" +
+			"frame above the noise floor rather than waiting to be sure, so nothing of the\n" +
+			"first word is lost. Pass --squelch=false to hear the input exactly as it\n" +
+			"arrives, hiss included, the way the scanner's own speaker does.\n\n" +
 			"The audio comes from a daemon, which is what lets this run while something\n" +
 			"else is recording the same radio: a sound input can only be open once, and\n" +
 			"sharing it is the daemon's whole job. --input opens a sound input directly\n" +
@@ -58,6 +58,8 @@ func newListen(app *appcontext.App) *cobra.Command {
 		"play only the transmissions; --squelch=false plays everything the input carries")
 	cmd.Flags().DurationVar(&opts.hang, "hang", audiogate.DefaultQuietHang,
 		"how long the audio must stay quiet before the speakers close again")
+	cmd.Flags().Float64Var(&opts.gain, "gain", 0,
+		"decibels to turn the audio up by on the way to the speakers")
 
 	return cmd
 }
@@ -92,20 +94,16 @@ func announceListening(app *appcontext.App, source, speaker string, squelch bool
 
 // listenLoop plays what arrives until ctx is cancelled or the audio ends.
 //
-// The frames played are the ones that have just arrived, not the ones the gate
-// hands back. The gate holds audio for the length of the hang so that it can
-// trim the end of a recording, which is exactly right for a file and exactly
-// wrong for listening: it would put every word two seconds behind the radio. So
-// the gate is asked only whether a transmission is open, and the live frame is
-// what reaches the speakers.
-//
-// The cost is the front of each transmission. The gate says one has started
-// once it has enough audio to be sure, which is listenAttack, so that much of
-// the first word is missing. A scanner's own speaker does the same thing for
-// the same reason, and it is the trade that keeps everything else immediate.
+// The frames played are the ones that have just arrived, and the gate is asked
+// only whether they are live. Neither of the things the gate emits is any use
+// here: it holds audio for the length of the hang so that it can trim the end
+// of a recording, and it does not announce a transmission at all until one has
+// proved itself long enough to be worth a file. Both are right for a file and
+// wrong for a speaker, where late is missing.
 //
 // Parameters:
 //   - ctx: context that ends the listening when it is cancelled
+//   - app: the application context holding the logger
 //   - frames: the audio arriving
 //   - p: the speakers to play on
 //   - opts: what the flags asked for
@@ -113,7 +111,7 @@ func announceListening(app *appcontext.App, source, speaker string, squelch bool
 // Returns:
 //   - nil once ctx is cancelled or the audio ends, which are both ordinary ways
 //     for this to finish
-func listenLoop(ctx context.Context, frames <-chan audiofeed.Frame,
+func listenLoop(ctx context.Context, app *appcontext.App, frames <-chan audiofeed.Frame,
 	p player, opts listenOptions) error {
 
 	// Only built when it is going to be asked something. Without the squelch
@@ -121,9 +119,11 @@ func listenLoop(ctx context.Context, frames <-chan audiofeed.Frame,
 	// nothing on every frame of the evening.
 	var gate *audiogate.Gate
 	if opts.squelch {
+		// MinDuration and MaxDuration are left at their defaults and never
+		// matter: they decide what is worth a file, and nothing here is
+		// keeping anything.
 		gate = audiogate.New(audiogate.Options{
-			Hang:        opts.hang,
-			MinDuration: listenAttack,
+			Hang: opts.hang,
 			// No radio to ask. This command does not need the scanner at all,
 			// and requiring it would mean nobody could listen to a cable
 			// without one plugged in.
@@ -131,7 +131,7 @@ func listenLoop(ctx context.Context, frames <-chan audiofeed.Frame,
 		})
 	}
 
-	open := false
+	var meter playbackMeter
 
 	for {
 		select {
@@ -148,45 +148,88 @@ func listenLoop(ctx context.Context, frames <-chan audiofeed.Frame,
 
 			if gate == nil {
 				p.Play(frame.PCM)
+				meter.observe(app, p, true)
 				continue
 			}
 
-			for _, ev := range gate.Offer(frame) {
-				switch ev.Kind {
-				case audiogate.KindStart:
-					open = true
-				case audiogate.KindEnd:
-					open = false
-				}
-			}
+			// Offered for its own sake: the gate has to see every frame to
+			// track the noise floor and to know a transmission is running. The
+			// events it produces are dropped on the floor, and Live is the
+			// question worth asking of it here.
+			gate.Offer(frame)
 
-			// The audio the gate hands back is deliberately dropped on the
-			// floor. See above: what is played is what just arrived.
-			if open {
+			live := gate.Live(frame)
+			if live {
 				p.Play(frame.PCM)
 			}
+			meter.observe(app, p, live)
 		}
 	}
 }
 
+// observe counts one frame and, once a second's worth have gone by, says what
+// became of them.
+//
+// At debug, because it is a reading a second and belongs in a log rather than
+// on somebody's terminal. It is the same shape as the level meter the recorder
+// keeps, and for the same reason: a fault that only shows up on real traffic
+// has to be visible while the traffic is happening.
+//
+// Parameters:
+//   - app: the application context holding the logger
+//   - p: the speakers being played, for the counts they keep
+//   - played: whether this frame was handed to them
+func (m *playbackMeter) observe(app *appcontext.App, p player, played bool) {
+	m.seen++
+	if played {
+		m.played++
+	}
+	if m.seen < meterFrames {
+		return
+	}
+
+	stats := p.Stats()
+	app.Log.Debug("playback",
+		"played", fmt.Sprintf("%d/%d", m.played, m.seen),
+		"starved", stats.Starved-m.last.Starved,
+		"dropped", stats.Dropped-m.last.Dropped)
+
+	m.played, m.seen, m.last = 0, 0, stats
+}
+
 // reportPlayback says what the speakers had to do to keep up, on the way out.
 //
-// Only the dropped audio is worth interrupting somebody about. Running dry is
-// ordinary here: with the squelch on, the ring empties at the end of every
-// transmission, and a count of those would say nothing except how many people
-// spoke.
+// Both numbers are said, because between them they name the two ways playing
+// can go wrong and neither is visible while it is happening: audio that never
+// reached the speakers, and holes where the speakers had nothing to play. What
+// somebody hears in either case is choppy audio, and until this was printed the
+// only way to tell that from a bad cable was to open the recording and find it
+// perfect.
+//
+// Running dry needs the yardstick that goes with it. With the squelch on the
+// audio stops between transmissions, so the speakers run dry once per
+// transmission by design, and only a count far above that means the audio was
+// arriving in bursts too big to smooth out.
 //
 // Parameters:
 //   - app: the application context whose Stderr and logger receive it
 //   - p: the speakers that have been playing
 func reportPlayback(app *appcontext.App, p player) {
 	stats := p.Stats()
-	app.Log.Debug("playback finished", "dropped", stats.Dropped, "starved", stats.Starved)
+	app.Log.Debug("playback finished",
+		"played", float64(stats.Played)/float64(playedBytesPerSecond),
+		"dropped", stats.Dropped, "starved", stats.Starved)
 
 	if stats.Dropped > 0 {
 		app.Notef("%.1f seconds of audio arrived faster than the speakers could play it and "+
 			"was dropped.\nThis computer is struggling to keep up, or the sound output is.\n",
 			float64(stats.Dropped)/float64(playedBytesPerSecond))
+	}
+
+	if stats.Starved > 0 {
+		app.Notef("The speakers ran dry %d time(s), and played silence until the audio caught "+
+			"up.\nOnce per transmission is expected, since the audio stops between them. Many\n"+
+			"more than that is what choppy playback sounds like.\n", stats.Starved)
 	}
 }
 
@@ -233,6 +276,7 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 		return err
 	}
 	defer p.Close()
+	p.SetGain(opts.gain)
 
 	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
 	if err != nil {
@@ -243,5 +287,5 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 	announceListening(app, source, p.Name(), opts.squelch)
 	defer reportPlayback(app, p)
 
-	return listenLoop(ctx, frames, p, opts)
+	return listenLoop(ctx, app, frames, p, opts)
 }

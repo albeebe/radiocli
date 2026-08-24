@@ -24,15 +24,6 @@ import (
 // hold up at. See the opusenc package.
 const defaultBitrate = 32000
 
-// listenAttack is how much audio has to be there before the speakers open.
-//
-// The gate's own minimum is half a second, which is the length of the shortest
-// transmission worth keeping as a file. Nothing is being kept here, and half a
-// second of a person's first word is a great deal to lose, so this is one frame
-// instead: enough for the gate to have something to judge, and short enough
-// that what is missing is the click rather than the word.
-const listenAttack = 20 * time.Millisecond
-
 // playedBytesPerSecond is how much audio one second of playing is, used to say
 // how much was dropped in a unit a person can picture.
 const playedBytesPerSecond = audiofeed.SampleRate * 2
@@ -75,6 +66,10 @@ const (
 	clipCeiling  = 32767
 	clipFraction = 0.001
 )
+
+// meterFrames is how many frames go by between playback readings under
+// --verbose, which is one a second.
+const meterFrames = 1000 / audiofeed.FrameMS
 
 // meterEvery is how many frames go by between level readings under --verbose.
 //
@@ -176,14 +171,37 @@ type capture interface {
 
 // listenOptions is what the flags asked for.
 type listenOptions struct {
-	input   string // Sound input to open directly, empty to take the audio from a daemon
-	channel string // Which side of the cable the scanner is on, as --channel gave it
-	speaker string // Speakers to play on, empty for whichever this computer is already using
-	squelch bool   // Play only the transmissions, off when --squelch=false
+	input   string  // Sound input to open directly, empty to take the audio from a daemon
+	channel string  // Which side of the cable the scanner is on, as --channel gave it
+	speaker string  // Speakers to play on, empty for whichever this computer is already using
+	squelch bool    // Play only the transmissions, off when --squelch=false
+	gain    float64 // Decibels to turn the audio up by, as --gain gave it
 
 	// hang is how long the audio has to stay quiet before a transmission is
 	// called finished, as --hang gave it. Only the squelch uses it.
 	hang time.Duration
+}
+
+// playbackMeter reports what the speakers did with the last second of audio,
+// for somebody watching a run that sounds wrong.
+//
+// The counts on the way out say what happened over a whole evening, which is
+// enough to tell a working run from a broken one and nothing like enough to say
+// where the trouble is. A reading a second lines the gaps up against the
+// transmissions: gaps that land at the edges of transmissions are the squelch,
+// and gaps scattered through the middle of one are the audio not arriving in
+// time.
+type playbackMeter struct {
+	// played is how many frames have been handed to the speakers since the last
+	// reading.
+	played int
+
+	// seen is how many frames have arrived since the last reading, played or
+	// not, which is what makes the reading a rate rather than a count.
+	seen int
+
+	// last is the stats as of the previous reading, so each one is a delta.
+	last audioout.Stats
 }
 
 // listing is what the bare "audio" command has to say: both halves of what this
@@ -216,6 +234,9 @@ type player interface {
 
 	// Play hands over audio to be played as soon as the speakers ask for it.
 	Play(pcm []byte)
+
+	// SetGain multiplies everything played from now on by that many decibels.
+	SetGain(dB float64)
 
 	// Stats says what the ring had to do to keep the speakers fed.
 	Stats() audioout.Stats
@@ -282,6 +303,7 @@ type recordOptions struct {
 	normalize   bool          // Scale each recording up to just under full scale once it has ended, on unless --normalize=false
 	listen      bool          // Play the transmissions as they are recorded, off unless --listen
 	speaker     string        // Speakers to play on with --listen, empty for whichever this computer is already using
+	gain        float64       // Decibels to turn the played audio up by, as --gain gave it
 }
 
 // recorder is the state one run of "audio record" carries: what it is writing
@@ -331,4 +353,8 @@ type recorder struct {
 	// player is the speakers the transmissions are being played on, nil unless
 	// --listen asked for them.
 	player player
+
+	// speakers reports what the player did with each second of audio, for
+	// somebody watching a run that sounds wrong.
+	speakers playbackMeter
 }

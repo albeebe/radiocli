@@ -68,6 +68,29 @@ for _, ev := range gate.Flush() {
 }
 ```
 
+Something playing the audio as it arrives asks a different question, and asking
+it with the events above produces holes. Both of them are deliberately late: a
+`KindStart` waits until the transmission has earned a file, and the frames wait
+until they have aged past the hang so the end can be trimmed. For a speaker,
+late is missing.
+
+`Live` is that other question. It is true from the first frame above the noise
+floor, and it carries the same hang a transmission does, so a pause between two
+words does not shut the speakers in the window before the radio has confirmed
+anything.
+
+```go
+// The same gate, asked what a listener needs to know rather than what a
+// recorder needs to know.
+for frame := range sub.Frames() {
+    gate.Offer(frame)
+
+    if gate.Live(frame) {
+        play(frame.PCM)
+    }
+}
+```
+
 ### Testing
 
 ```bash
@@ -81,6 +104,7 @@ go test -cover ./... | grep -v "100.0%"
 ## Further reading
 - **Sliding window minimum** - The monotonic queue behind the noise floor, and why a minimum rather than an average is what stops a transmission raising the level needed to trigger it
 - **Squelch and hang time** - The difference between a pause inside a transmission and the gap between two, which is the whole of the call model. On a scanner the squelch is what tells them apart, because it follows the carrier and not the voice
+- **Squelch attack and tail** - Why opening late is heard as a missing word while closing late is only heard as hiss, and why a speaker and a file therefore want the same detector asked two different questions
 - **Pre-roll buffering** - The usual fixed-prepend approach this package exists to replace, and why a constant cannot stand in for a varying delay
 - **Sensor fusion** - Two sources measuring the same event with different strengths, and the general shape of using each for what it is good at instead of averaging them
 - **Deterministic time in tests** - Reading the clock from the data rather than from the system, which is what makes every case here reproducible

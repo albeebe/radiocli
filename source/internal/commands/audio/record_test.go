@@ -1194,6 +1194,21 @@ func Test_runRecord(t *testing.T) {
 		}
 	})
 
+	// Verify that a gain with nothing to play is caught rather than quietly
+	// ignored, the same way --speaker is. It does not change what is recorded,
+	// so a run that passed it and heard nothing would have got nothing it asked
+	// for.
+	t.Run("GainWithoutListen", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+
+		err := runRecord(context.Background(), app, recordOptions{
+			destination: t.TempDir(), gain: 12})
+		if err == nil || !strings.Contains(err.Error(), "--listen") {
+			t.Fatalf("got %v, want it to say --gain needs --listen", err)
+		}
+	})
+
 	// Verify that speakers which will not open stop the run before a
 	// recordings folder is made for it.
 	t.Run("SpeakersFail", func(t *testing.T) {
@@ -1694,7 +1709,7 @@ func Test_runRecordRecords(t *testing.T) {
 	app.SetDevice(device.New(recordConn{doc: `<ScannerInfo Mode="Scan Mode"/>`}))
 
 	// --listen as well, so the whole path is exercised: the speakers are
-	// opened, said, and given back with the rest of it.
+	// opened, turned up, said, and given back with the rest of it.
 	p := &fakePlayer{name: "MacBook Pro Speakers"}
 	fakeOpenPlayer(t, p, nil)
 
@@ -1708,8 +1723,13 @@ func Test_runRecordRecords(t *testing.T) {
 		channel:     audiofeed.ChannelAuto,
 		listen:      true,
 		speaker:     "MacBook Pro Speakers",
+		gain:        6,
 	}); err != nil {
 		t.Fatalf("recording: %v", err)
+	}
+
+	if p.gain != 6 {
+		t.Errorf("the speakers were set to %v dB, want what --gain asked for", p.gain)
 	}
 
 	if p.closes != 1 {
@@ -2381,45 +2401,87 @@ func Test_recorderReportsAFailedReport(t *testing.T) {
 
 // Test_recorderMonitor tests the recorder.monitor method with 100% coverage.
 //
-// Coverage: 100% (3 test cases covering every branch)
+// Coverage: 100% (4 test cases covering every branch)
 //
 // Test cases:
 //   - NobodyListening: with no speakers open, nothing is played
-//   - BetweenTransmissions: the quiet between transmissions is not played
-//   - Transmitting: the frame that has just arrived is played as it is recorded
+//   - BetweenTransmissions: the noise floor between transmissions is not played
+//   - Transmitting: the frame that has just arrived is played
+//   - BeforeTheFileOpens: audio is played from the first loud frame, well
+//     before it has proved itself worth keeping
 func Test_recorderMonitor(t *testing.T) {
-	frames, _ := feed(0, 1, loudLevel)
+	// gated returns a recorder whose gate has heard enough noise floor to have
+	// something to measure a transmission against.
+	gated := func(p player) (*recorder, uint32) {
+		app, _, _ := recorderApp()
+		r := &recorder{app: app, player: p, gate: audiogate.New(audiogate.Options{
+			Hang: 200 * time.Millisecond, MinDuration: 500 * time.Millisecond,
+		})}
+
+		quiet, next := feed(0, 40, quietLevel)
+		for _, f := range quiet {
+			r.gate.Offer(f)
+			r.monitor(f)
+		}
+		return r, next
+	}
 
 	// Verify that the ordinary run, with no --listen, does not reach for
 	// speakers that were never opened.
 	t.Run("NobodyListening", func(t *testing.T) {
-		r := &recorder{}
+		app, _, _ := recorderApp()
+		frames, _ := feed(0, 1, loudLevel)
+		r := &recorder{app: app}
 		r.monitor(frames[0])
 	})
 
-	// Verify that the squelch a listener hears is the same decision the
-	// recorder is making: no open recording, nothing played.
+	// Verify that the hiss between transmissions is kept out, which is the
+	// whole reason the gate is asked at all.
 	t.Run("BetweenTransmissions", func(t *testing.T) {
 		p := &fakePlayer{}
-		r := &recorder{player: p}
-
-		r.monitor(frames[0])
+		r, _ := gated(p)
 
 		if p.played() != 0 {
-			t.Errorf("%d bytes were played with nothing being recorded", p.played())
+			t.Errorf("%d bytes of noise floor were played", p.played())
+		}
+		_ = r
+	})
+
+	// Verify that a transmission reaches the speakers.
+	t.Run("Transmitting", func(t *testing.T) {
+		p := &fakePlayer{}
+		r, next := gated(p)
+
+		loud, _ := feed(next, 10, loudLevel)
+		for _, f := range loud {
+			r.gate.Offer(f)
+			r.monitor(f)
+		}
+
+		if p.played() != 10*len(loud[0].PCM) {
+			t.Errorf("%d bytes were played, want every frame of the transmission", p.played())
 		}
 	})
 
-	// Verify that the live frame is what reaches the speakers, rather than
-	// whatever the gate is holding back for the end of the recording.
-	t.Run("Transmitting", func(t *testing.T) {
+	// Verify the thing this method exists for: the speakers open at the first
+	// loud frame, not when the recorder is finally sure the transmission is
+	// worth a file. Following the file would lose the first half second of
+	// every transmission, which is most of the first word.
+	t.Run("BeforeTheFileOpens", func(t *testing.T) {
 		p := &fakePlayer{}
-		r := &recorder{player: p, open: &recordings.Recording{}}
+		r, next := gated(p)
 
-		r.monitor(frames[0])
+		loud, _ := feed(next, 1, loudLevel)
+		events := r.gate.Offer(loud[0])
+		r.monitor(loud[0])
 
-		if p.played() != len(frames[0].PCM) {
-			t.Errorf("%d bytes were played, want the frame that arrived", p.played())
+		for _, ev := range events {
+			if ev.Kind == audiogate.KindStart {
+				t.Fatal("the gate opened a file on the first loud frame, so this proves nothing")
+			}
+		}
+		if p.played() != len(loud[0].PCM) {
+			t.Errorf("%d bytes were played on the first loud frame, want it heard at once", p.played())
 		}
 	})
 }
