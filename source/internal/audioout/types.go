@@ -7,6 +7,7 @@ package audioout
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // The format every sound output is opened in.
@@ -185,7 +186,10 @@ type output interface {
 // the callback lives under is that it must not block, and this cannot make it
 // block for meaningfully longer than a copy: the only other holder is Play,
 // which does no allocation, no system call and no waiting while it holds the
-// lock. A lock-free ring would remove even that, at the cost of being the kind
+// lock. That rule is why the gain lives in an atomic and the scaling happens
+// into scratch before the lock is taken: multiplying a thousand samples while
+// the audio thread stands waiting would be exactly the wait the rule forbids.
+// A lock-free ring would remove even the copy, at the cost of being the kind
 // of code that is wrong for a year before anybody notices.
 type ring struct {
 	mu     sync.Mutex // Held for a copy and nothing else, by Play and by the audio thread
@@ -194,6 +198,19 @@ type ring struct {
 	length int        // How many bytes are waiting
 	primed bool       // Whether enough has arrived to start playing, see primeFrames
 	last   int16      // The final sample most recently played, to ramp from when the ring runs dry
-	gain   float64    // What every sample is multiplied by on the way in, 1 for none
 	stats  Stats      // What has been dropped and how often it has run dry
+
+	// gain is the float64 bits of what every sample is multiplied by on the
+	// way in, 1 for none. Atomic rather than under mu so that write can read
+	// it, and SetGain change it, without ever touching the lock the audio
+	// thread waits on. See gainNow.
+	gain atomic.Uint64
+
+	// scratchMu guards scratch and nothing else. The audio thread never takes
+	// it, so however long a scaling holds it, the speakers are not waiting.
+	scratchMu sync.Mutex
+
+	// scratch is where samples are scaled ahead of the lock, kept so that a
+	// steady stream of frames costs one allocation rather than fifty a second.
+	scratch []byte
 }

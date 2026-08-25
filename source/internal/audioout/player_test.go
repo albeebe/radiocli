@@ -534,10 +534,11 @@ func Test_settle(t *testing.T) {
 
 // TestPlayerSetGain tests the Player.SetGain method with 100% coverage.
 //
-// Coverage: 100% (3 test cases covering both branches)
+// Coverage: 100% (4 test cases covering every branch)
 //
 // Test cases:
 //   - LouderPCM: what is played comes out scaled
+//   - ScratchReused: a second frame is scaled into the same scratch buffer
 //   - Zero: no gain leaves the audio exactly as it arrived
 //   - Nil: a player nobody opened takes the setting and does nothing
 func TestPlayerSetGain(t *testing.T) {
@@ -557,14 +558,32 @@ func TestPlayerSetGain(t *testing.T) {
 		}
 	})
 
+	// Verify that the scratch the scaling happens in is reused rather than
+	// grown again, since a steady stream of frames should cost one allocation
+	// and not fifty a second.
+	t.Run("ScratchReused", func(t *testing.T) {
+		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p.SetGain(6)
+		p.Play(loudFrame(FrameSamples, 8000))
+		first := &p.ring.scratch[0]
+		p.Play(loudFrame(FrameSamples, 8000))
+
+		if &p.ring.scratch[0] != first {
+			t.Error("the second frame was scaled into a new scratch buffer")
+		}
+		if got := len(p.ring.scratch); got != FrameBytes {
+			t.Errorf("the scratch holds %d bytes, want a frame", got)
+		}
+	})
+
 	// Verify that the default costs the audio nothing, since scaling every
 	// sample by one would be arithmetic done for no reason.
 	t.Run("Zero", func(t *testing.T) {
 		p := &Player{out: &fakeOutput{}, ring: newRing()}
 		p.SetGain(0)
 
-		if p.ring.gain != 1 {
-			t.Errorf("no gain left the ring multiplying by %v, want 1", p.ring.gain)
+		if got := p.ring.gainNow(); got != 1 {
+			t.Errorf("no gain left the ring multiplying by %v, want 1", got)
 		}
 	})
 

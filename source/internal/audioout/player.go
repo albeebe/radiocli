@@ -19,7 +19,21 @@ import (
 // Returns:
 //   - *ring holding bufferFrames of audio at most, empty and not yet primed
 func newRing() *ring {
-	return &ring{buf: make([]byte, bufferFrames*FrameBytes), gain: 1}
+	r := &ring{buf: make([]byte, bufferFrames*FrameBytes)}
+	r.gain.Store(math.Float64bits(1))
+	return r
+}
+
+// gainNow is what every sample is being multiplied by at this moment.
+//
+// A load rather than a lock, which is the point of storing the gain as bits:
+// write asks this on the way to the speakers fifty times a second, and the
+// lock it would otherwise need is the one the audio thread waits on.
+//
+// Returns:
+//   - the multiplier, 1 for audio passed through exactly as it arrived
+func (r *ring) gainNow() float64 {
+	return math.Float64frombits(r.gain.Load())
 }
 
 // fade ramps a run of samples between silence and full, in place.
@@ -182,9 +196,7 @@ func (p *Player) SetGain(dB float64) {
 		return
 	}
 
-	p.ring.mu.Lock()
-	defer p.ring.mu.Unlock()
-	p.ring.gain = math.Pow(10, dB/20)
+	p.ring.gain.Store(math.Float64bits(math.Pow(10, dB/20)))
 }
 
 // Stats says what the ring had to do to keep the speakers fed.
@@ -303,6 +315,24 @@ func (r *ring) write(pcm []byte) {
 		return
 	}
 
+	// Scaled before the ring's lock is touched, not while it is held. The
+	// audio thread waits on that lock, and a thousand multiplications is
+	// exactly the kind of wait it must never be handed. The copy into scratch
+	// also serves the other rule Play makes: the caller's slice is theirs the
+	// moment this returns, and often belongs to a capture callback that is
+	// about to write over it anyway.
+	if g := r.gainNow(); g != 1 {
+		r.scratchMu.Lock()
+		defer r.scratchMu.Unlock()
+		if cap(r.scratch) < len(pcm) {
+			r.scratch = make([]byte, len(pcm))
+		}
+		scaled := r.scratch[:len(pcm)]
+		copy(scaled, pcm)
+		scale(scaled, g)
+		pcm = scaled
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -319,15 +349,6 @@ func (r *ring) write(pcm []byte) {
 		r.start = (r.start + drop) % len(r.buf)
 		r.length -= drop
 		r.stats.Dropped += uint64(drop)
-	}
-
-	if r.gain != 1 {
-		// Copied first, because the caller's slice is theirs and often belongs
-		// to a capture callback that is about to write over it anyway.
-		scaled := make([]byte, len(pcm))
-		copy(scaled, pcm)
-		scale(scaled, r.gain)
-		pcm = scaled
 	}
 
 	at := (r.start + r.length) % len(r.buf)
