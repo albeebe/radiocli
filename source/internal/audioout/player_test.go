@@ -193,13 +193,14 @@ func TestPlayerStats(t *testing.T) {
 
 // TestRingRead tests the ring.read method with 100% coverage.
 //
-// Coverage: 100% (6 test cases covering every branch)
+// Coverage: 100% (7 test cases covering every branch)
 //
 // Test cases:
 //   - Unprimed: nothing plays until the cushion has been built
 //   - Primes: the cushion arriving starts the playing
 //   - Wraps: audio split across the end of the buffer comes out in one piece
 //   - Starves: a ring that runs dry plays silence and says so
+//   - SettlesToSilence: draining to exactly empty ramps down instead of stepping
 //   - Reprimes: after running dry the cushion has to be built again
 //   - FillsEverything: the library's buffer is never left part written
 func TestRingRead(t *testing.T) {
@@ -268,6 +269,38 @@ func TestRingRead(t *testing.T) {
 
 		if !bytes.Equal(out[primeFrames*FrameBytes:], make([]byte, FrameBytes)) {
 			t.Error("the part of the buffer with no audio for it was left as it was")
+		}
+		if r.stats.Starved != 1 {
+			t.Errorf("the ring recorded %d starves, want 1", r.stats.Starved)
+		}
+	})
+
+	// Verify the click fix at the end of every burst. The sizes a real device
+	// deals in divide each other, so the ring drains to exactly empty and the
+	// starving callback holds no audio to fade: the ramp down to silence has
+	// to be made from the sample the previous callback ended on.
+	t.Run("SettlesToSilence", func(t *testing.T) {
+		const level = 12000
+		r := newRing()
+		r.write(loudFrame(primeFrames*FrameSamples, level))
+
+		// Drained in device-sized reads, the way a real callback empties it:
+		// to exactly zero, never to a partial buffer.
+		for range primeFrames {
+			r.read(make([]byte, FrameBytes))
+		}
+
+		out := make([]byte, FrameBytes)
+		r.read(out)
+
+		if got := sample(out, 0); got < level/2 {
+			t.Errorf("the starving read began at %d, want a ramp starting near %d", got, level)
+		}
+		if got := sample(out, fadeBytes/2-1); got != 0 {
+			t.Errorf("the ramp ended on %d, want silence", got)
+		}
+		if !bytes.Equal(out[fadeBytes:], make([]byte, FrameBytes-fadeBytes)) {
+			t.Error("the buffer past the ramp is not silence")
 		}
 		if r.stats.Starved != 1 {
 			t.Errorf("the ring recorded %d starves, want 1", r.stats.Starved)
@@ -451,6 +484,52 @@ func loudFrame(n int, level int16) []byte {
 		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(level))
 	}
 	return pcm
+}
+
+// Test_settle tests the settle function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering every branch)
+//
+// Test cases:
+//   - Ramps: the slope runs from the sample down to silence
+//   - Silence: a callback that ended silent has nothing to settle
+//   - Short: a buffer smaller than the fade holds what fits of the slope
+func Test_settle(t *testing.T) {
+	// Verify the slope: starting near the sample it was handed, ending silent.
+	t.Run("Ramps", func(t *testing.T) {
+		pcm := make([]byte, FrameBytes)
+		settle(pcm, 10000)
+
+		if got := sample(pcm, 0); got < 5000 {
+			t.Errorf("the slope began at %d, want near 10000", got)
+		}
+		if got := sample(pcm, fadeBytes/2-1); got != 0 {
+			t.Errorf("the slope ended on %d, want silence", got)
+		}
+		if !bytes.Equal(pcm[fadeBytes:], make([]byte, FrameBytes-fadeBytes)) {
+			t.Error("the buffer past the slope was written")
+		}
+	})
+
+	// Verify that ending on silence writes nothing, since there is no step to
+	// smooth and the buffer is already what it should be.
+	t.Run("Silence", func(t *testing.T) {
+		pcm := make([]byte, FrameBytes)
+		settle(pcm, 0)
+		if !bytes.Equal(pcm, make([]byte, FrameBytes)) {
+			t.Error("settling from silence wrote something")
+		}
+	})
+
+	// Verify that a buffer with less room than the fade still ends silent,
+	// with the slope squeezed into what there is.
+	t.Run("Short", func(t *testing.T) {
+		pcm := make([]byte, fadeBytes/2)
+		settle(pcm, 10000)
+		if got := sample(pcm, len(pcm)/2-1); got != 0 {
+			t.Errorf("the squeezed slope ended on %d, want silence", got)
+		}
+	})
 }
 
 // TestPlayerSetGain tests the Player.SetGain method with 100% coverage.

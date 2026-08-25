@@ -79,6 +79,31 @@ func scale(pcm []byte, gain float64) {
 	}
 }
 
+// settle writes a short slope from a sample down to silence at the front of
+// pcm, which is already silent.
+//
+// It is the fade for the moment fade cannot reach: the ring running dry. The
+// sizes a real device deals in divide each other, so the ring drains to
+// exactly empty and the starving callback has no tail of audio left to ramp.
+// Whatever sample the previous callback ended on is still hanging in the air,
+// and stepping from it straight to silence is a click at the end of every
+// burst. This writes the slope that audio no longer exists to carry.
+//
+// Parameters:
+//   - pcm: the silence to write the slope into, ramped over at most fadeBytes
+//   - from: the sample the previous callback ended on, 0 to leave the silence
+//     alone
+func settle(pcm []byte, from int16) {
+	if from == 0 {
+		return
+	}
+
+	samples := min(len(pcm), fadeBytes) / 2
+	for i := range samples {
+		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(int16(int(from)*(samples-1-i)/samples)))
+	}
+}
+
 // Close stops the device and gives back everything the library allocated.
 //
 // The audio still waiting in the ring is not played out first. Close is what
@@ -245,9 +270,21 @@ func (r *ring) read(out []byte) {
 		// the next arrival has to build the cushion back up before it is heard.
 		fade(out[n-min(fadeBytes, n):n], false)
 		clear(out[n:])
+
+		// Usually the ring drained to exactly empty last time, the fade above
+		// had nothing to ramp, and the step down to silence still has to be
+		// made somewhere. See settle.
+		settle(out[n:], r.last)
 		r.primed = false
 		r.stats.Starved++
 	}
+
+	// Remembered for the starve that has not happened yet. The starving
+	// callback is usually handed nothing at all, so the sample to ramp down
+	// from has to have been kept by the callback before it. Every path above
+	// leaves the buffer ending on the right value: audio on its final sample,
+	// and a starve on the silence it settled to.
+	r.last = int16(binary.LittleEndian.Uint16(out[len(out)-2:]))
 }
 
 // write puts audio at the newest end of the ring, dropping the oldest to make

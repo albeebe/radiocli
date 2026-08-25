@@ -193,6 +193,7 @@ type ring struct {
 	start  int        // Where the oldest byte sits in buf
 	length int        // How many bytes are waiting
 	primed bool       // Whether enough has arrived to start playing, see primeFrames
+	last   int16      // The final sample most recently played, to ramp from when the ring runs dry
 	gain   float64    // What every sample is multiplied by on the way in, 1 for none
 	stats  Stats      // What has been dropped and how often it has run dry
 }
