@@ -5,6 +5,8 @@
 package audioout
 
 import (
+	"time"
+
 	"errors"
 	"strings"
 	"testing"
@@ -28,7 +30,7 @@ func (f *fakeOutput) Name() string { return f.name }
 // Parameters:
 //   - t: the test to put the real opener back at the end of
 //   - fn: what Open should call instead
-func useOpen(t *testing.T, fn func(string, func([]byte)) (output, error)) {
+func useOpen(t *testing.T, fn func(string, int, func([]byte)) (output, error)) {
 	t.Helper()
 	previous := openFn
 	t.Cleanup(func() { openFn = previous })
@@ -49,23 +51,25 @@ func useSinks(t *testing.T, fn func() ([]Sink, error)) {
 
 // TestOpen tests the Open function with 100% coverage.
 //
-// Coverage: 100% (3 test cases covering both branches)
+// Coverage: 100% (5 test cases covering every branch)
 //
 // Test cases:
 //   - Opened: the player carries the device that was opened and a ring to feed it
 //   - Named: the name is passed through untouched, including the empty default
 //   - Failed: a device that will not open is reported rather than half opened
+//   - TooSmall: a buffer under two frames is refused before anything opens
+//   - TooBig: a buffer over half the ring is refused before anything opens
 func TestOpen(t *testing.T) {
 	// Verify that a successful open hands back a player wired to the device,
 	// with the fill callback the device was given reading out of its ring.
 	t.Run("Opened", func(t *testing.T) {
 		var fill func([]byte)
-		useOpen(t, func(_ string, f func([]byte)) (output, error) {
+		useOpen(t, func(_ string, _ int, f func([]byte)) (output, error) {
 			fill = f
 			return &fakeOutput{name: "MacBook Pro Speakers"}, nil
 		})
 
-		p, err := Open("MacBook Pro Speakers")
+		p, err := Open("MacBook Pro Speakers", primeFrames*FrameMS*time.Millisecond)
 		if err != nil {
 			t.Fatalf("opening the speakers gave %v, want it to open", err)
 		}
@@ -92,12 +96,12 @@ func TestOpen(t *testing.T) {
 	// is what means the system's own choice of output.
 	t.Run("Named", func(t *testing.T) {
 		var asked string
-		useOpen(t, func(name string, _ func([]byte)) (output, error) {
+		useOpen(t, func(name string, _ int, _ func([]byte)) (output, error) {
 			asked = name
 			return &fakeOutput{}, nil
 		})
 
-		if _, err := Open(""); err != nil {
+		if _, err := Open("", DefaultBuffer); err != nil {
 			t.Fatalf("opening the default gave %v, want it to open", err)
 		}
 		if asked != "" {
@@ -105,19 +109,79 @@ func TestOpen(t *testing.T) {
 		}
 	})
 
+	// Verify that a buffer too small to absorb one late frame is refused, and
+	// refused before a device is taken.
+	t.Run("TooSmall", func(t *testing.T) {
+		useOpen(t, func(string, int, func([]byte)) (output, error) {
+			t.Fatal("a buffer that was refused still opened a device")
+			return nil, nil
+		})
+
+		if _, err := Open("", minBuffer-time.Millisecond); err == nil {
+			t.Error("a buffer under two frames was accepted")
+		}
+	})
+
+	// Verify that a buffer the ring has no room to catch up behind is refused,
+	// and refused before a device is taken.
+	t.Run("TooBig", func(t *testing.T) {
+		useOpen(t, func(string, int, func([]byte)) (output, error) {
+			t.Fatal("a buffer that was refused still opened a device")
+			return nil, nil
+		})
+
+		if _, err := Open("", maxBuffer+time.Millisecond); err == nil {
+			t.Error("a buffer over half the ring was accepted")
+		}
+	})
+
 	// Verify that a failure to open comes back rather than being turned into a
 	// player that plays nowhere.
 	t.Run("Failed", func(t *testing.T) {
-		useOpen(t, func(string, func([]byte)) (output, error) {
+		useOpen(t, func(string, int, func([]byte)) (output, error) {
 			return nil, ErrNoSink
 		})
 
-		p, err := Open("Nothing At All")
+		p, err := Open("Nothing At All", DefaultBuffer)
 		if !errors.Is(err, ErrNoSink) {
 			t.Errorf("opening gave %v, want it to say there is no such speaker", err)
 		}
 		if p != nil {
 			t.Error("a player came back from an open that failed")
+		}
+	})
+}
+
+// Test_periodFor tests the periodFor function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering every branch)
+//
+// Test cases:
+//   - HalfTheCushion: an ordinary cushion is taken in halves
+//   - Capped: a deep cushion does not mean a slower device
+//   - Smallest: the smallest cushion Open accepts comes out as one whole frame
+func Test_periodFor(t *testing.T) {
+	// Verify the ordinary case: half the cushion, in whole frames, so one late
+	// callback spends half of what is standing.
+	t.Run("HalfTheCushion", func(t *testing.T) {
+		if got := periodFor(6); got != 60 {
+			t.Errorf("a cushion of 6 frames got a period of %dms, want 60", got)
+		}
+	})
+
+	// Verify the cap: past 100 ms the lateness stops buying anything, however
+	// deep the cushion is.
+	t.Run("Capped", func(t *testing.T) {
+		if got := periodFor(20); got != 100 {
+			t.Errorf("a cushion of 20 frames got a period of %dms, want the cap of 100", got)
+		}
+	})
+
+	// Verify the bottom of the range: the smallest cushion Open accepts asks
+	// the device for exactly one frame at a time.
+	t.Run("Smallest", func(t *testing.T) {
+		if got := periodFor(2); got != FrameMS {
+			t.Errorf("a cushion of 2 frames got a period of %dms, want one frame", got)
 		}
 	})
 }

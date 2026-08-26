@@ -20,6 +20,7 @@ import (
 	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
 	"github.com/albeebe/radiocli/internal/audiogate"
+	"github.com/albeebe/radiocli/internal/audioout"
 	"github.com/albeebe/radiocli/internal/broker"
 	"github.com/albeebe/radiocli/internal/device"
 	"github.com/albeebe/radiocli/internal/portlock"
@@ -63,6 +64,7 @@ func newRecord(app *appcontext.App) *cobra.Command {
 			if len(args) == 1 {
 				opts.destination = args[0]
 			}
+			opts.bufferSet = cmd.Flags().Changed("buffer")
 			return runRecord(cmd.Context(), app, opts)
 		},
 	}
@@ -87,6 +89,9 @@ func newRecord(app *appcontext.App) *cobra.Command {
 	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
 		"speakers to play on with --listen, as \"radiocli audio\" names them "+
 			"(default: this computer's own)")
+	cmd.Flags().DurationVar(&opts.buffer, "buffer", audioout.DefaultBuffer,
+		"how much audio to keep between the radio and the speakers with --listen: bigger "+
+			"plays more smoothly, smaller plays sooner")
 	cmd.Flags().Float64Var(&opts.gain, "gain", 0,
 		"decibels to turn the audio up by with --listen, which does not change what is "+
 			"recorded")
@@ -905,6 +910,10 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 			"--listen:\nit does not change what is recorded, since --normalize already " +
 			"scales that")
 	}
+	if opts.bufferSet && !opts.listen {
+		return errors.New("--buffer sets how far behind the radio the speakers play, which " +
+			"only means something with --listen:\nit does not change what is recorded")
+	}
 
 	channel, err := audiofeed.ParseChannel(opts.channel)
 	if err != nil {
@@ -923,7 +932,7 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	// a run that was never going to happen.
 	var p player
 	if opts.listen {
-		if p, err = openPlayer(opts.speaker); err != nil {
+		if p, err = openPlayer(opts.speaker, opts.buffer); err != nil {
 			return err
 		}
 		defer p.Close()

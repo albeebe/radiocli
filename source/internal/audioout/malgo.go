@@ -191,7 +191,7 @@ func listSinks() ([]Sink, error) {
 // Errors:
 //   - ErrNoSink: if nothing the library reports is called name
 //   - ErrAmbiguousSink: if more than one reported device is called name
-func open(name string, fill func(out []byte)) (output, error) {
+func open(name string, periodMS int, fill func(out []byte)) (output, error) {
 	ctx, err := malgo.InitContext(backends, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("opening the audio system: %w", err)
@@ -227,7 +227,7 @@ func open(name string, fill func(out []byte)) (output, error) {
 		deviceID, chosen = devices[at].ID.Pointer(), names[at]
 	}
 
-	dev, err := initDevice(ctx.Context, playbackConfig(deviceID), playbackCallbacks(fill))
+	dev, err := initDevice(ctx.Context, playbackConfig(deviceID, periodMS), playbackCallbacks(fill))
 	if err != nil {
 		return nil, fmt.Errorf("opening the speakers %q: %w", chosen, err)
 	}
@@ -262,19 +262,30 @@ func playbackCallbacks(fill func(out []byte)) malgo.DeviceCallbacks {
 	}
 }
 
-// playbackConfig describes the playback this package always asks for: the
-// package's own rate, channel count and sample format, on one device.
+// playbackConfig describes the playback this package asks for: the package's
+// own rate, channel count and sample format, on one device, taken in pieces
+// of the period the caller worked out.
+//
+// The period is asked for three times over, which is the library's own idea of
+// how many buffers a device should stand behind, left alone. The period times
+// the periods is the slack the operating system has to come and ask for more:
+// the artifacts a night of listening pinned below this package went away when
+// that slack grew, and no measurement on our side of the library has ever
+// caught them, so room is the one lever this package holds.
 //
 // Parameters:
 //   - deviceID: the library's identifier for the device to play on, or nil for
 //     whichever the system considers its own
+//   - periodMS: how much audio the device takes per callback, in milliseconds,
+//     as periodFor worked it out
 //
 // Returns:
 //   - malgo.DeviceConfig built on the library's playback defaults with this
 //     package's format asked for on top of them
-func playbackConfig(deviceID unsafe.Pointer) malgo.DeviceConfig {
+func playbackConfig(deviceID unsafe.Pointer, periodMS int) malgo.DeviceConfig {
 	cfg := malgo.DefaultDeviceConfig(malgo.Playback)
 	cfg.SampleRate = SampleRate
+	cfg.PeriodSizeInMilliseconds = uint32(periodMS)
 	cfg.Playback.Format = malgo.FormatS16
 	cfg.Playback.Channels = Channels
 	cfg.Playback.DeviceID = deviceID

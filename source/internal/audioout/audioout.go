@@ -51,13 +51,23 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
-// Open starts playing on the sink called name.
+// Open starts playing on the sink called name, with buffer standing between
+// the audio arriving and the audio being heard.
 //
 // It opens the device and starts it immediately, playing silence until
 // something is handed to Play, because a device that is started only once audio
 // arrives would spend the first transmission starting.
+//
+// The buffer is the trade this package cannot make for its caller: everything
+// played comes out that far behind the radio, and everything the machine does
+// to the audio on its way out has that long to go wrong invisibly. See
+// DefaultBuffer for how the default landed where it did. The duration is spent
+// twice over: as the cushion that must arrive before playing starts, and as
+// the size of the buffers the device itself is asked to run, which is where
+// the robustness it buys actually lives.
 //
 // This is the call that reaches the hardware, and on some systems it is what
 // makes the volume indicator appear. It costs nothing but a device handle while
@@ -66,24 +76,62 @@ import (
 // Parameters:
 //   - name: the sink to play on, matched the way Resolve matches, or empty for
 //     whichever output this computer is already using
+//   - buffer: how much audio to keep standing in front of the speakers,
+//     rounded down to whole frames; DefaultBuffer when the listener has no
+//     opinion
 //
 // Returns:
 //   - *Player that plays whatever is handed to it until Close is called
-//   - error if the audio system cannot be asked, the name matches no sink or
-//     more than one, the device cannot be opened or started, or this build was
-//     made without audio support
+//   - error if the buffer is outside the range the ring can hold, the audio
+//     system cannot be asked, the name matches no sink or more than one, the
+//     device cannot be opened or started, or this build was made without audio
+//     support
 //
 // Errors:
 //   - ErrNoSink: if nothing attached is called name
 //   - ErrAmbiguousSink: if more than one attached sink is called name
-func Open(name string) (*Player, error) {
-	r := newRing()
+func Open(name string, buffer time.Duration) (*Player, error) {
+	if buffer < minBuffer || buffer > maxBuffer {
+		return nil, fmt.Errorf("a buffer of %s is not something the speakers can hold: "+
+			"it has to be between %s and %s", buffer, minBuffer, maxBuffer)
+	}
 
-	out, err := openFn(name, r.read)
+	frames := int(buffer / (FrameMS * time.Millisecond))
+	r := newRing(frames * FrameBytes)
+
+	out, err := openFn(name, periodFor(frames), r.read)
 	if err != nil {
 		return nil, err
 	}
 	return &Player{out: out, ring: r}, nil
+}
+
+// periodFor picks how much audio the device is asked to take per callback, in
+// milliseconds, for a cushion of frames frames.
+//
+// Half the cushion, so that one late callback spends half of what is standing
+// and not all of it, and in whole frames, so that a callback never finds the
+// ring holding audio but less than it asked for: a ring drained in pieces that
+// divide the pieces it is filled in runs down to exactly empty, and anything
+// else reads as running dry once per callback, which plays as a stutter.
+//
+// Capped at 100 ms because the device buffers this much three times over, and
+// somewhere above that the lateness stops buying robustness anybody has been
+// able to hear. There is no floor to enforce: Open has already refused any
+// cushion under two frames, and half of two frames is the whole frame the
+// smallest period has to be.
+//
+// Parameters:
+//   - frames: the cushion, in frames, never less than two
+//
+// Returns:
+//   - the period in milliseconds: whole frames, at least one, at most 100 ms
+func periodFor(frames int) int {
+	period := frames / 2 * FrameMS
+	if period > 100 {
+		period = 100
+	}
+	return period
 }
 
 // Resolve checks that exactly one attached sink is called name, and returns it

@@ -82,7 +82,7 @@ func TestPlaybackClose(t *testing.T) {
 	t.Run("LiveHandles", func(t *testing.T) {
 		useBackend(t, nullBackend)
 
-		out, err := open(nullDeviceName, func([]byte) {})
+		out, err := open(nullDeviceName, FrameMS, func([]byte) {})
 		if err != nil {
 			t.Fatalf("open on the null backend failed: %v", err)
 		}
@@ -286,7 +286,7 @@ func Test_open(t *testing.T) {
 	t.Run("AudioSystemUnavailable", func(t *testing.T) {
 		useBackend(t, missingBackend)
 
-		got, err := open(nullDeviceName, func([]byte) {})
+		got, err := open(nullDeviceName, FrameMS, func([]byte) {})
 
 		if err == nil {
 			t.Fatal("open succeeded with no backend to open, want an error")
@@ -303,7 +303,7 @@ func Test_open(t *testing.T) {
 	t.Run("NoSinkByThatName", func(t *testing.T) {
 		useBackend(t, nullBackend)
 
-		got, err := open("Kitchen Radio", func([]byte) {})
+		got, err := open("Kitchen Radio", FrameMS, func([]byte) {})
 
 		if !errors.Is(err, ErrNoSink) {
 			t.Fatalf("open gave %v, want ErrNoSink", err)
@@ -319,7 +319,7 @@ func Test_open(t *testing.T) {
 	t.Run("PlaysOnTheNamedSink", func(t *testing.T) {
 		useBackend(t, nullBackend)
 
-		got, err := open(nullDeviceName, func([]byte) {})
+		got, err := open(nullDeviceName, FrameMS, func([]byte) {})
 		if err != nil {
 			t.Fatalf("open on the null backend failed: %v", err)
 		}
@@ -340,7 +340,7 @@ func Test_open(t *testing.T) {
 	t.Run("TheDefaultSink", func(t *testing.T) {
 		useBackend(t, nullBackend)
 
-		got, err := open("", func([]byte) {})
+		got, err := open("", FrameMS, func([]byte) {})
 		if err != nil {
 			t.Fatalf("open of the default on the null backend failed: %v", err)
 		}
@@ -371,7 +371,7 @@ func Test_openLibraryFailures(t *testing.T) {
 			return nil, want
 		}
 
-		if _, err := open(nullDeviceName, func([]byte) {}); !errors.Is(err, want) {
+		if _, err := open(nullDeviceName, FrameMS, func([]byte) {}); !errors.Is(err, want) {
 			t.Fatalf("open reported %v, want the failed device list", err)
 		}
 	})
@@ -387,7 +387,7 @@ func Test_openLibraryFailures(t *testing.T) {
 			return nil, want
 		}
 
-		_, err := open(nullDeviceName, func([]byte) {})
+		_, err := open(nullDeviceName, FrameMS, func([]byte) {})
 		if !errors.Is(err, want) {
 			t.Fatalf("open reported %v, want the failed device open", err)
 		}
@@ -406,7 +406,7 @@ func Test_openLibraryFailures(t *testing.T) {
 		t.Cleanup(func() { startDevice = previous })
 		startDevice = func(*malgo.Device) error { return want }
 
-		_, err := open(nullDeviceName, func([]byte) {})
+		_, err := open(nullDeviceName, FrameMS, func([]byte) {})
 		if !errors.Is(err, want) {
 			t.Fatalf("open reported %v, want the failed start", err)
 		}
@@ -478,7 +478,7 @@ func Test_playbackConfig(t *testing.T) {
 	// Verify that the format the package promises is the one asked of the
 	// device, so nothing upstream has to convert anything.
 	t.Run("AsksForThePackagesFormat", func(t *testing.T) {
-		cfg := playbackConfig(nil)
+		cfg := playbackConfig(nil, 100)
 
 		if cfg.DeviceType != malgo.Playback {
 			t.Errorf("DeviceType is %v, want a playback device", cfg.DeviceType)
@@ -492,6 +492,10 @@ func Test_playbackConfig(t *testing.T) {
 		if cfg.Playback.Channels != Channels {
 			t.Errorf("Playback.Channels is %d, want %d", cfg.Playback.Channels, Channels)
 		}
+		if cfg.PeriodSizeInMilliseconds != 100 {
+			t.Errorf("PeriodSizeInMilliseconds is %d, want the period handed in",
+				cfg.PeriodSizeInMilliseconds)
+		}
 	})
 
 	// Verify that the device the caller resolved is the device the config
@@ -500,7 +504,7 @@ func Test_playbackConfig(t *testing.T) {
 		var id malgo.DeviceID
 		want := unsafe.Pointer(&id)
 
-		if cfg := playbackConfig(want); cfg.Playback.DeviceID != want {
+		if cfg := playbackConfig(want, FrameMS); cfg.Playback.DeviceID != want {
 			t.Error("Playback.DeviceID is not the identifier that was handed in")
 		}
 	})
@@ -508,7 +512,7 @@ func Test_playbackConfig(t *testing.T) {
 	// Verify that no identifier stays no identifier, which is what tells the
 	// library to follow the system's own choice of output.
 	t.Run("TheDefaultDevice", func(t *testing.T) {
-		if cfg := playbackConfig(nil); cfg.Playback.DeviceID != nil {
+		if cfg := playbackConfig(nil, FrameMS); cfg.Playback.DeviceID != nil {
 			t.Error("Playback.DeviceID was filled in, want the library's own default")
 		}
 	})

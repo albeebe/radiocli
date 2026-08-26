@@ -8,6 +8,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // The format every sound output is opened in.
@@ -47,43 +48,52 @@ const (
 
 // How much audio may be waiting in front of the speakers, and how much has to
 // be waiting before they start.
-//
-// Both were measured rather than picked, and they are measured against
-// different things, which is why one is generous and the other is mean.
-//
-// The device asks for audio like a metronome: 10 ms every 10 ms, and across two
-// seconds of callbacks the longest gap between two requests was 10.19 ms. So
-// nothing needs holding back for the speakers' sake. What has to be covered is
-// the other end, where audio can arrive late, or all at once.
 const (
 	// bufferFrames is how much the ring holds, at 20 ms each.
 	//
 	// One second, and it costs nothing to be that big. It is a ceiling rather
-	// than a target: what actually stands in the ring is primeFrames, because
-	// the reader takes out exactly what the writer puts in, so a deep ring adds
-	// no delay at all. It matters when the writer stops for a while and then
-	// catches up, which the recorder does every time it finishes a file:
-	// normalizing a whole WAV and filing a description beside it happen between
-	// two frames. At 240 ms a 300 ms stall lost a quarter of a second of audio
-	// outright. At one second a 600 ms stall loses nothing. It costs 96 KB.
+	// than a target: what actually stands in the ring is the cushion Open was
+	// asked for, because the reader takes out exactly what the writer puts in,
+	// so a deep ring adds no delay at all. It matters when the writer stops
+	// for a while and then catches up, which the recorder does every time it
+	// finishes a file: normalizing a whole WAV and filing a description beside
+	// it happen between two frames. At 240 ms a 300 ms stall lost a quarter of
+	// a second of audio outright. At one second a 600 ms stall loses nothing.
+	// It costs 96 KB.
 	bufferFrames = 50
 
-	// primeFrames is how much has to arrive before playing starts, and how much
-	// therefore stands between the audio and the speakers from then on.
+	// DefaultBuffer is the cushion Open builds when its caller has no opinion:
+	// a quarter of a second.
 	//
-	// 40 ms, and this one is spent as narrowly as the jitter allows, because it
-	// is the only part of this package a listener can hear. Somebody playing a
-	// scanner on their computer is very often sitting next to the scanner, and
-	// what they are comparing it against is the radio's own speaker in the same
-	// room. A recording being late costs nothing, since nobody knows when it
-	// was written. Audio being late costs the thing it is for.
+	// Generous rather than mean, and that is a change of heart this package
+	// has already had once. The cushion started at 40 ms, spent as narrowly as
+	// the arrival jitter allowed, on the grounds that somebody sitting next to
+	// the scanner hears lateness as the feature failing. Then a night of real
+	// listening found artifacts that no measurement could: the audio entering
+	// the device was bit-perfect, every callback arrived on time, and the
+	// scratch was heard anyway, born somewhere below this package, and it went
+	// away when the buffers in front of the device grew. A quarter of a second
+	// is late enough to notice and nothing like as noticeable as a pop in the
+	// middle of a dispatcher's sentence.
 	//
-	// Two frames rather than one, because one leaves no room at all for a
-	// producer that is a single frame late, and running dry costs this much
-	// silence again while the cushion is rebuilt. The stalls longer than this
-	// are the recorder's, and they land after a transmission has ended, when
-	// the speakers are closed and there is nothing to interrupt.
-	primeFrames = 2
+	// A default rather than a constant of the package, because that trade,
+	// lateness against robustness, belongs to the person listening. Both
+	// commands that play expose it as --buffer.
+	DefaultBuffer = 250 * time.Millisecond
+)
+
+// The range a buffer may be asked for in.
+//
+// Both ends are the ring's, not taste. Below two frames the cushion cannot
+// absorb a producer that is one frame late, which is the cushion failing at
+// the only job it has. Above half the ring there is no room left to catch the
+// producer back up after a stall, which is the other job.
+const (
+	// maxBuffer is half the ring.
+	maxBuffer = bufferFrames / 2 * FrameMS * time.Millisecond
+
+	// minBuffer is two frames.
+	minBuffer = 2 * FrameMS * time.Millisecond
 )
 
 // fadeBytes is how much audio the edges of a burst are ramped over.
@@ -196,7 +206,8 @@ type ring struct {
 	buf    []byte     // Fixed capacity, allocated once at Open and never grown
 	start  int        // Where the oldest byte sits in buf
 	length int        // How many bytes are waiting
-	primed bool       // Whether enough has arrived to start playing, see primeFrames
+	primed bool       // Whether enough has arrived to start playing, see prime
+	prime  int        // How many bytes must be waiting before playing starts, fixed at Open
 	last   int16      // The final sample most recently played, to ramp from when the ring runs dry
 	stats  Stats      // What has been dropped and how often it has run dry
 

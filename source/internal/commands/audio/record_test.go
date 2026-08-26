@@ -26,6 +26,7 @@ import (
 	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
 	"github.com/albeebe/radiocli/internal/audiogate"
+	"github.com/albeebe/radiocli/internal/audioout"
 	"github.com/albeebe/radiocli/internal/broker"
 	"github.com/albeebe/radiocli/internal/device"
 	"github.com/albeebe/radiocli/internal/portlock"
@@ -1368,6 +1369,19 @@ func Test_runRecord(t *testing.T) {
 			destination: t.TempDir(), gain: 12})
 		if err == nil || !strings.Contains(err.Error(), "--listen") {
 			t.Fatalf("got %v, want it to say --gain needs --listen", err)
+		}
+	})
+
+	// Verify that a buffer without anything playing is refused the way the
+	// other playback flags are, since it does not change what is recorded.
+	t.Run("BufferWithoutListen", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+
+		err := runRecord(context.Background(), app, recordOptions{
+			destination: t.TempDir(), buffer: audioout.DefaultBuffer, bufferSet: true})
+		if err == nil || !strings.Contains(err.Error(), "--listen") {
+			t.Fatalf("got %v, want it to say --buffer needs --listen", err)
 		}
 	})
 

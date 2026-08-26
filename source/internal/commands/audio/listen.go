@@ -12,6 +12,7 @@ import (
 	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
 	"github.com/albeebe/radiocli/internal/audiogate"
+	"github.com/albeebe/radiocli/internal/audioout"
 	"github.com/spf13/cobra"
 )
 
@@ -60,6 +61,9 @@ func newListen(app *appcontext.App) *cobra.Command {
 		"how long the audio must stay quiet before the speakers close again")
 	cmd.Flags().Float64Var(&opts.gain, "gain", 0,
 		"decibels to turn the audio up by on the way to the speakers")
+	cmd.Flags().DurationVar(&opts.buffer, "buffer", audioout.DefaultBuffer,
+		"how much audio to keep between the radio and the speakers: bigger plays more "+
+			"smoothly, smaller plays sooner")
 
 	return cmd
 }
@@ -271,7 +275,7 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 	// The speakers are opened before the audio is asked for, so that a typo in
 	// --speaker costs a moment rather than a sound card being taken and given
 	// straight back.
-	p, err := openPlayer(opts.speaker)
+	p, err := openPlayer(opts.speaker, opts.buffer)
 	if err != nil {
 		return err
 	}

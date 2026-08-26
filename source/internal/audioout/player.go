@@ -16,10 +16,15 @@ import (
 // reached from an audio callback in the capture direction, and an allocation
 // there is a gap in somebody's recording.
 //
+// Parameters:
+//   - prime: how many bytes must be waiting before playing starts, which is
+//     the cushion that then stands in front of the audio for as long as it
+//     keeps coming
+//
 // Returns:
 //   - *ring holding bufferFrames of audio at most, empty and not yet primed
-func newRing() *ring {
-	r := &ring{buf: make([]byte, bufferFrames*FrameBytes)}
+func newRing(prime int) *ring {
+	r := &ring{buf: make([]byte, bufferFrames*FrameBytes), prime: prime}
 	r.gain.Store(math.Float64bits(1))
 	return r
 }
@@ -195,7 +200,6 @@ func (p *Player) SetGain(dB float64) {
 	if p == nil {
 		return
 	}
-
 	p.ring.gain.Store(math.Float64bits(math.Pow(10, dB/20)))
 }
 
@@ -249,7 +253,7 @@ func (r *ring) read(out []byte) {
 
 	starting := false
 	if !r.primed {
-		if r.length < primeFrames*FrameBytes {
+		if r.length < r.prime {
 			clear(out)
 			return
 		}

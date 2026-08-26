@@ -154,8 +154,8 @@ var listSources = audioin.Sources
 // which is not a nil interface however it reads. That is harmless in both
 // directions: every caller checks the error before it touches the player, and
 // every method on *audioout.Player is safe on nil anyway.
-var openPlayer = func(name string) (player, error) {
-	return audioout.Open(name)
+var openPlayer = func(name string, buffer time.Duration) (player, error) {
+	return audioout.Open(name, buffer)
 }
 
 // startCapture opens the sound card and begins publishing frames into out. It
@@ -184,6 +184,12 @@ type listenOptions struct {
 	speaker string  // Speakers to play on, empty for whichever this computer is already using
 	squelch bool    // Play only the transmissions, off when --squelch=false
 	gain    float64 // Decibels to turn the audio up by, as --gain gave it
+
+	// buffer is how much audio stands between the radio and the speakers, as
+	// --buffer gave it. Bigger rides out more of what the computer does
+	// underneath the playing, at the cost of hearing everything that much
+	// later.
+	buffer time.Duration
 
 	// hang is how long the audio has to stay quiet before a transmission is
 	// called finished, as --hang gave it. Only the squelch uses it.
@@ -312,6 +318,8 @@ type recordOptions struct {
 	listen      bool          // Play the transmissions as they are recorded, off unless --listen
 	speaker     string        // Speakers to play on with --listen, empty for whichever this computer is already using
 	gain        float64       // Decibels to turn the played audio up by, as --gain gave it
+	buffer      time.Duration // How much audio stands between the radio and the speakers with --listen
+	bufferSet   bool          // Whether --buffer was typed, so asking for it without --listen can be refused
 }
 
 // recorder is the state one run of "audio record" carries: what it is writing

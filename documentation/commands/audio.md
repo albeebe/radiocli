@@ -264,12 +264,14 @@ nothing else can listen or record while it does. To hear and record at once from
 a single directly opened input, use [`audio record --listen`](#audio-record)
 instead.
 
-This is meant to be as live as the scanner's own speaker, and the delay is kept
-to what it takes to play audio at all: about 40 ms is held in front of the
-speakers so that a frame arriving late is absorbed rather than heard as a gap,
-which with the cutting and the sound cards at either end puts the whole path
-somewhere under a tenth of a second. That matters because you are probably
-sitting next to the radio, comparing the two.
+A quarter of a second of audio is held in front of the speakers, so everything
+plays that far behind the radio. The cushion is what absorbs everything that
+can go wrong between the cable and the speakers, from a frame arriving late to
+the operating system coming for audio at a bad moment, and a night of listening
+to real traffic found artifacts below this tool that went away when the cushion
+grew. `--buffer` moves the trade: smaller plays sooner, bigger plays more
+smoothly. That matters because you are probably sitting next to the radio,
+comparing the two.
 
 The squelch costs nothing on top of it: the speakers open on the first frame
 above the noise floor, rather than waiting for the transmission to prove itself
@@ -292,6 +294,8 @@ radiocli audio listen [flags]
 | `--speaker` | No | this computer's own | Which speakers to play on, as `radiocli audio` names them. |
 | `--squelch` | No | `true` | Play only the transmissions. `--squelch=false` plays everything. |
 | `--hang` | No | `2s` | How long the audio must stay quiet before the speakers close again. |
+| `--gain` | No | `0` | Decibels to turn the audio up by on the way to the speakers. |
+| `--buffer` | No | `250ms` | How much audio to keep between the radio and the speakers. |
 | `--input` | No | none | Open this sound input directly instead of asking a daemon. |
 | `--channel` | No | `auto` | Which side of the cable the scanner is on, for `--input`. |
 
@@ -331,6 +335,25 @@ Two seconds by default, which is longer than the half second
 watch its mute close, while this one has only the audio to go on, so the quiet
 has to be long enough to carry a pause in speech without cutting the speaker
 off mid-sentence.
+
+### `--gain`
+
+Decibels added to the audio on its way to the speakers, and nowhere else. A
+line input carries the scanner 15 to 25 dB quieter than a normalized recording
+plays, so without this, comparing the two means riding the volume control.
+Anything pushed past full scale is held there rather than allowed to wrap, so
+too much gain plays as flattened speech: turn it down.
+
+### `--buffer`
+
+How much audio stands between the radio and the speakers, written as a Go
+duration such as `250ms` or `1s`. Everything is heard this far behind the
+radio, and everything that can go wrong underneath the playing has this long
+to put itself right before it is audible. The default is a quarter of a
+second. Bigger plays more smoothly on a busy computer, smaller plays sooner,
+and below about `100ms` you are trading audible pops for a lateness only a
+side-by-side comparison with the scanner's own speaker can hear. It has to be
+between `40ms` and `500ms`.
 
 ### `--input`
 
@@ -436,6 +459,7 @@ what arrives in real time is played in real time.
 | `error: no sound input by that name: "..."` | `--input`, or the daemon's `--audio`, named something not attached. | Run `radiocli audio` to see the names. |
 | `error: "audio listen" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. A daemon lends a command its output for the length of the command, which only works because commands end. |
 | `error: a hang of ... is not a length of quiet to wait for` | `--hang` was zero or negative. | Pass a positive duration, such as `2s`. |
+| `error: a buffer of ... is not something the speakers can hold: it has to be between 40ms and 500ms` | `--buffer` was outside the range the player can stand behind. | Pass a duration between `40ms` and `500ms`. |
 | `error: this copy of radiocli was built without audio support` | The build has cgo switched off, so it cannot open speakers. | Rebuild with `CGO_ENABLED=1`. |
 
 All of them exit with status `1`.
@@ -687,6 +711,8 @@ radiocli audio record [destination] [flags]
 | `--normalize` | No | `true` | Scale each recording up so its loudest moment is just under full scale. `--normalize=false` keeps the level exactly as it arrived. |
 | `--listen` | No | `false` | Play each transmission on this computer's speakers as it is recorded. |
 | `--speaker` | No | this computer's own | Which speakers `--listen` plays on, as `radiocli audio` names them. |
+| `--gain` | No | `0` | Decibels `--listen` turns the audio up by. Does not change what is recorded. |
+| `--buffer` | No | `250ms` | How much audio `--listen` keeps between the radio and the speakers. Does not change what is recorded. |
 
 ### `[destination]`
 
@@ -1140,6 +1166,7 @@ The colour is dropped when stderr is not a terminal, and when `NO_COLOR` is set.
 | `error: no sound input by that name: "..."` | `--input` named something not attached. | Run [`radiocli audio`](#audio) to see the names. |
 | `error: "audio record" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. |
 | `error: --speaker says where to play the transmissions, which only means something with --listen` | `--speaker` was given on its own. | Add `--listen`, or drop `--speaker`. |
+| `error: --buffer sets how far behind the radio the speakers play, which only means something with --listen` | `--buffer` was given on its own. | Add `--listen`, or drop `--buffer`. |
 | `error: no speaker by that name: "..."` | `--speaker` named something not attached. | Run [`radiocli audio`](#audio) to see the names under `SPEAKERS`. |
 | `error: the scanner stopped answering, so recording has stopped: ...` | The scanner was unplugged or switched off while recording. | Reconnect it and start again. The transmission in progress is written out before the command exits. |
 | `error: <port> is in use by another radiocli` | Another invocation has the scanner and no daemon is sharing it. | Wait for it, or start a [`daemon`](daemon.md). |

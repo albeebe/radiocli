@@ -93,7 +93,7 @@ func fakeOpenPlayer(t *testing.T, p *fakePlayer, err error) *string {
 	asked := new(string)
 	original := openPlayer
 	t.Cleanup(func() { openPlayer = original })
-	openPlayer = func(name string) (player, error) {
+	openPlayer = func(name string, _ time.Duration) (player, error) {
 		*asked = name
 		if err != nil {
 			return nil, err
@@ -529,7 +529,8 @@ func Test_openPlayer(t *testing.T) {
 	// caller checks the error first, and closing it anyway has to be harmless
 	// or that arrangement would be a crash waiting for a typo in --speaker.
 	t.Run("NoSuchSpeaker", func(t *testing.T) {
-		p, err := openPlayer("no speaker is called this, and none ever will be")
+		p, err := openPlayer("no speaker is called this, and none ever will be",
+			audioout.DefaultBuffer)
 		if err == nil {
 			p.Close()
 			t.Fatal("the speakers opened, wanted a name nothing answers to to be refused")

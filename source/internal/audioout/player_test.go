@@ -28,13 +28,18 @@ func tone(from, n int) []byte {
 	return b
 }
 
+// primeFrames is the cushion every ring in these tests is built with: the
+// smallest Open accepts, so the arithmetic in each case stays small enough to
+// check by hand.
+const primeFrames = 2
+
 // primed builds a ring with enough audio in it to have started playing, which
 // is where most of the interesting behaviour begins.
 //
 // Returns:
 //   - *ring holding exactly primeFrames of audio, not yet read from
 func primedRing() *ring {
-	r := newRing()
+	r := newRing(primeFrames * FrameBytes)
 	r.write(tone(0, primeFrames*FrameBytes))
 	return r
 }
@@ -51,7 +56,7 @@ func TestPlayerClose(t *testing.T) {
 	// Verify that closing the player closes the device under it.
 	t.Run("Closes", func(t *testing.T) {
 		out := &fakeOutput{}
-		p := &Player{out: out, ring: newRing()}
+		p := &Player{out: out, ring: newRing(primeFrames * FrameBytes)}
 
 		p.Close()
 		if out.closes != 1 {
@@ -64,7 +69,7 @@ func TestPlayerClose(t *testing.T) {
 	// torn down twice.
 	t.Run("Twice", func(t *testing.T) {
 		out := &fakeOutput{}
-		p := &Player{out: out, ring: newRing()}
+		p := &Player{out: out, ring: newRing(primeFrames * FrameBytes)}
 
 		p.Close()
 		p.Close()
@@ -92,7 +97,7 @@ func TestPlayerName(t *testing.T) {
 	// Verify that what comes back is the system's spelling, which is what a
 	// person will have read in a listing.
 	t.Run("Named", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{name: "MacBook Pro Speakers"}, ring: newRing()}
+		p := &Player{out: &fakeOutput{name: "MacBook Pro Speakers"}, ring: newRing(primeFrames * FrameBytes)}
 		if got := p.Name(); got != "MacBook Pro Speakers" {
 			t.Errorf("Name gave %q, want the device's own name", got)
 		}
@@ -124,7 +129,7 @@ func TestPlayerPlay(t *testing.T) {
 	// but the first few milliseconds of it being faded up from silence so the
 	// speakers do not click. See fade.
 	t.Run("Queued", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p := &Player{out: &fakeOutput{}, ring: newRing(primeFrames * FrameBytes)}
 		want := tone(0, primeFrames*FrameBytes)
 		p.Play(want)
 
@@ -139,7 +144,7 @@ func TestPlayerPlay(t *testing.T) {
 	// belong to a capture callback's own buffer, which is written over the
 	// moment it returns.
 	t.Run("Copied", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p := &Player{out: &fakeOutput{}, ring: newRing(primeFrames * FrameBytes)}
 		pcm := tone(0, primeFrames*FrameBytes)
 		p.Play(pcm)
 
@@ -173,7 +178,7 @@ func TestPlayerPlay(t *testing.T) {
 func TestPlayerStats(t *testing.T) {
 	// Verify that the counts come from the ring rather than being kept twice.
 	t.Run("Counted", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p := &Player{out: &fakeOutput{}, ring: newRing(primeFrames * FrameBytes)}
 		p.ring.stats = Stats{Dropped: 7, Starved: 3}
 
 		if got := p.Stats(); got.Dropped != 7 || got.Starved != 3 {
@@ -208,7 +213,7 @@ func TestRingRead(t *testing.T) {
 	// than handing over what little it has, which would leave it empty again
 	// immediately.
 	t.Run("Unprimed", func(t *testing.T) {
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 		r.write(tone(1, FrameBytes))
 
 		out := make([]byte, FrameBytes)
@@ -281,7 +286,7 @@ func TestRingRead(t *testing.T) {
 	// to be made from the sample the previous callback ended on.
 	t.Run("SettlesToSilence", func(t *testing.T) {
 		const level = 12000
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 		r.write(loudFrame(primeFrames*FrameSamples, level))
 
 		// Drained in device-sized reads, the way a real callback empties it:
@@ -329,7 +334,7 @@ func TestRingRead(t *testing.T) {
 	// written, every time. A buffer left short is not silence, it is whatever
 	// was there before, played again.
 	t.Run("FillsEverything", func(t *testing.T) {
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 
 		out := make([]byte, 777) // Not a whole number of frames, as a real device is not
 		for i := range out {
@@ -356,7 +361,7 @@ func TestRingWrite(t *testing.T) {
 	// Verify that nothing to play is not treated as audio, since an empty write
 	// would otherwise reach the copies below.
 	t.Run("Nothing", func(t *testing.T) {
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 		r.write(nil)
 		if r.length != 0 {
 			t.Errorf("%d bytes are waiting after writing nothing", r.length)
@@ -366,7 +371,7 @@ func TestRingWrite(t *testing.T) {
 	// Verify that a write which runs off the end of the buffer continues at the
 	// beginning rather than being cut short.
 	t.Run("Wraps", func(t *testing.T) {
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 		r.write(tone(0, len(r.buf)-10))
 		r.read(make([]byte, len(r.buf)-10))
 		r.write(tone(50, 20))
@@ -385,7 +390,7 @@ func TestRingWrite(t *testing.T) {
 	// Verify that a full ring loses its oldest audio rather than refusing the
 	// newest, because what is worth hearing is the radio as it is now.
 	t.Run("DropsOldest", func(t *testing.T) {
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 		r.write(tone(0, len(r.buf)))
 		r.write(tone(1, FrameBytes))
 
@@ -403,7 +408,7 @@ func TestRingWrite(t *testing.T) {
 	// Verify that one write larger than the whole ring keeps its tail. A gate
 	// releasing a long transmission in one go is exactly this.
 	t.Run("LongerThanTheRing", func(t *testing.T) {
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 		big := tone(0, len(r.buf)+FrameBytes)
 		r.write(big)
 
@@ -418,7 +423,7 @@ func TestRingWrite(t *testing.T) {
 	// Verify that every byte thrown away is counted, since that count is what
 	// tells somebody the audio is arriving faster than it can be played.
 	t.Run("Counts", func(t *testing.T) {
-		r := newRing()
+		r := newRing(primeFrames * FrameBytes)
 		r.write(tone(0, len(r.buf)+100))
 		if r.stats.Dropped != 100 {
 			t.Errorf("%d bytes were counted as dropped, want 100", r.stats.Dropped)
@@ -434,7 +439,7 @@ func TestRingWrite(t *testing.T) {
 // deadlocked, because what a reader sees during a race is by definition not
 // fixed.
 func TestRingUnderRace(t *testing.T) {
-	r := newRing()
+	r := newRing(primeFrames * FrameBytes)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -545,7 +550,7 @@ func TestPlayerSetGain(t *testing.T) {
 	// Verify that decibels reach the samples. 6 dB is a little under double, so
 	// a quarter-scale sample lands a little under half scale.
 	t.Run("LouderPCM", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p := &Player{out: &fakeOutput{}, ring: newRing(primeFrames * FrameBytes)}
 		p.SetGain(6)
 		p.Play(loudFrame(primeFrames*FrameSamples, 8000))
 
@@ -562,7 +567,7 @@ func TestPlayerSetGain(t *testing.T) {
 	// grown again, since a steady stream of frames should cost one allocation
 	// and not fifty a second.
 	t.Run("ScratchReused", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p := &Player{out: &fakeOutput{}, ring: newRing(primeFrames * FrameBytes)}
 		p.SetGain(6)
 		p.Play(loudFrame(FrameSamples, 8000))
 		first := &p.ring.scratch[0]
@@ -579,7 +584,7 @@ func TestPlayerSetGain(t *testing.T) {
 	// Verify that the default costs the audio nothing, since scaling every
 	// sample by one would be arithmetic done for no reason.
 	t.Run("Zero", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{}, ring: newRing()}
+		p := &Player{out: &fakeOutput{}, ring: newRing(primeFrames * FrameBytes)}
 		p.SetGain(0)
 
 		if got := p.ring.gainNow(); got != 1 {
