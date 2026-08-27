@@ -74,12 +74,13 @@ func run(args []string) int {
 	if !has(forward, "-timeout") {
 		full = append(full, "-timeout", "30m")
 	}
-	full = append(full, forward...)
-
 	// The tests live in their own package, so that this one can be the thing
-	// you run. Named last, after whatever was forwarded, because that is where
-	// go test looks for it.
+	// you run. Named before whatever was forwarded, because go test reads the
+	// package list only up to the first flag it does not recognise: a suite flag
+	// such as -audio put in front of it would leave go test running this package
+	// instead, and the suite's own flags would look undefined.
 	full = append(full, "./suite")
+	full = append(full, forward...)
 
 	cmd := exec.Command("go", full...)
 	cmd.Stderr = os.Stderr
