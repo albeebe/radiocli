@@ -39,30 +39,6 @@ import (
 	"strconv"
 )
 
-// ValidateTemplate reports whether a naming template can be used, without
-// touching the disk.
-//
-// It exists so a caller can check the template before it opens anything else. A
-// template that cannot work should fail while somebody is still watching, and
-// it should fail without having created a destination directory for a run that
-// is not going to happen.
-//
-// Parameters:
-//   - naming: the naming template, or empty for DefaultTemplate
-//
-// Returns:
-//   - error if a brace is unclosed, a token is unknown, or there are no tokens
-//
-// Errors:
-//   - ErrBadTemplate: for every failure here
-func ValidateTemplate(naming string) error {
-	if naming == "" {
-		return nil
-	}
-	_, err := parse(naming)
-	return err
-}
-
 // New opens dir as a place to record into, creating it if it is not there.
 //
 // The template is checked here, before anything can be recorded, so a template
@@ -101,6 +77,26 @@ func New(dir, naming string, normalize bool) (*Library, error) {
 	return lib, nil
 }
 
+// Abandon closes the audio and deletes it, for a recording that turned out not
+// to be wanted.
+//
+// Returns:
+//   - error if the file cannot be closed or removed
+func (r *Recording) Abandon() error {
+	if r.done {
+		return nil
+	}
+	r.done = true
+
+	if err := r.wav.Close(); err != nil {
+		return err
+	}
+	if err := removeFile(r.partial); err != nil {
+		return fmt.Errorf("removing an abandoned recording: %w", err)
+	}
+	return nil
+}
+
 // Begin opens a recording and returns it ready for audio.
 //
 // The audio goes to a hidden temporary name and is renamed when the recording
@@ -123,32 +119,6 @@ func (l *Library) Begin() (*Recording, error) {
 		return nil, err
 	}
 	return &Recording{library: l, wav: wav, partial: partial}, nil
-}
-
-// Dir reports the destination recordings are written into.
-//
-// Returns:
-//   - the destination directory
-func (l *Library) Dir() string { return l.dir }
-
-// Abandon closes the audio and deletes it, for a recording that turned out not
-// to be wanted.
-//
-// Returns:
-//   - error if the file cannot be closed or removed
-func (r *Recording) Abandon() error {
-	if r.done {
-		return nil
-	}
-	r.done = true
-
-	if err := r.wav.Close(); err != nil {
-		return err
-	}
-	if err := removeFile(r.partial); err != nil {
-		return fmt.Errorf("removing an abandoned recording: %w", err)
-	}
-	return nil
 }
 
 // Close finishes the recording, files it under the name e describes, and
@@ -211,6 +181,62 @@ func (r *Recording) Close(e Entry) (Entry, error) {
 	return e, nil
 }
 
+// Dir reports the destination recordings are written into.
+//
+// Returns:
+//   - the destination directory
+func (l *Library) Dir() string { return l.dir }
+
+// Sweep reports the recordings left behind by a run that was killed part way
+// through a transmission.
+//
+// They are reported rather than deleted, because deleting somebody's files
+// without being asked is not this package's decision to make. Each one is a WAV
+// whose header was never completed, so nothing will play it.
+//
+// Returns:
+//   - the paths of any partial recordings found
+//   - error if the destination cannot be read
+func (l *Library) Sweep() ([]string, error) {
+	entries, err := readDir(l.dir)
+	if err != nil {
+		return nil, fmt.Errorf("looking through %s: %w", l.dir, err)
+	}
+
+	var found []string
+	for _, entry := range entries {
+		if name := entry.Name(); !entry.IsDir() && len(name) > len(partialPrefix) &&
+			name[:len(partialPrefix)] == partialPrefix {
+			found = append(found, filepath.Join(l.dir, name))
+		}
+	}
+	return found, nil
+}
+
+// ValidateTemplate reports whether a naming template can be used, without
+// touching the disk.
+//
+// It exists so a caller can check the template before it opens anything else. A
+// template that cannot work should fail while somebody is still watching, and
+// it should fail without having created a destination directory for a run that
+// is not going to happen.
+//
+// Parameters:
+//   - naming: the naming template, or empty for DefaultTemplate
+//
+// Returns:
+//   - error if a brace is unclosed, a token is unknown, or there are no tokens
+//
+// Errors:
+//   - ErrBadTemplate: for every failure here
+func ValidateTemplate(naming string) error {
+	if naming == "" {
+		return nil
+	}
+	_, err := parse(naming)
+	return err
+}
+
 // Write appends audio to the recording.
 //
 // Parameters:
@@ -220,6 +246,23 @@ func (r *Recording) Close(e Entry) (Entry, error) {
 //   - error if the audio cannot be written
 func (r *Recording) Write(pcm []byte) error {
 	return r.wav.Write(pcm)
+}
+
+// free reports whether a name is available for a recording.
+//
+// Parameters:
+//   - base: the full path below which the two files would be written, with no
+//     extension
+//
+// Returns:
+//   - true if neither the audio nor its sidecar is already there
+func free(base string) bool {
+	for _, ext := range []string{".wav", ".json"} {
+		if _, err := statFile(base + ext); !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+	}
+	return true
 }
 
 // reserve works out where a recording goes and makes sure the name is free.
@@ -257,47 +300,4 @@ func (l *Library) reserve(e Entry) (string, error) {
 	}
 	return "", fmt.Errorf("cannot find a free name for a recording near %s: "+
 		"check the folder is writable", filepath.Join(l.dir, base))
-}
-
-// free reports whether a name is available for a recording.
-//
-// Parameters:
-//   - base: the full path below which the two files would be written, with no
-//     extension
-//
-// Returns:
-//   - true if neither the audio nor its sidecar is already there
-func free(base string) bool {
-	for _, ext := range []string{".wav", ".json"} {
-		if _, err := statFile(base + ext); !errors.Is(err, fs.ErrNotExist) {
-			return false
-		}
-	}
-	return true
-}
-
-// Sweep reports the recordings left behind by a run that was killed part way
-// through a transmission.
-//
-// They are reported rather than deleted, because deleting somebody's files
-// without being asked is not this package's decision to make. Each one is a WAV
-// whose header was never completed, so nothing will play it.
-//
-// Returns:
-//   - the paths of any partial recordings found
-//   - error if the destination cannot be read
-func (l *Library) Sweep() ([]string, error) {
-	entries, err := readDir(l.dir)
-	if err != nil {
-		return nil, fmt.Errorf("looking through %s: %w", l.dir, err)
-	}
-
-	var found []string
-	for _, entry := range entries {
-		if name := entry.Name(); !entry.IsDir() && len(name) > len(partialPrefix) &&
-			name[:len(partialPrefix)] == partialPrefix {
-			found = append(found, filepath.Join(l.dir, name))
-		}
-	}
-	return found, nil
 }

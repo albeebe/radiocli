@@ -106,34 +106,6 @@ func Open(name string, buffer time.Duration) (*Player, error) {
 	return &Player{out: out, ring: r}, nil
 }
 
-// periodFor picks how much audio the device is asked to take per callback, in
-// milliseconds, for a cushion of frames frames.
-//
-// Half the cushion, so that one late callback spends half of what is standing
-// and not all of it, and in whole frames, so that a callback never finds the
-// ring holding audio but less than it asked for: a ring drained in pieces that
-// divide the pieces it is filled in runs down to exactly empty, and anything
-// else reads as running dry once per callback, which plays as a stutter.
-//
-// Capped at 100 ms because the device buffers this much three times over, and
-// somewhere above that the lateness stops buying robustness anybody has been
-// able to hear. There is no floor to enforce: Open has already refused any
-// cushion under two frames, and half of two frames is the whole frame the
-// smallest period has to be.
-//
-// Parameters:
-//   - frames: the cushion, in frames, never less than two
-//
-// Returns:
-//   - the period in milliseconds: whole frames, at least one, at most 100 ms
-func periodFor(frames int) int {
-	period := frames / 2 * FrameMS
-	if period > 100 {
-		period = 100
-	}
-	return period
-}
-
 // Resolve checks that exactly one attached sink is called name, and returns it
 // spelled the way the operating system spells it.
 //
@@ -193,6 +165,34 @@ func Sinks() ([]Sink, error) {
 	}
 	sortSinks(sinks)
 	return sinks, nil
+}
+
+// periodFor picks how much audio the device is asked to take per callback, in
+// milliseconds, for a cushion of frames frames.
+//
+// Half the cushion, so that one late callback spends half of what is standing
+// and not all of it, and in whole frames, so that a callback never finds the
+// ring holding audio but less than it asked for: a ring drained in pieces that
+// divide the pieces it is filled in runs down to exactly empty, and anything
+// else reads as running dry once per callback, which plays as a stutter.
+//
+// Capped at 100 ms because the device buffers this much three times over, and
+// somewhere above that the lateness stops buying robustness anybody has been
+// able to hear. There is no floor to enforce: Open has already refused any
+// cushion under two frames, and half of two frames is the whole frame the
+// smallest period has to be.
+//
+// Parameters:
+//   - frames: the cushion, in frames, never less than two
+//
+// Returns:
+//   - the period in milliseconds: whole frames, at least one, at most 100 ms
+func periodFor(frames int) int {
+	period := frames / 2 * FrameMS
+	if period > 100 {
+		period = 100
+	}
+	return period
 }
 
 // pickSink finds the one sink called name among names, and returns where it

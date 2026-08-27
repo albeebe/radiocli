@@ -99,6 +99,62 @@ func newRecord(app *appcontext.App) *cobra.Command {
 	return cmd
 }
 
+// newSampler returns something that can be asked what the scanner is hearing.
+//
+// It tries the scanner directly first. Being refused because another invocation
+// holds the port is the one failure worth a second attempt, because a daemon
+// may be holding it precisely so that this can share: reads go over the socket
+// without taking a turn, so they slip between the exchanges of whatever else is
+// running rather than waiting for it.
+//
+// Parameters:
+//   - ctx: context for cancellation and timeouts while opening the scanner
+//   - app: the application context holding the device setting
+//
+// Returns:
+//   - a function reading what the scanner is hearing
+//   - a function releasing whatever was opened, which is never nil
+//   - error if the scanner can be reached neither directly nor through a daemon
+func newSampler(ctx context.Context, app *appcontext.App) (func(context.Context) (device.Heard, error), func(), error) {
+	client, err := app.Device(ctx)
+	if err == nil {
+		// Hearing rather than ScannerInfo, because on a conventional digital
+		// channel the transmitting radio is only on the screen. See its doc.
+		return client.Hearing, func() {}, nil
+	}
+	if !errors.Is(err, portlock.ErrBusy) {
+		return nil, nil, err
+	}
+
+	daemon, dialErr := broker.Dial(app.Config.Device)
+	if dialErr != nil {
+		// There is no daemon, so the busy scanner is the real answer and the
+		// failure to find one is not worth reporting over it.
+		return nil, nil, err
+	}
+
+	return func(ctx context.Context) (device.Heard, error) {
+		var out bytes.Buffer
+		// ModePeek runs alongside whatever has the scanner instead of queueing
+		// behind it, which a reading has to do: one that waited for a menu walk
+		// to finish would describe a transmission that ended long before.
+		outcome, err := daemon.Run(ctx, []string{"receiving", "-o", "json"},
+			broker.ModePeek, &out, io.Discard)
+		if err != nil {
+			return device.Heard{}, err
+		}
+		if outcome.Code != 0 {
+			return device.Heard{}, fmt.Errorf("the daemon could not read the scanner")
+		}
+
+		var h device.Heard
+		if err := json.Unmarshal(out.Bytes(), &h); err != nil {
+			return device.Heard{}, fmt.Errorf("reading what the daemon reported: %w", err)
+		}
+		return h, nil
+	}, func() { daemon.Close() }, nil
+}
+
 // abandon throws away a recording that cannot be finished.
 //
 // It is only reached when something has already gone wrong, and the file it
@@ -184,6 +240,21 @@ func (m *mismatch) count(tally *int, at time.Time) {
 	*tally++
 }
 
+// count folds one frame of audio into the clipping tally for the open
+// recording.
+//
+// Parameters:
+//   - pcm: signed 16-bit little-endian mono samples
+func (r *recorder) count(pcm []byte) {
+	for i := 0; i+1 < len(pcm); i += 2 {
+		sample := int16(binary.LittleEndian.Uint16(pcm[i : i+2]))
+		r.samples++
+		if sample >= clipCeiling || sample <= -clipCeiling {
+			r.clipped++
+		}
+	}
+}
+
 // entryFrom turns a finished transmission and the labels seen during it into
 // the record that is written and printed.
 //
@@ -263,6 +334,81 @@ func entryFrom(tx audiogate.Transmission, seen []device.Heard) recordings.Entry 
 	return e
 }
 
+// key builds the identity the gate compares one transmission against the next
+// with.
+//
+// It is every part of where the channel sits rather than the channel name
+// alone, because two departments can each have a channel called Dispatch and
+// treating those as one transmission would join two calls into a single file.
+//
+// A mark for the transmitting radio is part of it too, and that is what
+// separates two people talking on one channel. The gate's other way of finding
+// the boundary is the radio's mute closing, which works on a simplex channel
+// and fails on a repeater: the carrier stays up between overs, the mute never
+// closes, and two speakers land in one recording. Measured on a live P25
+// channel, a 22 second recording held two seconds of one radio and twenty of
+// the dispatcher answering it. Nothing in the audio marks that boundary, and
+// the identifier changes exactly on it.
+//
+// It is a mark rather than the identifier itself, and the difference matters.
+// The identifier is not known when a transmission starts: it arrives a moment
+// after the audio, so putting it here directly made learning who was talking
+// look identical to somebody else starting to talk, and every transmission was
+// cut into a fragment and a remainder. Measured against a live channel, that
+// turned three transmissions into five. The mark only changes when one known
+// radio is replaced by a different known one, which is the only thing that is
+// actually a boundary.
+//
+// Parameters:
+//   - h: what the scanner is hearing
+//   - speaker: the mark for the radio talking, from the caller which watches
+//     the identifier change
+//
+// Returns:
+//   - an opaque identity, empty when the scanner is on nothing
+func key(h device.Heard, speaker string) string {
+	if !h.Receiving {
+		return ""
+	}
+	return strings.Join([]string{h.System, h.Department, h.Site, h.Channel,
+		h.Frequency, h.Talkgroup, speaker}, "\x00")
+}
+
+// monitor plays the frame that has just arrived, if it is part of a
+// transmission and somebody asked to hear it.
+//
+// Nothing is playing unless --listen asked for it, so the usual case is the
+// first line and nothing else.
+//
+// Three things could decide what reaches the speakers here, and only one of
+// them is right. The audio the gate hands back is a hang behind the radio,
+// because it is held so that the end of a recording can be trimmed. The
+// recording being open is most of a second behind, because a file is not opened
+// until the transmission has proved itself worth one. Both were tried, and both
+// sound like holes rather than like a radio. What is played is the frame that
+// has just arrived, while the gate says a transmission is live, which starts at
+// the first frame above the noise floor.
+//
+// The consequence is that the speakers and the files no longer agree exactly: a
+// blip too short to be worth keeping is heard and not written. That is the
+// right way round. A scanner's own speaker plays every blip, and somebody
+// listening while they record is listening to the radio rather than auditioning
+// the disk.
+//
+// Parameters:
+//   - frame: the audio that has just arrived, already offered to the gate
+func (r *recorder) monitor(frame audiofeed.Frame) {
+	if r.player == nil {
+		return
+	}
+
+	live := r.gate.Live(frame)
+	if live {
+		r.player.Play(frame.PCM)
+	}
+	r.speakers.observe(r.app, r.player, live)
+}
+
 // mostReported returns the value the readings agreed on most often.
 //
 // The digital format is the one label here that is a fresh observation on every
@@ -317,125 +463,31 @@ func mostReported(values []string) string {
 	return best
 }
 
-// stronger reports whether one signal reading beats another.
+// observe folds one frame into the meter and logs a reading when enough have
+// gone by.
 //
-// The readings arrive as text, they are negative, and "-999" is the scanner
-// saying it has nothing to report rather than a measurement. Comparing them as
-// text puts "-100" above "-97", which is backwards, so both are read as numbers
-// and anything unreadable loses.
-//
-// Parameters:
-//   - candidate: the reading being offered
-//   - best: the strongest reading so far, empty when there is none yet
-//
-// Returns:
-//   - true if candidate is a real reading and beats best
-func stronger(candidate, best string) bool {
-	got, err := strconv.Atoi(strings.TrimSpace(candidate))
-	if err != nil || got <= noSignalRSSI {
-		return false
-	}
-	if best == "" {
-		return true
-	}
-	have, err := strconv.Atoi(strings.TrimSpace(best))
-	return err != nil || got > have
-}
-
-// key builds the identity the gate compares one transmission against the next
-// with.
-//
-// It is every part of where the channel sits rather than the channel name
-// alone, because two departments can each have a channel called Dispatch and
-// treating those as one transmission would join two calls into a single file.
-//
-// A mark for the transmitting radio is part of it too, and that is what
-// separates two people talking on one channel. The gate's other way of finding
-// the boundary is the radio's mute closing, which works on a simplex channel
-// and fails on a repeater: the carrier stays up between overs, the mute never
-// closes, and two speakers land in one recording. Measured on a live P25
-// channel, a 22 second recording held two seconds of one radio and twenty of
-// the dispatcher answering it. Nothing in the audio marks that boundary, and
-// the identifier changes exactly on it.
-//
-// It is a mark rather than the identifier itself, and the difference matters.
-// The identifier is not known when a transmission starts: it arrives a moment
-// after the audio, so putting it here directly made learning who was talking
-// look identical to somebody else starting to talk, and every transmission was
-// cut into a fragment and a remainder. Measured against a live channel, that
-// turned three transmissions into five. The mark only changes when one known
-// radio is replaced by a different known one, which is the only thing that is
-// actually a boundary.
+// The two numbers together are what diagnoses a cable, and having them saved
+// this feature from shipping broken: an input whose noise sat at -78 dBFS was
+// being triggered by its own hiss, and the reason was visible the moment the
+// floor and the level were printed next to each other. A level barely above the
+// floor is a lead in the wrong socket or a scanner turned down; a floor pinned
+// near the top of its range is a microphone.
 //
 // Parameters:
-//   - h: what the scanner is hearing
-//   - speaker: the mark for the radio talking, from the caller which watches
-//     the identifier change
-//
-// Returns:
-//   - an opaque identity, empty when the scanner is on nothing
-func key(h device.Heard, speaker string) string {
-	if !h.Receiving {
-		return ""
+//   - app: the application context whose logger receives the reading
+//   - frame: the audio frame just measured
+//   - floor: the noise floor the gate has settled on, in dBFS
+func (m *meter) observe(app *appcontext.App, frame audiofeed.Frame, floor float64) {
+	if m.seen == 0 || frame.Level > m.peak {
+		m.peak = frame.Level
 	}
-	return strings.Join([]string{h.System, h.Department, h.Site, h.Channel,
-		h.Frequency, h.Talkgroup, speaker}, "\x00")
-}
+	m.seen++
 
-// newSampler returns something that can be asked what the scanner is hearing.
-//
-// It tries the scanner directly first. Being refused because another invocation
-// holds the port is the one failure worth a second attempt, because a daemon
-// may be holding it precisely so that this can share: reads go over the socket
-// without taking a turn, so they slip between the exchanges of whatever else is
-// running rather than waiting for it.
-//
-// Parameters:
-//   - ctx: context for cancellation and timeouts while opening the scanner
-//   - app: the application context holding the device setting
-//
-// Returns:
-//   - a function reading what the scanner is hearing
-//   - a function releasing whatever was opened, which is never nil
-//   - error if the scanner can be reached neither directly nor through a daemon
-func newSampler(ctx context.Context, app *appcontext.App) (func(context.Context) (device.Heard, error), func(), error) {
-	client, err := app.Device(ctx)
-	if err == nil {
-		// Hearing rather than ScannerInfo, because on a conventional digital
-		// channel the transmitting radio is only on the screen. See its doc.
-		return client.Hearing, func() {}, nil
+	if m.seen < meterEvery {
+		return
 	}
-	if !errors.Is(err, portlock.ErrBusy) {
-		return nil, nil, err
-	}
-
-	daemon, dialErr := broker.Dial(app.Config.Device)
-	if dialErr != nil {
-		// There is no daemon, so the busy scanner is the real answer and the
-		// failure to find one is not worth reporting over it.
-		return nil, nil, err
-	}
-
-	return func(ctx context.Context) (device.Heard, error) {
-		var out bytes.Buffer
-		// ModePeek runs alongside whatever has the scanner instead of queueing
-		// behind it, which a reading has to do: one that waited for a menu walk
-		// to finish would describe a transmission that ended long before.
-		outcome, err := daemon.Run(ctx, []string{"receiving", "-o", "json"},
-			broker.ModePeek, &out, io.Discard)
-		if err != nil {
-			return device.Heard{}, err
-		}
-		if outcome.Code != 0 {
-			return device.Heard{}, fmt.Errorf("the daemon could not read the scanner")
-		}
-
-		var h device.Heard
-		if err := json.Unmarshal(out.Bytes(), &h); err != nil {
-			return device.Heard{}, fmt.Errorf("reading what the daemon reported: %w", err)
-		}
-		return h, nil
-	}, func() { daemon.Close() }, nil
+	app.Log.Debug("audio", "peak", math.Round(m.peak*10)/10, "floor", math.Round(floor*10)/10)
+	m.seen, m.peak = 0, 0
 }
 
 // observe folds one frame into the check and says something when it is sure.
@@ -476,68 +528,6 @@ func (m *mismatch) observe(app *appcontext.App, frame audiofeed.Frame, heard dev
 			"The input named is probably not the scanner. Run \"radiocli audio\" to see what\n" +
 			"else this computer can record from.\n")
 	}
-}
-
-// observe folds one frame into the meter and logs a reading when enough have
-// gone by.
-//
-// The two numbers together are what diagnoses a cable, and having them saved
-// this feature from shipping broken: an input whose noise sat at -78 dBFS was
-// being triggered by its own hiss, and the reason was visible the moment the
-// floor and the level were printed next to each other. A level barely above the
-// floor is a lead in the wrong socket or a scanner turned down; a floor pinned
-// near the top of its range is a microphone.
-//
-// Parameters:
-//   - app: the application context whose logger receives the reading
-//   - frame: the audio frame just measured
-//   - floor: the noise floor the gate has settled on, in dBFS
-func (m *meter) observe(app *appcontext.App, frame audiofeed.Frame, floor float64) {
-	if m.seen == 0 || frame.Level > m.peak {
-		m.peak = frame.Level
-	}
-	m.seen++
-
-	if m.seen < meterEvery {
-		return
-	}
-	app.Log.Debug("audio", "peak", math.Round(m.peak*10)/10, "floor", math.Round(floor*10)/10)
-	m.seen, m.peak = 0, 0
-}
-
-// monitor plays the frame that has just arrived, if it is part of a
-// transmission and somebody asked to hear it.
-//
-// Nothing is playing unless --listen asked for it, so the usual case is the
-// first line and nothing else.
-//
-// Three things could decide what reaches the speakers here, and only one of
-// them is right. The audio the gate hands back is a hang behind the radio,
-// because it is held so that the end of a recording can be trimmed. The
-// recording being open is most of a second behind, because a file is not opened
-// until the transmission has proved itself worth one. Both were tried, and both
-// sound like holes rather than like a radio. What is played is the frame that
-// has just arrived, while the gate says a transmission is live, which starts at
-// the first frame above the noise floor.
-//
-// The consequence is that the speakers and the files no longer agree exactly: a
-// blip too short to be worth keeping is heard and not written. That is the
-// right way round. A scanner's own speaker plays every blip, and somebody
-// listening while they record is listening to the radio rather than auditioning
-// the disk.
-//
-// Parameters:
-//   - frame: the audio that has just arrived, already offered to the gate
-func (r *recorder) monitor(frame audiofeed.Frame) {
-	if r.player == nil {
-		return
-	}
-
-	live := r.gate.Live(frame)
-	if live {
-		r.player.Play(frame.PCM)
-	}
-	r.speakers.observe(r.app, r.player, live)
 }
 
 // one acts on a single thing the gate said.
@@ -589,91 +579,6 @@ func (r *recorder) one(ev audiogate.Event) error {
 		r.warnIfClipped()
 		return nil
 	}
-}
-
-// volumeNow reads the scanner's volume for the clipping warning to quote.
-//
-// Every failure is the same answer here. The volume is a nicety on a warning
-// about something else, so a scanner that is busy, absent, or simply unwilling
-// to say costs the warning one sentence rather than costing the run anything.
-//
-// Parameters:
-//   - ctx: context for the exchange with the scanner
-//   - app: the application context holding the scanner connection
-//
-// Returns:
-//   - the volume level, or -1 when it could not be read
-func volumeNow(ctx context.Context, app *appcontext.App) int {
-	client, err := app.Device(ctx)
-	if err != nil {
-		return -1
-	}
-	level, err := client.Volume(ctx)
-	if err != nil {
-		return -1
-	}
-	return level
-}
-
-// count folds one frame of audio into the clipping tally for the open
-// recording.
-//
-// Parameters:
-//   - pcm: signed 16-bit little-endian mono samples
-func (r *recorder) count(pcm []byte) {
-	for i := 0; i+1 < len(pcm); i += 2 {
-		sample := int16(binary.LittleEndian.Uint16(pcm[i : i+2]))
-		r.samples++
-		if sample >= clipCeiling || sample <= -clipCeiling {
-			r.clipped++
-		}
-	}
-}
-
-// warnIfClipped says so when the recording just filed was overloaded on the
-// way in.
-//
-// It is said again for every recording rather than once for the run, because
-// the warning is only useful next to the thing it is about. A line that
-// scrolled past twenty transmissions ago does not tell somebody that the one
-// they are looking at is distorted, and the whole point of repeating it is that
-// it stops the moment the volume comes down.
-//
-// The advice names the volume rather than a target level, because how far down
-// is far enough depends on the sound card and the only honest instruction is to
-// lower it until this stops.
-//
-// The level is read here rather than remembered from the start of the run, so
-// that somebody who just turned the volume down is told the number they set
-// rather than the one they replaced.
-//
-// It says to turn the radio down rather than naming "radiocli volume set",
-// which is the obvious thing to write and does not work. This command holds the
-// serial port for as long as it runs, so that invocation is refused as busy by
-// the very run that printed the advice. The knob is the way, and it is already
-// in the person's hand.
-func (r *recorder) warnIfClipped() {
-	if r.samples == 0 || float64(r.clipped) < clipFraction*float64(r.samples) {
-		return
-	}
-
-	volume := -1
-	if r.volume != nil {
-		volume = r.volume()
-	}
-
-	percent := 100 * float64(r.clipped) / float64(r.samples)
-	if volume < 0 {
-		render.Alert(r.app, "  warning: %.1f%% of that recording is clipped, so the sound input is being\n"+
-			"           overloaded. Turn the scanner's volume down until this stops, or move\n"+
-			"           the cable to a line input rather than a microphone input.\n", percent)
-		return
-	}
-	render.Alert(r.app, "  warning: %.1f%% of that recording is clipped, so the sound input is being\n"+
-		"           overloaded. Turn the scanner's volume down from %d of %d until this\n"+
-		"           stops, or move the cable to a line input rather than a microphone\n"+
-		"           input.\n",
-		percent, volume, device.MaxLevel)
 }
 
 // poll asks the scanner what it is hearing, over and over, until ctx ends.
@@ -969,4 +874,99 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 
 	announceRecording(app, source, library.Dir(), p)
 	return recordLoop(ctx, app, library, frames, sample, opts, p)
+}
+
+// stronger reports whether one signal reading beats another.
+//
+// The readings arrive as text, they are negative, and "-999" is the scanner
+// saying it has nothing to report rather than a measurement. Comparing them as
+// text puts "-100" above "-97", which is backwards, so both are read as numbers
+// and anything unreadable loses.
+//
+// Parameters:
+//   - candidate: the reading being offered
+//   - best: the strongest reading so far, empty when there is none yet
+//
+// Returns:
+//   - true if candidate is a real reading and beats best
+func stronger(candidate, best string) bool {
+	got, err := strconv.Atoi(strings.TrimSpace(candidate))
+	if err != nil || got <= noSignalRSSI {
+		return false
+	}
+	if best == "" {
+		return true
+	}
+	have, err := strconv.Atoi(strings.TrimSpace(best))
+	return err != nil || got > have
+}
+
+// volumeNow reads the scanner's volume for the clipping warning to quote.
+//
+// Every failure is the same answer here. The volume is a nicety on a warning
+// about something else, so a scanner that is busy, absent, or simply unwilling
+// to say costs the warning one sentence rather than costing the run anything.
+//
+// Parameters:
+//   - ctx: context for the exchange with the scanner
+//   - app: the application context holding the scanner connection
+//
+// Returns:
+//   - the volume level, or -1 when it could not be read
+func volumeNow(ctx context.Context, app *appcontext.App) int {
+	client, err := app.Device(ctx)
+	if err != nil {
+		return -1
+	}
+	level, err := client.Volume(ctx)
+	if err != nil {
+		return -1
+	}
+	return level
+}
+
+// warnIfClipped says so when the recording just filed was overloaded on the
+// way in.
+//
+// It is said again for every recording rather than once for the run, because
+// the warning is only useful next to the thing it is about. A line that
+// scrolled past twenty transmissions ago does not tell somebody that the one
+// they are looking at is distorted, and the whole point of repeating it is that
+// it stops the moment the volume comes down.
+//
+// The advice names the volume rather than a target level, because how far down
+// is far enough depends on the sound card and the only honest instruction is to
+// lower it until this stops.
+//
+// The level is read here rather than remembered from the start of the run, so
+// that somebody who just turned the volume down is told the number they set
+// rather than the one they replaced.
+//
+// It says to turn the radio down rather than naming "radiocli volume set",
+// which is the obvious thing to write and does not work. This command holds the
+// serial port for as long as it runs, so that invocation is refused as busy by
+// the very run that printed the advice. The knob is the way, and it is already
+// in the person's hand.
+func (r *recorder) warnIfClipped() {
+	if r.samples == 0 || float64(r.clipped) < clipFraction*float64(r.samples) {
+		return
+	}
+
+	volume := -1
+	if r.volume != nil {
+		volume = r.volume()
+	}
+
+	percent := 100 * float64(r.clipped) / float64(r.samples)
+	if volume < 0 {
+		render.Alert(r.app, "  warning: %.1f%% of that recording is clipped, so the sound input is being\n"+
+			"           overloaded. Turn the scanner's volume down until this stops, or move\n"+
+			"           the cable to a line input rather than a microphone input.\n", percent)
+		return
+	}
+	render.Alert(r.app, "  warning: %.1f%% of that recording is clipped, so the sound input is being\n"+
+		"           overloaded. Turn the scanner's volume down from %d of %d until this\n"+
+		"           stops, or move the cable to a line input rather than a microphone\n"+
+		"           input.\n",
+		percent, volume, device.MaxLevel)
 }

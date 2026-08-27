@@ -16,38 +16,6 @@ import (
 	"github.com/albeebe/radiocli/internal/recordings"
 )
 
-// defaultBitrate is what --format opus uses unless told otherwise.
-//
-// In the middle of the useful band. The encoder here is CELT only, which does
-// worse on speech than a hybrid one, so the comfortable range for a voice
-// channel is around 32 to 48 kbps rather than the 16 to 24 that libopus would
-// hold up at. See the opusenc package.
-const defaultBitrate = 32000
-
-// playedBytesPerSecond is how much audio one second of playing is, used to say
-// how much was dropped in a unit a person can picture.
-const playedBytesPerSecond = audiofeed.SampleRate * 2
-
-// The formats this can write.
-const (
-	// formatOpus is compressed, for a program rather than a player: there is no
-	// container around the packets, so nothing that plays files will read it.
-	formatOpus = "opus"
-
-	// formatPCM is the samples themselves, with nothing around them. It is the
-	// default because it is the one a player can be pointed straight at.
-	formatPCM = "pcm"
-)
-
-// outputQueue is how many frames may be waiting to be written before the oldest
-// are dropped.
-//
-// One second. Generous compared with what a remote listener gets, because what is on the
-// other end of this is usually a pipe into a player on the same machine, and a
-// player that stalls for a moment should catch up rather than lose audio. It is
-// still bounded, because the sound card cannot be asked to wait.
-const outputQueue = 1000 / audiofeed.FrameMS
-
 // The two numbers that decide whether a recording was overloaded on the way in.
 //
 // clipCeiling is the sample value at which a converter has run out of room.
@@ -67,23 +35,34 @@ const (
 	clipFraction = 0.001
 )
 
-// noSignalRSSI is the reading the scanner gives when nothing is coming in.
+// defaultBitrate is what --format opus uses unless told otherwise.
 //
-// It is not a measurement. A scanning radio with nothing on the channel reports
-// this whatever the noise floor is doing, so anything keeping the strongest
-// reading of a transmission has to refuse it rather than record it as the
-// strongest thing it saw.
-const noSignalRSSI = -999
+// In the middle of the useful band. The encoder here is CELT only, which does
+// worse on speech than a hybrid one, so the comfortable range for a voice
+// channel is around 32 to 48 kbps rather than the 16 to 24 that libopus would
+// hold up at. See the opusenc package.
+const defaultBitrate = 32000
 
-// meterFrames is how many frames go by between playback readings under
-// --verbose, which is one a second.
-const meterFrames = 1000 / audiofeed.FrameMS
+// The formats this can write.
+const (
+	// formatOpus is compressed, for a program rather than a player: there is no
+	// container around the packets, so nothing that plays files will read it.
+	formatOpus = "opus"
+
+	// formatPCM is the samples themselves, with nothing around them. It is the
+	// default because it is the one a player can be pointed straight at.
+	formatPCM = "pcm"
+)
 
 // meterEvery is how many frames go by between level readings under --verbose.
 //
 // About one every two seconds. Fast enough to watch somebody move a volume
 // knob, slow enough that a night of it is readable.
 const meterEvery = 2000 / audiofeed.FrameMS
+
+// meterFrames is how many frames go by between playback readings under
+// --verbose, which is one a second.
+const meterFrames = 1000 / audiofeed.FrameMS
 
 // The mismatch check: how much disagreement between the radio and the sound
 // card is enough to say the input is not the scanner.
@@ -106,6 +85,27 @@ const (
 // record, it is deciding whether to tell somebody their cable is wrong, and a
 // false accusation is worse than a slow one.
 const mismatchMargin = 12.0
+
+// noSignalRSSI is the reading the scanner gives when nothing is coming in.
+//
+// It is not a measurement. A scanning radio with nothing on the channel reports
+// this whatever the noise floor is doing, so anything keeping the strongest
+// reading of a transmission has to refuse it rather than record it as the
+// strongest thing it saw.
+const noSignalRSSI = -999
+
+// outputQueue is how many frames may be waiting to be written before the oldest
+// are dropped.
+//
+// One second. Generous compared with what a remote listener gets, because what is on the
+// other end of this is usually a pipe into a player on the same machine, and a
+// player that stalls for a moment should catch up rather than lose audio. It is
+// still bounded, because the sound card cannot be asked to wait.
+const outputQueue = 1000 / audiofeed.FrameMS
+
+// playedBytesPerSecond is how much audio one second of playing is, used to say
+// how much was dropped in a unit a person can picture.
+const playedBytesPerSecond = audiofeed.SampleRate * 2
 
 // recordQueue is how many frames may be waiting for the recorder before the
 // oldest are dropped.
@@ -177,62 +177,6 @@ type capture interface {
 	Source() string
 }
 
-// listenOptions is what the flags asked for.
-type listenOptions struct {
-	input   string  // Sound input to open directly, empty to take the audio from a daemon
-	channel string  // Which side of the cable the scanner is on, as --channel gave it
-	speaker string  // Speakers to play on, empty for whichever this computer is already using
-	squelch bool    // Play only the transmissions, off when --squelch=false
-	gain    float64 // Decibels to turn the audio up by, as --gain gave it
-
-	// buffer is how much audio stands between the radio and the speakers, as
-	// --buffer gave it. Bigger rides out more of what the computer does
-	// underneath the playing, at the cost of hearing everything that much
-	// later.
-	buffer time.Duration
-
-	// hang is how long the audio has to stay quiet before a transmission is
-	// called finished, as --hang gave it. Only the squelch uses it.
-	hang time.Duration
-}
-
-// playbackMeter reports what the speakers did with the last second of audio,
-// for somebody watching a run that sounds wrong.
-//
-// The counts on the way out say what happened over a whole evening, which is
-// enough to tell a working run from a broken one and nothing like enough to say
-// where the trouble is. A reading a second lines the gaps up against the
-// transmissions: gaps that land at the edges of transmissions are the squelch,
-// and gaps scattered through the middle of one are the audio not arriving in
-// time.
-type playbackMeter struct {
-	// played is how many frames have been handed to the speakers since the last
-	// reading.
-	played int
-
-	// seen is how many frames have arrived since the last reading, played or
-	// not, which is what makes the reading a rate rather than a count.
-	seen int
-
-	// last is the stats as of the previous reading, so each one is a delta.
-	last audioout.Stats
-}
-
-// listing is what the bare "audio" command has to say: both halves of what this
-// computer can do with sound.
-//
-// Two named lists rather than one list with a kind on each row. A reader asking
-// for the speakers should not have to filter, and the two are genuinely
-// different things rather than two flavours of one: only one of them can carry
-// a scanner in, and only the other can be played out of.
-type listing struct {
-	// Inputs is everything this computer can record from.
-	Inputs []audioin.Source `json:"inputs"`
-
-	// Outputs is everywhere it can play.
-	Outputs []audioout.Sink `json:"outputs"`
-}
-
 // player is the part of an open sound output the commands here use. It is an
 // interface rather than *audioout.Player so that openPlayer can be faked.
 //
@@ -256,12 +200,38 @@ type player interface {
 	Stats() audioout.Stats
 }
 
-// outputOptions is what the flags asked for.
-type outputOptions struct {
-	input   string // Sound input to open directly, empty to take the audio from a daemon
-	format  string // Audio format to write, as --format gave it
-	bitrate int    // Bits per second, for --format opus
-	channel string // Which side of the cable the scanner is on, as --channel gave it
+// listenOptions is what the flags asked for.
+type listenOptions struct {
+	input   string  // Sound input to open directly, empty to take the audio from a daemon
+	channel string  // Which side of the cable the scanner is on, as --channel gave it
+	speaker string  // Speakers to play on, empty for whichever this computer is already using
+	squelch bool    // Play only the transmissions, off when --squelch=false
+	gain    float64 // Decibels to turn the audio up by, as --gain gave it
+
+	// buffer is how much audio stands between the radio and the speakers, as
+	// --buffer gave it. Bigger rides out more of what the computer does
+	// underneath the playing, at the cost of hearing everything that much
+	// later.
+	buffer time.Duration
+
+	// hang is how long the audio has to stay quiet before a transmission is
+	// called finished, as --hang gave it. Only the squelch uses it.
+	hang time.Duration
+}
+
+// listing is what the bare "audio" command has to say: both halves of what this
+// computer can do with sound.
+//
+// Two named lists rather than one list with a kind on each row. A reader asking
+// for the speakers should not have to filter, and the two are genuinely
+// different things rather than two flavours of one: only one of them can carry
+// a scanner in, and only the other can be played out of.
+type listing struct {
+	// Inputs is everything this computer can record from.
+	Inputs []audioin.Source `json:"inputs"`
+
+	// Outputs is everywhere it can play.
+	Outputs []audioout.Sink `json:"outputs"`
 }
 
 // meter reports how loud the audio is against where the noise floor sits, so a
@@ -303,6 +273,36 @@ type mismatch struct {
 
 	// told stops the same advice being repeated for as long as the fault lasts.
 	told bool
+}
+
+// outputOptions is what the flags asked for.
+type outputOptions struct {
+	input   string // Sound input to open directly, empty to take the audio from a daemon
+	format  string // Audio format to write, as --format gave it
+	bitrate int    // Bits per second, for --format opus
+	channel string // Which side of the cable the scanner is on, as --channel gave it
+}
+
+// playbackMeter reports what the speakers did with the last second of audio,
+// for somebody watching a run that sounds wrong.
+//
+// The counts on the way out say what happened over a whole evening, which is
+// enough to tell a working run from a broken one and nothing like enough to say
+// where the trouble is. A reading a second lines the gaps up against the
+// transmissions: gaps that land at the edges of transmissions are the squelch,
+// and gaps scattered through the middle of one are the audio not arriving in
+// time.
+type playbackMeter struct {
+	// played is how many frames have been handed to the speakers since the last
+	// reading.
+	played int
+
+	// seen is how many frames have arrived since the last reading, played or
+	// not, which is what makes the reading a rate rather than a count.
+	seen int
+
+	// last is the stats as of the previous reading, so each one is a delta.
+	last audioout.Stats
 }
 
 // recordOptions is what the flags asked for.

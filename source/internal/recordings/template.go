@@ -138,20 +138,6 @@ func (t template) render(e Entry) string {
 	return shorten(kept)
 }
 
-// varies reports whether a template has any token in it, and so whether two
-// recordings can be told apart by their names.
-//
-// Returns:
-//   - true if at least one token is present
-func (t template) varies() bool {
-	for _, p := range t.parts {
-		if p.token != "" {
-			return true
-		}
-	}
-	return false
-}
-
 // sanitize turns a value from the scanner into something safe to put in a path.
 //
 // Names come off a radio somebody else programmed, and they contain spaces,
@@ -177,6 +163,17 @@ func sanitize(value string) string {
 		}
 	}
 	return tidy(b.String())
+}
+
+// separator reports whether a character is one this package collapses runs of.
+//
+// Parameters:
+//   - r: the character to test
+//
+// Returns:
+//   - true if it separates parts of a name rather than being part of one
+func separator(r rune) bool {
+	return r == '-' || r == '_'
 }
 
 // shorten brings a path within the limits, taking from the longest component
@@ -251,13 +248,16 @@ func tidy(value string) string {
 	return strings.Trim(b.String(), "-_.")
 }
 
-// separator reports whether a character is one this package collapses runs of.
-//
-// Parameters:
-//   - r: the character to test
+// varies reports whether a template has any token in it, and so whether two
+// recordings can be told apart by their names.
 //
 // Returns:
-//   - true if it separates parts of a name rather than being part of one
-func separator(r rune) bool {
-	return r == '-' || r == '_'
+//   - true if at least one token is present
+func (t template) varies() bool {
+	for _, p := range t.parts {
+		if p.token != "" {
+			return true
+		}
+	}
+	return false
 }

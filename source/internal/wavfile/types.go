@@ -52,13 +52,13 @@ const (
 	// by Close once the length is known.
 	dataSizeAt = 40
 
-	// headerBytes is the whole header written ahead of the audio: the RIFF
-	// chunk, a 16 byte PCM format chunk, and the data chunk's own header.
-	headerBytes = 44
-
 	// fullScale is the largest magnitude a signed 16 bit sample can carry, and
 	// the ceiling Normalize scales towards.
 	fullScale = 32767
+
+	// headerBytes is the whole header written ahead of the audio: the RIFF
+	// chunk, a 16 byte PCM format chunk, and the data chunk's own header.
+	headerBytes = 44
 
 	// maxGain is the most Normalize will multiply a recording by, about 30 dB.
 	//
@@ -75,12 +75,6 @@ const (
 	// is instead.
 	maxGain = 31.6
 
-	// scaleChunk is how much audio Normalize rewrites at a time. Big enough
-	// that a long recording is a handful of passes rather than thousands, small
-	// enough that the buffer is nothing next to the audio already buffered
-	// elsewhere in the recorder.
-	scaleChunk = 1 << 16
-
 	// riffSizeAt is where the RIFF chunk's length sits in the header, also
 	// patched by Close.
 	riffSizeAt = 4
@@ -89,6 +83,12 @@ const (
 	// everything after its own four bytes, which is the header less the eight
 	// bytes of "RIFF" and the length itself.
 	riffSizeOverhead = headerBytes - 8
+
+	// scaleChunk is how much audio Normalize rewrites at a time. Big enough
+	// that a long recording is a handful of passes rather than thousands, small
+	// enough that the buffer is nothing next to the audio already buffered
+	// elsewhere in the recorder.
+	scaleChunk = 1 << 16
 )
 
 // maxData is the most audio one file can hold.
@@ -101,16 +101,16 @@ const (
 // than refusing to grow.
 const maxData = math.MaxUint32 - riffSizeOverhead
 
+// ErrBadTarget says Normalize was asked for a level that is not a fraction of
+// full scale.
+var ErrBadTarget = errors.New("normalize target is out of range")
+
 // ErrSampleAlign says Write was given a part of a sample.
 //
 // Audio is only ever a whole number of sample frames, and a file holding half
 // of one is not merely short: every sample after the ragged edge is assembled
 // from the wrong pair of bytes, so the whole rest of the file is noise.
 var ErrSampleAlign = errors.New("not a whole number of samples")
-
-// ErrBadTarget says Normalize was asked for a level that is not a fraction of
-// full scale.
-var ErrBadTarget = errors.New("normalize target is out of range")
 
 // ErrTooLarge says the file has reached the largest size a WAV can describe.
 var ErrTooLarge = errors.New("recording is larger than a WAV file can address")

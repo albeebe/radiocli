@@ -19,7 +19,9 @@ Naming works exactly as it does in `audioin`: a sink is a name and nothing else,
 import "github.com/albeebe/radiocli/internal/audioout"
 
 // Whichever output this computer is already using, or name one from Sinks().
-player, err := audioout.Open("")
+// DefaultBuffer is the cushion for a listener with no opinion; the trade it
+// makes is described on the constant.
+player, err := audioout.Open("", audioout.DefaultBuffer)
 if err != nil {
     return err
 }

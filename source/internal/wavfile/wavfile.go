@@ -51,6 +51,41 @@ import (
 	"time"
 )
 
+// Close patches the two length fields in the header and closes the file.
+//
+// Both lengths are the whole reason this cannot simply be a write and a close.
+// A WAV declares how long it is in two places, neither of which can be known
+// until the audio has stopped, so the numbers are written last by seeking back
+// over them. A file closed without this step holds every sample and still says
+// it holds none, and most players believe the header.
+//
+// It is safe to call more than once, because a recording is closed on the way
+// out of the normal path and again by a deferred call when something failed
+// part way through.
+//
+// Returns:
+//   - error if the header cannot be patched or the file cannot be closed
+func (w *Writer) Close() error {
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+
+	if err := w.patch(riffSizeAt, uint32(w.n+riffSizeOverhead)); err != nil {
+		_ = w.f.Close()
+		return err
+	}
+	if err := w.patch(dataSizeAt, uint32(w.n)); err != nil {
+		_ = w.f.Close()
+		return err
+	}
+
+	if err := w.f.Close(); err != nil {
+		return fmt.Errorf("closing the recording %s: %w", w.path, err)
+	}
+	return nil
+}
+
 // Create opens path and writes the header, ready for audio to be appended.
 //
 // The header is written now with both of its length fields set to zero, and
@@ -87,41 +122,6 @@ func Create(path string) (*Writer, error) {
 	return w, nil
 }
 
-// Close patches the two length fields in the header and closes the file.
-//
-// Both lengths are the whole reason this cannot simply be a write and a close.
-// A WAV declares how long it is in two places, neither of which can be known
-// until the audio has stopped, so the numbers are written last by seeking back
-// over them. A file closed without this step holds every sample and still says
-// it holds none, and most players believe the header.
-//
-// It is safe to call more than once, because a recording is closed on the way
-// out of the normal path and again by a deferred call when something failed
-// part way through.
-//
-// Returns:
-//   - error if the header cannot be patched or the file cannot be closed
-func (w *Writer) Close() error {
-	if w.closed {
-		return nil
-	}
-	w.closed = true
-
-	if err := w.patch(riffSizeAt, uint32(w.n+riffSizeOverhead)); err != nil {
-		_ = w.f.Close()
-		return err
-	}
-	if err := w.patch(dataSizeAt, uint32(w.n)); err != nil {
-		_ = w.f.Close()
-		return err
-	}
-
-	if err := w.f.Close(); err != nil {
-		return fmt.Errorf("closing the recording %s: %w", w.path, err)
-	}
-	return nil
-}
-
 // Duration reports how much audio has been written so far.
 //
 // Worked out from the byte count rather than from a clock, so it is the length
@@ -134,45 +134,6 @@ func (w *Writer) Close() error {
 func (w *Writer) Duration() time.Duration {
 	return time.Duration(w.n) * time.Second / time.Duration(ByteRate)
 }
-
-// Write appends audio to the recording.
-//
-// Parameters:
-//   - pcm: signed 16-bit little-endian mono samples, a whole number of them
-//
-// Returns:
-//   - error if pcm is not a whole number of samples, if the file has reached
-//     the largest size a WAV can describe, or if the write fails
-//
-// Errors:
-//   - ErrSampleAlign: if pcm does not divide into whole sample frames
-//   - ErrTooLarge: if the recording has reached the format's size limit
-func (w *Writer) Write(pcm []byte) error {
-	if len(pcm)%BlockAlign != 0 {
-		return fmt.Errorf("%w: got %d bytes, want a multiple of %d", ErrSampleAlign, len(pcm), BlockAlign)
-	}
-	if w.n+int64(len(pcm)) > maxData {
-		return fmt.Errorf("%w: %s has reached %d bytes", ErrTooLarge, w.path, w.n)
-	}
-
-	for i := 0; i+1 < len(pcm); i += 2 {
-		if m := magnitude(int16(binary.LittleEndian.Uint16(pcm[i : i+2]))); m > w.peak {
-			w.peak = m
-		}
-	}
-
-	if _, err := w.f.Write(pcm); err != nil {
-		return fmt.Errorf("writing audio to %s: %w", w.path, err)
-	}
-	w.n += int64(len(pcm))
-	return nil
-}
-
-// Peak reports the largest sample magnitude written so far, from 0 to 32767.
-//
-// Returns:
-//   - the loudest sample in the recording, 0 while it holds none
-func (w *Writer) Peak() int { return w.peak }
 
 // Normalize scales the whole recording so its loudest sample sits at target.
 //
@@ -241,6 +202,45 @@ func (w *Writer) Normalize(target float64) error {
 	return nil
 }
 
+// Peak reports the largest sample magnitude written so far, from 0 to 32767.
+//
+// Returns:
+//   - the loudest sample in the recording, 0 while it holds none
+func (w *Writer) Peak() int { return w.peak }
+
+// Write appends audio to the recording.
+//
+// Parameters:
+//   - pcm: signed 16-bit little-endian mono samples, a whole number of them
+//
+// Returns:
+//   - error if pcm is not a whole number of samples, if the file has reached
+//     the largest size a WAV can describe, or if the write fails
+//
+// Errors:
+//   - ErrSampleAlign: if pcm does not divide into whole sample frames
+//   - ErrTooLarge: if the recording has reached the format's size limit
+func (w *Writer) Write(pcm []byte) error {
+	if len(pcm)%BlockAlign != 0 {
+		return fmt.Errorf("%w: got %d bytes, want a multiple of %d", ErrSampleAlign, len(pcm), BlockAlign)
+	}
+	if w.n+int64(len(pcm)) > maxData {
+		return fmt.Errorf("%w: %s has reached %d bytes", ErrTooLarge, w.path, w.n)
+	}
+
+	for i := 0; i+1 < len(pcm); i += 2 {
+		if m := magnitude(int16(binary.LittleEndian.Uint16(pcm[i : i+2]))); m > w.peak {
+			w.peak = m
+		}
+	}
+
+	if _, err := w.f.Write(pcm); err != nil {
+		return fmt.Errorf("writing audio to %s: %w", w.path, err)
+	}
+	w.n += int64(len(pcm))
+	return nil
+}
+
 // clamp rounds a scaled sample and holds it inside what an int16 can carry.
 //
 // Rounding can put a sample one past full scale even when the factor was
@@ -260,24 +260,6 @@ func clamp(v float64) int16 {
 		return -fullScale
 	}
 	return int16(math.Round(v))
-}
-
-// magnitude reports how far a sample is from silence.
-//
-// Parameters:
-//   - v: the sample
-//
-// Returns:
-//   - the sample's distance from zero, with the one value that cannot be
-//     negated held at full scale
-func magnitude(v int16) int {
-	if v < 0 {
-		if v == -fullScale-1 {
-			return fullScale
-		}
-		return int(-v)
-	}
-	return int(v)
 }
 
 // header returns the 44 byte WAV header, with both lengths left at zero for
@@ -309,6 +291,24 @@ func header() []byte {
 	// h[40:44] is the data length, patched by Close.
 
 	return h
+}
+
+// magnitude reports how far a sample is from silence.
+//
+// Parameters:
+//   - v: the sample
+//
+// Returns:
+//   - the sample's distance from zero, with the one value that cannot be
+//     negated held at full scale
+func magnitude(v int16) int {
+	if v < 0 {
+		if v == -fullScale-1 {
+			return fullScale
+		}
+		return int(-v)
+	}
+	return int(v)
 }
 
 // patch seeks to off and overwrites the four byte length there.

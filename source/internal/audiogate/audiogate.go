@@ -138,6 +138,21 @@ func (g *Gate) Floor() float64 {
 	return g.floor.level()
 }
 
+// Flush ends any transmission still open, and reports it.
+//
+// It is what the recorder calls on the way out, so that stopping part way
+// through a transmission still produces a complete recording of the part that
+// happened rather than losing it.
+//
+// Returns:
+//   - the events completing the open transmission, or none if nothing was open
+func (g *Gate) Flush() []Event {
+	if g.tx == nil {
+		return nil
+	}
+	return g.close(ReasonStopped)
+}
+
 // Live reports whether a transmission is running right now, for something
 // playing audio as it arrives rather than keeping it.
 //
@@ -154,13 +169,13 @@ func (g *Gate) Floor() float64 {
 //
 // So it reports the transmission rather than the recording, which is open from
 // the moment something opened it. What it deliberately does not do is ask the
-// audio directly, and that is worth stating because the first version of this
-// did. Offering "or this frame is loud" gets the attack down to nothing, and it
-// is wrong for the reason Offer gives above: a scanner's own output has more
-// than one noise floor, so the static of an open squelch reads as loud against
-// a floor measured while the radio was muted. Playing that put fourteen seconds
-// of hiss through the speakers between two transmissions of three, which is
-// what somebody listening hears as choppy.
+// audio directly, though the first version of this did. Offering "or this
+// frame is loud" gets the attack down to nothing, and it is wrong for the
+// reason Offer gives above: a scanner's own output has more than one noise
+// floor, so the static of an open squelch reads as loud against a floor
+// measured while the radio was muted. Playing that put fourteen seconds of
+// hiss through the speakers between two transmissions of three, which is what
+// somebody listening hears as choppy.
 //
 // The cost is whatever the transmission took to open, which is the honest
 // answer either way: with a radio to ask, the radio is asked ten times a
@@ -175,21 +190,6 @@ func (g *Gate) Floor() float64 {
 //   - true if the audio arriving now should be heard
 func (g *Gate) Live(f audiofeed.Frame) bool {
 	return g.tx != nil
-}
-
-// Flush ends any transmission still open, and reports it.
-//
-// It is what the recorder calls on the way out, so that stopping part way
-// through a transmission still produces a complete recording of the part that
-// happened rather than losing it.
-//
-// Returns:
-//   - the events completing the open transmission, or none if nothing was open
-func (g *Gate) Flush() []Event {
-	if g.tx == nil {
-		return nil
-	}
-	return g.close(ReasonStopped)
 }
 
 // Offer hands one frame to the gate and returns whatever that settled.
@@ -242,6 +242,50 @@ func (g *Gate) Offer(f audiofeed.Frame) []Event {
 	}
 
 	return g.advance(f, loud, dropped)
+}
+
+// aboveFloor reports whether a frame already in the ring carried signal.
+//
+// Separate from loud because it is asked about the past, when the floor may
+// have been estimated differently. The current estimate is used deliberately:
+// it is the better one, having seen more audio.
+//
+// Parameters:
+//   - f: the frame to judge
+//
+// Returns:
+//   - true if the frame is above the floor by the margin
+func (g *Gate) aboveFloor(f audiofeed.Frame) bool {
+	return g.floor.ready() && f.Level > g.floor.level()+marginDB
+}
+
+// add folds one level into the window, taking the oldest back out once the
+// window is full.
+//
+// Parameters:
+//   - level: the frame's level in dBFS, clamped here to the range a real noise
+//     floor can occupy
+func (n *noiseFloor) add(level float64) {
+	if n.recent == nil {
+		n.recent = make([]uint8, floorFrames)
+	}
+
+	if level < floorMin {
+		level = floorMin
+	}
+	if level > floorMax {
+		level = floorMax
+	}
+	bucket := uint8(level - floorMin)
+
+	if n.n == len(n.recent) {
+		n.counts[n.recent[n.at]]--
+	} else {
+		n.n++
+	}
+	n.recent[n.at] = bucket
+	n.counts[bucket]++
+	n.at = (n.at + 1) % len(n.recent)
 }
 
 // advance adds one frame to the open transmission and applies every rule that
@@ -384,38 +428,37 @@ func (g *Gate) advance(f audiofeed.Frame, loud bool, dropped int) []Event {
 	return out
 }
 
-// hasSpeech reports whether the transmission has held anything loud enough to
-// be somebody talking.
+// close finishes the open transmission, trimming the trailing quiet off it.
 //
-// It is the difference between a recording and a file of noise. The floor is
-// where the input sits with nothing coming through, and a transmission the
-// radio reported into a quiet cable never rises meaningfully above it, so the
-// loudest moment is what settles whether there was ever a voice.
-//
-// Measured against the floor rather than an absolute level, because how loud
-// speech lands depends on the cable and the sound card and nothing here can
-// know either.
-//
-// A floor that is not quiet is not answered against at all. The estimate only
-// means "where the noise is" when most of the window it was taken from was
-// noise, and a busy channel fills that window with speech instead. Reading a
-// high estimate as a high noise floor would reject the traffic that raised it.
+// A transmission that never reached MinDuration produces nothing at all: no
+// KindStart was emitted for it, so there is no file to abandon and nothing to
+// tell the caller about. That is the whole reason confirmation is delayed.
 //
 // Parameters:
-//   - tx: the transmission being assembled
+//   - reason: why it ended, one of the Reason constants
 //
 // Returns:
-//   - true if the loudest frame so far is far enough above the floor, or if
-//     the floor is too high to be judging anything by
-func (g *Gate) hasSpeech(tx *transmission) bool {
-	if !g.floor.ready() {
-		return false
+//   - the remaining audio and the KindEnd describing it, or none if the
+//     transmission was too short to keep
+func (g *Gate) close(reason string) []Event {
+	tx := g.tx
+	g.tx = nil
+
+	if !tx.confirmed {
+		return nil
 	}
-	floor := g.floor.level()
-	if floor > floorTrusted {
-		return true
-	}
-	return tx.heard && tx.peak > floor+speechMarginDB
+
+	// The recording ends a pad after the last audio, not wherever the silence
+	// happened to be noticed. Everything after that is dead air the hang time
+	// was spent waiting through. What counted as audio was already bounded by
+	// the radio, so nothing further is needed here to keep the input's own
+	// noise out of the end of the file.
+	end := tx.lastLoud.Add(padDuration)
+	out := g.releaseFrom(tx, end)
+
+	tx.info.End = end
+	tx.info.Reason = reason
+	return append(out, Event{Kind: KindEnd, Tx: tx.info})
 }
 
 // counts reports whether audio arriving now belongs to the transmission.
@@ -450,11 +493,10 @@ func (g *Gate) counts(tx *transmission, f audiofeed.Frame) bool {
 // has stayed closed for the hang time. Because the mute follows the carrier
 // rather than the speech, that boundary is the keyup boundary, and a dispatcher
 // and the unit answering land in separate recordings without the audio being
-// asked to guess where one of them stopped. It is worth being clear about what
-// is not being done here, since it is the obvious idea and it is wrong: a
-// silence inside the audio is not a boundary, because somebody pausing
-// mid-sentence is still transmitting and cutting there invents a split that
-// never happened.
+// asked to guess where one of them stopped. The obvious idea is deliberately
+// not used here, because it is wrong: a silence inside the audio is not a
+// boundary, since somebody pausing mid-sentence is still transmitting and
+// cutting there invents a split that never happened.
 //
 // Parameters:
 //   - tx: the transmission being assembled
@@ -468,39 +510,6 @@ func (g *Gate) ended(tx *transmission, f audiofeed.Frame, loud bool) bool {
 		return !g.radio.On && f.At.Sub(tx.lastRadio) >= g.opts.Hang
 	}
 	return !loud && !g.radio.On && f.At.Sub(tx.lastLoud) >= g.opts.Hang
-}
-
-// close finishes the open transmission, trimming the trailing quiet off it.
-//
-// A transmission that never reached MinDuration produces nothing at all: no
-// KindStart was emitted for it, so there is no file to abandon and nothing to
-// tell the caller about. That is the whole reason confirmation is delayed.
-//
-// Parameters:
-//   - reason: why it ended, one of the Reason constants
-//
-// Returns:
-//   - the remaining audio and the KindEnd describing it, or none if the
-//     transmission was too short to keep
-func (g *Gate) close(reason string) []Event {
-	tx := g.tx
-	g.tx = nil
-
-	if !tx.confirmed {
-		return nil
-	}
-
-	// The recording ends a pad after the last audio, not wherever the silence
-	// happened to be noticed. Everything after that is dead air the hang time
-	// was spent waiting through. What counted as audio was already bounded by
-	// the radio, so nothing further is needed here to keep the input's own
-	// noise out of the end of the file.
-	end := tx.lastLoud.Add(padDuration)
-	out := g.releaseFrom(tx, end)
-
-	tx.info.End = end
-	tx.info.Reason = reason
-	return append(out, Event{Kind: KindEnd, Tx: tx.info})
 }
 
 // gap reports how many frames went missing before f, and remembers where the
@@ -533,6 +542,80 @@ func (g *Gate) gap(f audiofeed.Frame) int {
 		return 0
 	}
 	return int(f.Seq - previous - 1)
+}
+
+// hasSpeech reports whether the transmission has held anything loud enough to
+// be somebody talking.
+//
+// It is the difference between a recording and a file of noise. The floor is
+// where the input sits with nothing coming through, and a transmission the
+// radio reported into a quiet cable never rises meaningfully above it, so the
+// loudest moment is what settles whether there was ever a voice.
+//
+// Measured against the floor rather than an absolute level, because how loud
+// speech lands depends on the cable and the sound card and nothing here can
+// know either.
+//
+// A floor that is not quiet is not answered against at all. The estimate only
+// means "where the noise is" when most of the window it was taken from was
+// noise, and a busy channel fills that window with speech instead. Reading a
+// high estimate as a high noise floor would reject the traffic that raised it.
+//
+// Parameters:
+//   - tx: the transmission being assembled
+//
+// Returns:
+//   - true if the loudest frame so far is far enough above the floor, or if
+//     the floor is too high to be judging anything by
+func (g *Gate) hasSpeech(tx *transmission) bool {
+	if !g.floor.ready() {
+		return false
+	}
+	floor := g.floor.level()
+	if floor > floorTrusted {
+		return true
+	}
+	return tx.heard && tx.peak > floor+speechMarginDB
+}
+
+// key returns the radio's identity for whatever is being received, if it has
+// said anything.
+//
+// Returns:
+//   - the current Activity.Key, or empty if the radio is not receiving
+func (g *Gate) key() string {
+	if !g.radio.On {
+		return ""
+	}
+	return g.radio.Key
+}
+
+// level reports the noise floor: the level below which floorPercentile of the
+// recent audio sits.
+//
+// Returns:
+//   - the noise floor in dBFS, or floorMin before any audio has been measured
+func (n *noiseFloor) level() float64 {
+	if n.n == 0 {
+		return floorMin
+	}
+
+	// Round up, so the answer is a level at least this share of the window is
+	// at or below rather than one it merely approaches.
+	want := (n.n*floorPercentile + 99) / 100
+
+	// The walk always stops at a bucket, because the counts add up to n.n and
+	// want is never more than that. Written to fall out of the loop with the
+	// answer rather than to return from inside it, so there is no branch after
+	// it that nothing can reach.
+	bucket, seen := 0, 0
+	for i, count := range n.counts {
+		bucket = i
+		if seen += count; seen >= want {
+			break
+		}
+	}
+	return floorMin + float64(bucket)
 }
 
 // loud reports whether f is above the noise floor by enough to be signal.
@@ -614,31 +697,12 @@ func (g *Gate) open(f audiofeed.Frame, loud bool) {
 	g.ring = g.ring[:0]
 }
 
-// aboveFloor reports whether a frame already in the ring carried signal.
-//
-// Separate from loud because it is asked about the past, when the floor may
-// have been estimated differently. The current estimate is used deliberately:
-// it is the better one, having seen more audio.
-//
-// Parameters:
-//   - f: the frame to judge
+// ready reports whether any audio has been measured yet.
 //
 // Returns:
-//   - true if the frame is above the floor by the margin
-func (g *Gate) aboveFloor(f audiofeed.Frame) bool {
-	return g.floor.ready() && f.Level > g.floor.level()+marginDB
-}
-
-// key returns the radio's identity for whatever is being received, if it has
-// said anything.
-//
-// Returns:
-//   - the current Activity.Key, or empty if the radio is not receiving
-func (g *Gate) key() string {
-	if !g.radio.On {
-		return ""
-	}
-	return g.radio.Key
+//   - true once there is a floor to judge a frame against
+func (n *noiseFloor) ready() bool {
+	return n.n > 0
 }
 
 // release hands out every pending frame older than cutoff.
@@ -695,69 +759,4 @@ func trimToOnset(tx *transmission) {
 	}
 	tx.pending = tx.pending[start:]
 	tx.info.Start = tx.pending[0].At
-}
-
-// add folds one level into the window, taking the oldest back out once the
-// window is full.
-//
-// Parameters:
-//   - level: the frame's level in dBFS, clamped here to the range a real noise
-//     floor can occupy
-func (n *noiseFloor) add(level float64) {
-	if n.recent == nil {
-		n.recent = make([]uint8, floorFrames)
-	}
-
-	if level < floorMin {
-		level = floorMin
-	}
-	if level > floorMax {
-		level = floorMax
-	}
-	bucket := uint8(level - floorMin)
-
-	if n.n == len(n.recent) {
-		n.counts[n.recent[n.at]]--
-	} else {
-		n.n++
-	}
-	n.recent[n.at] = bucket
-	n.counts[bucket]++
-	n.at = (n.at + 1) % len(n.recent)
-}
-
-// level reports the noise floor: the level below which floorPercentile of the
-// recent audio sits.
-//
-// Returns:
-//   - the noise floor in dBFS, or floorMin before any audio has been measured
-func (n *noiseFloor) level() float64 {
-	if n.n == 0 {
-		return floorMin
-	}
-
-	// Round up, so the answer is a level at least this share of the window is
-	// at or below rather than one it merely approaches.
-	want := (n.n*floorPercentile + 99) / 100
-
-	// The walk always stops at a bucket, because the counts add up to n.n and
-	// want is never more than that. Written to fall out of the loop with the
-	// answer rather than to return from inside it, so there is no branch after
-	// it that nothing can reach.
-	bucket, seen := 0, 0
-	for i, count := range n.counts {
-		bucket = i
-		if seen += count; seen >= want {
-			break
-		}
-	}
-	return floorMin + float64(bucket)
-}
-
-// ready reports whether any audio has been measured yet.
-//
-// Returns:
-//   - true once there is a floor to judge a frame against
-func (n *noiseFloor) ready() bool {
-	return n.n > 0
 }

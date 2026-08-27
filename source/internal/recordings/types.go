@@ -16,13 +16,6 @@ import (
 	"github.com/albeebe/radiocli/internal/wavfile"
 )
 
-// NormalizeTarget is where normalizing puts a recording's loudest sample.
-//
-// Just under full scale rather than at it. A hair of headroom costs nothing
-// audible and means that rounding, and any player that applies its own gain,
-// have somewhere to go other than into the ceiling.
-const NormalizeTarget = 0.99
-
 // DefaultTemplate is the layout used when none is given.
 //
 // The date is a folder rather than part of the name, which is not a style
@@ -31,6 +24,21 @@ const NormalizeTarget = 0.99
 // the fix is a setting the user has to know exists. Making the day a folder by
 // default means the case nobody thinks about is the one that already works.
 const DefaultTemplate = "{date}/{time}_{system}_{department}_{channel}"
+
+// NormalizeTarget is where normalizing puts a recording's loudest sample.
+//
+// Just under full scale rather than at it. A hair of headroom costs nothing
+// audible and means that rounding, and any player that applies its own gain,
+// have somewhere to go other than into the ceiling.
+const NormalizeTarget = 0.99
+
+// maxCollisions is how many numbered names are tried before giving up.
+//
+// Far more than two transmissions can genuinely collide on, and a limit at all
+// because a name reads as taken whenever it cannot be checked. A folder that
+// cannot be read would otherwise turn into a loop that never ends and never
+// explains itself.
+const maxCollisions = 1000
 
 // The limits on how long a path this package will produce.
 //
@@ -52,14 +60,6 @@ const (
 	// still recognisable.
 	minComponent = 8
 )
-
-// maxCollisions is how many numbered names are tried before giving up.
-//
-// Far more than two transmissions can genuinely collide on, and a limit at all
-// because a name reads as taken whenever it cannot be checked. A folder that
-// cannot be read would otherwise turn into a loop that never ends and never
-// explains itself.
-const maxCollisions = 1000
 
 // partialPrefix marks a recording still being written.
 //
@@ -142,6 +142,23 @@ var tokens = map[string]func(Entry) string{
 	"duration":   func(e Entry) string { return strconv.FormatFloat(e.Duration, 'f', 1, 64) },
 	"modulation": func(e Entry) string { return e.Modulation },
 	"unit":       func(e Entry) string { return e.Unit },
+}
+
+// wavWriter is the part of a WAV file a recording uses. It is an interface so
+// tests can stand in for one and drive a disk that fails.
+type wavWriter interface {
+	// Close completes the header and closes the file.
+	Close() error
+
+	// Duration reports how much audio has been written.
+	Duration() time.Duration
+
+	// Normalize scales the audio so its loudest sample sits at the given
+	// fraction of full scale.
+	Normalize(target float64) error
+
+	// Write appends audio.
+	Write(pcm []byte) error
 }
 
 // Entry is one recording, and is the only shape this package reports.
@@ -322,16 +339,6 @@ type Recording struct {
 	done bool
 }
 
-// template is a naming template, already checked and broken into the pieces it
-// renders from.
-type template struct {
-	// parts is the template in order, each either a literal or a token.
-	parts []part
-
-	// text is the template as it was written, for error messages.
-	text string
-}
-
 // part is one piece of a template.
 type part struct {
 	// literal is the text to emit, when this is not a token.
@@ -341,21 +348,14 @@ type part struct {
 	token string
 }
 
-// wavWriter is the part of a WAV file a recording uses. It is an interface so
-// tests can stand in for one and drive a disk that fails.
-type wavWriter interface {
-	// Close completes the header and closes the file.
-	Close() error
+// template is a naming template, already checked and broken into the pieces it
+// renders from.
+type template struct {
+	// parts is the template in order, each either a literal or a token.
+	parts []part
 
-	// Duration reports how much audio has been written.
-	Duration() time.Duration
-
-	// Normalize scales the audio so its loudest sample sits at the given
-	// fraction of full scale.
-	Normalize(target float64) error
-
-	// Write appends audio.
-	Write(pcm []byte) error
+	// text is the template as it was written, for error messages.
+	text string
 }
 
 // cmp returns the first of its arguments that is not empty.

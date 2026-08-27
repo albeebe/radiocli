@@ -30,6 +30,23 @@ func (l Line) Selected() bool {
 	return strings.ContainsRune(l.Attributes, rune(AttrReverse))
 }
 
+// String renders the screen as the user sees it, one line per line, with
+// trailing blank lines removed.
+//
+// Returns:
+//   - the screen's text, one line per screen line, separated by newlines
+func (d Display) String() string {
+	text := make([]string, 0, len(d.Lines))
+	for _, l := range d.Lines {
+		text = append(text, l.Text)
+	}
+
+	for len(text) > 0 && strings.TrimSpace(text[len(text)-1]) == "" {
+		text = text[:len(text)-1]
+	}
+	return strings.Join(text, "\n")
+}
+
 // UnitID reads the transmitting radio's identifier off the screen.
 //
 // It is here because the scanner does not always send it any other way. On a
@@ -75,23 +92,6 @@ func (d Display) UnitID() string {
 		return id
 	}
 	return ""
-}
-
-// String renders the screen as the user sees it, one line per line, with
-// trailing blank lines removed.
-//
-// Returns:
-//   - the screen's text, one line per screen line, separated by newlines
-func (d Display) String() string {
-	text := make([]string, 0, len(d.Lines))
-	for _, l := range d.Lines {
-		text = append(text, l.Text)
-	}
-
-	for len(text) > 0 && strings.TrimSpace(text[len(text)-1]) == "" {
-		text = text[:len(text)-1]
-	}
-	return strings.Join(text, "\n")
 }
 
 // isAttributes reports whether a field could be the attribute string of a line

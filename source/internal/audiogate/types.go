@@ -84,22 +84,6 @@ const (
 	// comes back.
 	floorMin = -90.0
 
-	// speechMarginDB is how far above the floor a transmission's loudest moment
-	// has to reach before it is worth a file at all.
-	//
-	// marginDB is deliberately close to the floor, because finding the exact
-	// moment audio began means catching it while it is still faint. That makes
-	// it useless for the other question: a transmission the radio reported into
-	// a quiet cable clears eight decibels on the floor's own wobble and gets
-	// written as a recording of nothing.
-	//
-	// Loudest moment rather than any moment, because the two questions are
-	// different. Measured across eighteen consecutive recordings on an SDS150
-	// through a line input, every one carrying speech peaked between 48 and 71
-	// decibels above its floor, and the one holding nothing but noise peaked at
-	// 25. Thirty-five sits in the middle of a gap twenty-three decibels wide.
-	speechMarginDB = 35.0
-
 	// floorTrusted is how quiet the floor estimate has to be before it is
 	// allowed to reject a transmission.
 	//
@@ -115,21 +99,6 @@ const (
 	// -80 dBFS across eighteen recordings, so anything above -45 is the window
 	// being full of audio rather than a quiet cable.
 	floorTrusted = -45.0
-
-	// tailDropDB is how far below a transmission's loudest moment a frame can
-	// be and still count as part of it.
-	//
-	// The end of a recording is the last frame that was still speech, and
-	// marginDB cannot answer that either. On a clean line input the floor sits
-	// near -80 dBFS, so eight decibels above it is -72, and hiss at -70 goes on
-	// advancing the last-heard time long after anybody stopped talking. One
-	// recording ran seven seconds for one second of speech that way.
-	//
-	// Measured against the transmission's own peak rather than the floor,
-	// because that is the level the speech in this recording actually has, and
-	// it needs no estimate to be right. Forty decibels is far below any
-	// syllable and far above the noise the same recording is sitting on.
-	tailDropDB = 40.0
 
 	// marginDB is how far above the tracked floor a frame has to be to count
 	// as signal.
@@ -152,6 +121,15 @@ const (
 	// of it at the front of the recording.
 	maxLookBack = 2 * time.Second
 
+	// padDuration is how much audio is kept before the detected onset.
+	//
+	// The detector finds the last frame that was still at the floor and starts
+	// after it, which is right to within one frame. This is the margin for that
+	// one frame, plus the fact that a syllable rises out of the noise rather
+	// than appearing, so the first genuinely audible frame is preceded by a
+	// little that is quieter but not nothing.
+	padDuration = 200 * time.Millisecond
+
 	// radioSlack is how long after the radio was last seen receiving its audio
 	// still counts as part of the transmission.
 	//
@@ -171,15 +149,61 @@ const (
 	// asked.
 	radioSlack = 200 * time.Millisecond
 
-	// padDuration is how much audio is kept before the detected onset.
+	// speechMarginDB is how far above the floor a transmission's loudest moment
+	// has to reach before it is worth a file at all.
 	//
-	// The detector finds the last frame that was still at the floor and starts
-	// after it, which is right to within one frame. This is the margin for that
-	// one frame, plus the fact that a syllable rises out of the noise rather
-	// than appearing, so the first genuinely audible frame is preceded by a
-	// little that is quieter but not nothing.
-	padDuration = 200 * time.Millisecond
+	// marginDB is deliberately close to the floor, because finding the exact
+	// moment audio began means catching it while it is still faint. That makes
+	// it useless for the other question: a transmission the radio reported into
+	// a quiet cable clears eight decibels on the floor's own wobble and gets
+	// written as a recording of nothing.
+	//
+	// Loudest moment rather than any moment, because the two questions are
+	// different. Measured across eighteen consecutive recordings on an SDS150
+	// through a line input, every one carrying speech peaked between 48 and 71
+	// decibels above its floor, and the one holding nothing but noise peaked at
+	// 25. Thirty-five sits in the middle of a gap twenty-three decibels wide.
+	speechMarginDB = 35.0
+
+	// tailDropDB is how far below a transmission's loudest moment a frame can
+	// be and still count as part of it.
+	//
+	// The end of a recording is the last frame that was still speech, and
+	// marginDB cannot answer that either. On a clean line input the floor sits
+	// near -80 dBFS, so eight decibels above it is -72, and hiss at -70 goes on
+	// advancing the last-heard time long after anybody stopped talking. One
+	// recording ran seven seconds for one second of speech that way.
+	//
+	// Measured against the transmission's own peak rather than the floor,
+	// because that is the level the speech in this recording actually has, and
+	// it needs no estimate to be right. Forty decibels is far below any
+	// syllable and far above the noise the same recording is sitting on.
+	tailDropDB = 40.0
 )
+
+// floorBins is how many one decibel buckets the recent levels are counted in.
+//
+// One per decibel between floorMin and floorMax, which is finer than the
+// estimate needs to be: the margin above it is eight decibels, so a floor
+// wrong by less than one changes nothing.
+const floorBins = int(floorMax-floorMin) + 1
+
+// floorPercentile is how far up the recent levels the floor is taken from.
+//
+// Not the minimum, which was the first thing tried and was wrong. Measured on a
+// USB line input with a squelched scanner on it, the noise sat at -78 dBFS with
+// a spread of about three decibels, and the quietest single frame in fifteen
+// seconds was -87. A floor taken from that one frame sits nine decibels below
+// where the noise actually is, which puts the trigger, eight decibels above it,
+// at -79: a decibel under the noise itself. So the noise reads as signal and
+// the recorder writes the hiss between transmissions as though it were traffic.
+// That is the failure this is all here to avoid, and it came from estimating a
+// distribution by its most extreme sample.
+//
+// A tenth is low enough to sit inside the quiet part of a window that also
+// holds a transmission, and high enough to describe where the noise really is
+// rather than how far it once dipped.
+const floorPercentile = 10
 
 // floorWindow is how far back the noise floor is measured over.
 //
@@ -196,29 +220,6 @@ const (
 // started in the middle of a transmission, which is the one case where it is
 // felt directly.
 const floorWindow = 15 * time.Second
-
-// floorPercentile is how far up the recent levels the floor is taken from.
-//
-// Not the minimum, which was the first thing tried and was wrong. Measured on a
-// USB line input with a squelched scanner on it, the noise sat at -78 dBFS with
-// a spread of about three decibels, and the quietest single frame in fifteen
-// seconds was -87. A floor taken from that one frame sits nine decibels below
-// where the noise actually is, which puts the trigger, eight decibels above it,
-// at -79: a decibel under the noise itself. So the noise reads as signal and the
-// recorder writes the hiss between transmissions as though it were traffic. That is exactly the failure this is all here to avoid, and it
-// came from estimating a distribution by its most extreme sample.
-//
-// A tenth is low enough to sit inside the quiet part of a window that also
-// holds a transmission, and high enough to describe where the noise really is
-// rather than how far it once dipped.
-const floorPercentile = 10
-
-// floorBins is how many one decibel buckets the recent levels are counted in.
-//
-// One per decibel between floorMin and floorMax, which is finer than the
-// estimate needs to be: the margin above it is eight decibels, so a floor
-// wrong by less than one changes nothing.
-const floorBins = int(floorMax-floorMin) + 1
 
 // frameDuration is how much audio one frame carries, taken from the feed so
 // that nothing here has to be kept in step with it by hand.
@@ -263,17 +264,6 @@ const (
 	// second sits under that and well over any dropout worth bridging.
 	DefaultHang = 500 * time.Millisecond
 
-	// DefaultQuietHang is DefaultHang for a gate with no radio to ask.
-	//
-	// Without RequireRadio there is no carrier to follow and the audio going
-	// quiet is the only ending there is, so the breath mid-sentence is back and
-	// the number has to clear it. Two seconds does. This is a worse way to find
-	// the end of a transmission and the difference is not a preference: one
-	// number is measuring the transmitter and the other is guessing from the
-	// speaker, and they cannot share a value because they are not measuring the
-	// same thing.
-	DefaultQuietHang = 2 * time.Second
-
 	// DefaultMaxDuration is when a transmission is split rather than allowed
 	// to grow without bound. Five minutes is far longer than any voice
 	// transmission and short enough that a stuck microphone does not produce
@@ -305,6 +295,17 @@ const (
 	// control bursts are shorter again by an order of magnitude, so they are
 	// still refused.
 	DefaultMinDuration = 250 * time.Millisecond
+
+	// DefaultQuietHang is DefaultHang for a gate with no radio to ask.
+	//
+	// Without RequireRadio there is no carrier to follow and the audio going
+	// quiet is the only ending there is, so the breath mid-sentence is back and
+	// the number has to clear it. Two seconds does. This is a worse way to find
+	// the end of a transmission and the difference is not a preference: one
+	// number is measuring the transmitter and the other is guessing from the
+	// speaker, and they cannot share a value because they are not measuring the
+	// same thing.
+	DefaultQuietHang = 2 * time.Second
 )
 
 // Activity is what the radio says it is doing, as of the moment it was asked.
@@ -340,8 +341,70 @@ type Event struct {
 	Tx Transmission
 }
 
+// Gate turns a stream of audio frames into transmissions.
+//
+// It holds the last bufferWindow of audio and decides nothing in real time,
+// which is the point of it. When something says a transmission is under way,
+// however late that news arrives, the audio from before it is still here to be
+// looked at, so the recording can begin where the sound did rather than where
+// the news did.
+//
+// It is not safe for concurrent use. Offer and Activity are called from the one
+// goroutine reading the feed.
+type Gate struct {
+	// opts is the call model, with defaults already filled in.
+	opts Options
+
+	// ring holds recent audio while nothing is being recorded, oldest first,
+	// so the start of a transmission can be found after the fact.
+	ring []audiofeed.Frame
+
+	// floor is the running estimate of the noise floor, in dBFS.
+	floor noiseFloor
+
+	// radio is the last thing the radio said, and radioAt is when it said it.
+	radio   Activity
+	radioAt time.Time
+
+	// tx is the transmission being assembled, nil when nothing is open.
+	tx *transmission
+
+	// seq is the frame number last seen, for spotting gaps, and seqSet says
+	// whether there has been a first frame to compare against.
+	seq    uint32
+	seqSet bool
+}
+
 // Kind is which sort of Event this is.
 type Kind string
+
+// noiseFloor is a low percentile of the levels seen in the last floorWindow of
+// audio.
+//
+// A percentile rather than an average, because an average is pulled up by every
+// transmission until the level needed to trigger climbs past anything the radio
+// produces. A percentile rather than the minimum, because the minimum is one
+// sample of a distribution and lands well below where the noise actually sits;
+// see floorPercentile for the measurement that settled it.
+//
+// It is counted in one decibel buckets over a ring of the recent frames, so
+// adding a frame is two array updates and reading the floor is a walk of sixty
+// buckets. That is cheap enough to do on every frame and needs no sorting, no
+// allocation after the first frame, and no structure whose cost depends on what
+// the audio is doing.
+type noiseFloor struct {
+	// counts is how many of the frames in the window fell in each bucket,
+	// quietest first.
+	counts [floorBins]int
+
+	// recent is the bucket each frame in the window fell in, oldest first, so
+	// a frame leaving the window can be taken back out of counts.
+	recent []uint8
+
+	// at is where the next frame goes in recent, and n is how many of it is in
+	// use, which is less than the whole only while the window is filling.
+	at, n int
+}
 
 // Options is the call model: what counts as one transmission rather than two,
 // and how long a recording is allowed to be.
@@ -412,68 +475,6 @@ type Transmission struct {
 	// worse than one that admits it, because the missing time is invisible
 	// once the samples are concatenated.
 	Dropped int
-}
-
-// noiseFloor is a low percentile of the levels seen in the last floorWindow of
-// audio.
-//
-// A percentile rather than an average, because an average is pulled up by every
-// transmission until the level needed to trigger climbs past anything the radio
-// produces. A percentile rather than the minimum, because the minimum is one
-// sample of a distribution and lands well below where the noise actually sits;
-// see floorPercentile for the measurement that settled it.
-//
-// It is counted in one decibel buckets over a ring of the recent frames, so
-// adding a frame is two array updates and reading the floor is a walk of sixty
-// buckets. That is cheap enough to do on every frame and needs no sorting, no
-// allocation after the first frame, and no structure whose cost depends on what
-// the audio is doing.
-type noiseFloor struct {
-	// counts is how many of the frames in the window fell in each bucket,
-	// quietest first.
-	counts [floorBins]int
-
-	// recent is the bucket each frame in the window fell in, oldest first, so
-	// a frame leaving the window can be taken back out of counts.
-	recent []uint8
-
-	// at is where the next frame goes in recent, and n is how many of it is in
-	// use, which is less than the whole only while the window is filling.
-	at, n int
-}
-
-// Gate turns a stream of audio frames into transmissions.
-//
-// It holds the last bufferWindow of audio and decides nothing in real time,
-// which is the point of it. When something says a transmission is under way,
-// however late that news arrives, the audio from before it is still here to be
-// looked at, so the recording can begin where the sound did rather than where
-// the news did.
-//
-// It is not safe for concurrent use. Offer and Activity are called from the one
-// goroutine reading the feed.
-type Gate struct {
-	// opts is the call model, with defaults already filled in.
-	opts Options
-
-	// ring holds recent audio while nothing is being recorded, oldest first,
-	// so the start of a transmission can be found after the fact.
-	ring []audiofeed.Frame
-
-	// floor is the running estimate of the noise floor, in dBFS.
-	floor noiseFloor
-
-	// radio is the last thing the radio said, and radioAt is when it said it.
-	radio   Activity
-	radioAt time.Time
-
-	// tx is the transmission being assembled, nil when nothing is open.
-	tx *transmission
-
-	// seq is the frame number last seen, for spotting gaps, and seqSet says
-	// whether there has been a first frame to compare against.
-	seq    uint32
-	seqSet bool
 }
 
 // transmission is the state of the one recording currently being assembled.

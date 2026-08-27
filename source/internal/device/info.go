@@ -30,6 +30,121 @@ func (s *Scanner) CloseMenu(ctx context.Context) error {
 	return s.set(ctx, "MSB,RETURN_PREVOUS_MODE")
 }
 
+// Decoding reports the digital format the scanner is decoding, or empty when
+// the transmission is analog.
+//
+// The scanner writes "None" rather than leaving the attribute out, in the same
+// spirit as the "UID None" the unit id uses, so absent is turned into empty
+// here and everything above sees one spelling of nothing.
+//
+// Returns:
+//   - the format, such as "P25" or "DMR", or empty for analog
+func (p Property) Decoding() string {
+	if v := strings.TrimSpace(p.Digital); v != "" && !strings.EqualFold(v, "None") {
+		return v
+	}
+	return ""
+}
+
+// Heard flattens what the scanner is listening to into one value.
+//
+// Returns:
+//   - what the scanner is hearing, with everything it did not name left empty
+func (i ScannerInfo) Heard() Heard {
+	name, value, unit := i.Tuned()
+
+	h := Heard{
+		Receiving:  i.Property.Unmuted(),
+		List:       i.List.Name,
+		System:     i.System.Name,
+		Department: i.Department.Name,
+		Site:       i.Site.Name,
+		Channel:    name,
+		Unit:       unit,
+		Modulation: i.Frequency.Modulation,
+		Digital:    i.Property.Decoding(),
+		Signal:     i.Property.Signal,
+		RSSI:       i.Property.RSSI,
+		Mode:       i.Mode,
+	}
+
+	// A trunked call carries both: the talkgroup from the element above, and
+	// the voice channel the site handed out, which lives on a different element
+	// and is the frequency the radio's own screen shows. The modulation comes
+	// from the site for the same reason, since there is no ConvFrequency to
+	// take it from.
+	if i.Talkgroup.ID != "" {
+		h.Frequency = i.SiteFrequency.Frequency
+		h.Modulation = i.Site.Modulation
+	}
+
+	// The access code comes off whichever element describes what the radio is
+	// tuned to, which is the site on a trunked system and the channel on a
+	// conventional one. A conventional P25 channel has one too, in the fields
+	// an analog channel keeps its tone squelch in, and reading only the trunked
+	// element left every P25 conventional recording without one.
+	h.NAC = either(
+		nac(i.SiteFrequency.SubAudioDecoded, i.SiteFrequency.SubAudio),
+		nac(i.Frequency.SubAudioDecoded, i.Frequency.SubAudio),
+	)
+
+	// A conventional system answers with a frequency and a trunked one with a
+	// talkgroup, and they are not the same kind of number, so they are reported
+	// in fields of their own rather than in one meaning whichever arrived.
+	if i.Talkgroup.ID != "" {
+		h.Talkgroup = value
+	} else {
+		h.Frequency = value
+	}
+	return h
+}
+
+// Hearing reports what the scanner is hearing, filling in what the protocol
+// reply leaves out.
+//
+// It exists because the reply is not the whole truth about a conventional
+// digital call. The transmitting radio's identifier reaches ScannerInfo on a
+// trunked system, on an element of its own, and on a conventional P25 channel
+// it never arrives at all: measured across seven complete transmissions on an
+// SDS150, a hundred and six readings taken while the scanner reported it was
+// decoding P25 said "UID None" in every attribute the reply has for one. The
+// screen said "UID:640006" throughout.
+//
+// So when the reply has no identifier and there is a digital transmission to
+// have one, the screen is read as well. That costs a second command, and it is
+// spent narrowly: never on an analog channel, never between transmissions, and
+// never on a trunked call, where the reply already carries it.
+//
+// A screen that cannot be read costs the identifier and nothing else. It is
+// worth having and not worth failing a reading over, and the scanner's display
+// mode decides whether the field is even drawn.
+//
+// Parameters:
+//   - ctx: context for the exchanges with the scanner
+//
+// Returns:
+//   - what the scanner is hearing, with the identifier filled in from the
+//     screen when the reply had none to give
+//   - error if the scanner cannot be asked what it is hearing
+func (s *Scanner) Hearing(ctx context.Context) (Heard, error) {
+	info, err := s.ScannerInfo(ctx)
+	if err != nil {
+		return Heard{}, err
+	}
+
+	h := info.Heard()
+	if h.Unit != "" || !h.Receiving || h.Digital == "" {
+		return h, nil
+	}
+
+	scr, err := s.Screen(ctx)
+	if err != nil {
+		return h, nil
+	}
+	h.Unit = scr.Display.UnitID()
+	return h, nil
+}
+
 // Holding reports whether the scanner is parked on one thing rather than
 // working through a list.
 //
@@ -137,6 +252,46 @@ func (s *Scanner) OpenMenu(ctx context.Context, menu MenuID, index string) error
 	return s.set(ctx, fmt.Sprintf("MNU,%s,%s", menu, index))
 }
 
+// Receiving reports whether a signal is actually coming in.
+//
+// The number of bars is the reading to trust. The raw strength figure is
+// reported even when nothing is coming in, as the noise floor, so a value there
+// says only that the scanner answered: a scanning radio with nothing on the
+// channel reports a strength of -999 and no bars at all.
+//
+// Returns:
+//   - true if the scanner is showing at least one signal bar
+func (p Property) Receiving() bool {
+	bars, err := strconv.Atoi(strings.TrimSpace(p.Signal))
+	return err == nil && bars > 0
+}
+
+// Scanning reports whether the scanner is working through its favorites lists,
+// rather than sweeping something it was put in front of.
+//
+// This is a different question from Holding, which asks whether the scanner is
+// moving at all. A scanner in Custom Search is moving, and is not scanning:
+// Custom Search, Service Scan, Quick Search, Close Call and Tone-Out each sweep
+// something of their own and stay there until told otherwise. Nothing takes the
+// scanner out of one by accident, so anything promising to leave it scanning has
+// to ask this as well.
+//
+// The weather channels are deliberately not counted, and are not left alone by
+// accident either: they report "WX Scan", which is neither of these names.
+//
+// Returns:
+//   - true if the scanner is working through its favorites lists, false in
+//     every other mode
+func (i ScannerInfo) Scanning() bool {
+	mode := strings.TrimSpace(i.Mode)
+	for _, name := range scanModes {
+		if strings.EqualFold(mode, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // ScannerInfo returns what the scanner is doing, parsed from the XML document
 // it reports.
 //
@@ -206,150 +361,16 @@ func (s *Scanner) ScannerInfo(ctx context.Context) (ScannerInfo, error) {
 	return info, nil
 }
 
-// Hearing reports what the scanner is hearing, filling in what the protocol
-// reply leaves out.
-//
-// It exists because the reply is not the whole truth about a conventional
-// digital call. The transmitting radio's identifier reaches ScannerInfo on a
-// trunked system, on an element of its own, and on a conventional P25 channel
-// it never arrives at all: measured across seven complete transmissions on an
-// SDS150, a hundred and six readings taken while the scanner reported it was
-// decoding P25 said "UID None" in every attribute the reply has for one. The
-// screen said "UID:640006" throughout.
-//
-// So when the reply has no identifier and there is a digital transmission to
-// have one, the screen is read as well. That costs a second command, and it is
-// spent narrowly: never on an analog channel, never between transmissions, and
-// never on a trunked call, where the reply already carries it.
-//
-// A screen that cannot be read costs the identifier and nothing else. It is
-// worth having and not worth failing a reading over, and the scanner's display
-// mode decides whether the field is even drawn.
+// SetMenuValue sets the value of the menu item the scanner is on.
 //
 // Parameters:
-//   - ctx: context for the exchanges with the scanner
+//   - ctx: context for cancellation and timeouts
+//   - value: the value to write to the selected menu item
 //
 // Returns:
-//   - what the scanner is hearing, with the identifier filled in from the
-//     screen when the reply had none to give
-//   - error if the scanner cannot be asked what it is hearing
-func (s *Scanner) Hearing(ctx context.Context) (Heard, error) {
-	info, err := s.ScannerInfo(ctx)
-	if err != nil {
-		return Heard{}, err
-	}
-
-	h := info.Heard()
-	if h.Unit != "" || !h.Receiving || h.Digital == "" {
-		return h, nil
-	}
-
-	scr, err := s.Screen(ctx)
-	if err != nil {
-		return h, nil
-	}
-	h.Unit = scr.Display.UnitID()
-	return h, nil
-}
-
-// Decoding reports the digital format the scanner is decoding, or empty when
-// the transmission is analog.
-//
-// The scanner writes "None" rather than leaving the attribute out, in the same
-// spirit as the "UID None" the unit id uses, so absent is turned into empty
-// here and everything above sees one spelling of nothing.
-//
-// Returns:
-//   - the format, such as "P25" or "DMR", or empty for analog
-func (p Property) Decoding() string {
-	if v := strings.TrimSpace(p.Digital); v != "" && !strings.EqualFold(v, "None") {
-		return v
-	}
-	return ""
-}
-
-// Receiving reports whether a signal is actually coming in.
-//
-// The number of bars is the reading to trust. The raw strength figure is
-// reported even when nothing is coming in, as the noise floor, so a value there
-// says only that the scanner answered: a scanning radio with nothing on the
-// channel reports a strength of -999 and no bars at all.
-//
-// Returns:
-//   - true if the scanner is showing at least one signal bar
-func (p Property) Receiving() bool {
-	bars, err := strconv.Atoi(strings.TrimSpace(p.Signal))
-	return err == nil && bars > 0
-}
-
-// Heard flattens what the scanner is listening to into one value.
-//
-// Returns:
-//   - what the scanner is hearing, with everything it did not name left empty
-func (i ScannerInfo) Heard() Heard {
-	name, value, unit := i.Tuned()
-
-	h := Heard{
-		Receiving:  i.Property.Unmuted(),
-		List:       i.List.Name,
-		System:     i.System.Name,
-		Department: i.Department.Name,
-		Site:       i.Site.Name,
-		Channel:    name,
-		Unit:       unit,
-		Modulation: i.Frequency.Modulation,
-		Digital:    i.Property.Decoding(),
-		Signal:     i.Property.Signal,
-		RSSI:       i.Property.RSSI,
-		Mode:       i.Mode,
-	}
-
-	// A trunked call carries both: the talkgroup from the element above, and
-	// the voice channel the site handed out, which lives on a different element
-	// and is the frequency the radio's own screen shows. The modulation comes
-	// from the site for the same reason, since there is no ConvFrequency to
-	// take it from.
-	if i.Talkgroup.ID != "" {
-		h.Frequency = i.SiteFrequency.Frequency
-		h.Modulation = i.Site.Modulation
-	}
-
-	// The access code comes off whichever element describes what the radio is
-	// tuned to, which is the site on a trunked system and the channel on a
-	// conventional one. A conventional P25 channel has one too, in the fields
-	// an analog channel keeps its tone squelch in, and reading only the trunked
-	// element left every P25 conventional recording without one.
-	h.NAC = either(
-		nac(i.SiteFrequency.SubAudioDecoded, i.SiteFrequency.SubAudio),
-		nac(i.Frequency.SubAudioDecoded, i.Frequency.SubAudio),
-	)
-
-	// A conventional system answers with a frequency and a trunked one with a
-	// talkgroup, and they are not the same kind of number, so they are reported
-	// in fields of their own rather than in one meaning whichever arrived.
-	if i.Talkgroup.ID != "" {
-		h.Talkgroup = value
-	} else {
-		h.Frequency = value
-	}
-	return h
-}
-
-// Unmuted reports whether the scanner's audio gate is open, meaning sound is
-// coming out of it right now.
-//
-// This is a different question from Receiving, and the difference matters to
-// anything lining the radio up against its audio. The gate opens at the very
-// start of a transmission, before the signal reading has caught up: a document
-// captured on the first poll of a transmission read Mute="Unmute" with Sig="0",
-// and the next one read Sig="5" on the same unchanged signal. Waiting for bars
-// therefore misses the opening of every transmission, which is the part hardest
-// to get back.
-//
-// Returns:
-//   - true if the scanner is passing audio through
-func (p Property) Unmuted() bool {
-	return strings.EqualFold(strings.TrimSpace(p.Mute), "Unmute")
+//   - error if the exchange fails or the scanner refuses the command
+func (s *Scanner) SetMenuValue(ctx context.Context, value string) error {
+	return s.set(ctx, "MSV,"+value)
 }
 
 // Tuned returns what the scanner is on, whichever kind of thing that is.
@@ -388,6 +409,23 @@ func (i ScannerInfo) Tuned() (name, value, unit string) {
 	// decoded a unit, so it is reported rather than dropped for want of a
 	// channel to attach it to.
 	return i.Channel.Name, "", i.Unit.ID
+}
+
+// Unmuted reports whether the scanner's audio gate is open, meaning sound is
+// coming out of it right now.
+//
+// This is a different question from Receiving, and the difference matters to
+// anything lining the radio up against its audio. The gate opens at the very
+// start of a transmission, before the signal reading has caught up: a document
+// captured on the first poll of a transmission read Mute="Unmute" with Sig="0",
+// and the next one read Sig="5" on the same unchanged signal. Waiting for bars
+// therefore misses the opening of every transmission, which is the part hardest
+// to get back.
+//
+// Returns:
+//   - true if the scanner is passing audio through
+func (p Property) Unmuted() bool {
+	return strings.EqualFold(strings.TrimSpace(p.Mute), "Unmute")
 }
 
 // either returns the first of two readings that says anything.
@@ -480,42 +518,4 @@ func present(value string) string {
 		return ""
 	}
 	return value
-}
-
-// Scanning reports whether the scanner is working through its favorites lists,
-// rather than sweeping something it was put in front of.
-//
-// This is a different question from Holding, which asks whether the scanner is
-// moving at all. A scanner in Custom Search is moving, and is not scanning:
-// Custom Search, Service Scan, Quick Search, Close Call and Tone-Out each sweep
-// something of their own and stay there until told otherwise. Nothing takes the
-// scanner out of one by accident, so anything promising to leave it scanning has
-// to ask this as well.
-//
-// The weather channels are deliberately not counted, and are not left alone by
-// accident either: they report "WX Scan", which is neither of these names.
-//
-// Returns:
-//   - true if the scanner is working through its favorites lists, false in
-//     every other mode
-func (i ScannerInfo) Scanning() bool {
-	mode := strings.TrimSpace(i.Mode)
-	for _, name := range scanModes {
-		if strings.EqualFold(mode, name) {
-			return true
-		}
-	}
-	return false
-}
-
-// SetMenuValue sets the value of the menu item the scanner is on.
-//
-// Parameters:
-//   - ctx: context for cancellation and timeouts
-//   - value: the value to write to the selected menu item
-//
-// Returns:
-//   - error if the exchange fails or the scanner refuses the command
-func (s *Scanner) SetMenuValue(ctx context.Context, value string) error {
-	return s.set(ctx, "MSV,"+value)
 }

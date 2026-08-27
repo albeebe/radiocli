@@ -29,6 +29,14 @@ func (failingWriter) Write([]byte) (int, error) {
 // TestChanged covers both output modes of a mutation report. The JSON mode is
 // the one this exists for: these verbs used to write prose whatever was asked
 // for, so a script editing the scanner got sentences it could not parse.
+//
+// Coverage: 100% (4 test cases covering both modes and the write error)
+//
+// Test cases:
+//   - JSON: the mutation is written as an object rather than the text line
+//   - OmitsWhatDidNotHappen: empty fields are left out of the object
+//   - Text: the line arrives unchanged
+//   - WriteError: a stream that refuses the write is reported
 func TestChanged(t *testing.T) {
 	// Builds an app writing to buffers, in the format asked for.
 	appWith := func(format appcontext.OutputFormat) (*appcontext.App, *bytes.Buffer) {
@@ -104,6 +112,14 @@ func TestChanged(t *testing.T) {
 // TestDash covers the two answers there are. The point of the function is that
 // a blank cell in an aligned table is indistinguishable from a column that ran
 // out of rows, so the empty case is the one that matters.
+//
+// Coverage: 100% (4 test cases covering both branches)
+//
+// Test cases:
+//   - a value is left alone
+//   - nothing becomes a dash
+//   - a space is a value
+//   - a dash stays a dash
 func TestDash(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -126,6 +142,15 @@ func TestDash(t *testing.T) {
 }
 
 // TestJSON covers what every command's --output json path produces.
+//
+// Coverage: 100% (5 test cases covering JSON and listable, every branch)
+//
+// Test cases:
+//   - Indented: the output is indented and ends in a newline
+//   - Empty: an empty listing is still JSON
+//   - NothingFound: a nil slice is written as an empty array, not null
+//   - NotAList: a value that is not a list is written as it is
+//   - WriteError: a stream that refuses the write is reported
 func TestJSON(t *testing.T) {
 	// Verify that the output is indented and ends in a newline, which is what
 	// makes it a well-formed line on a terminal.
@@ -194,6 +219,8 @@ func TestJSON(t *testing.T) {
 }
 
 // TestYesNo covers both answers.
+//
+// Coverage: 100% (both branches)
 func TestYesNo(t *testing.T) {
 	if got := YesNo(true); got != "yes" {
 		t.Errorf("YesNo(true) = %q, wanted \"yes\"", got)

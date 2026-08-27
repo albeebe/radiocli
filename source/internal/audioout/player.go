@@ -9,120 +9,6 @@ import (
 	"math"
 )
 
-// newRing builds the jitter buffer a Player is opened with.
-//
-// The whole thing is allocated once, here, and never grows. Growing it would
-// mean allocating on the path that Play runs on, which is a path that can be
-// reached from an audio callback in the capture direction, and an allocation
-// there is a gap in somebody's recording.
-//
-// Parameters:
-//   - prime: how many bytes must be waiting before playing starts, which is
-//     the cushion that then stands in front of the audio for as long as it
-//     keeps coming
-//
-// Returns:
-//   - *ring holding bufferFrames of audio at most, empty and not yet primed
-func newRing(prime int) *ring {
-	r := &ring{buf: make([]byte, bufferFrames*FrameBytes), prime: prime}
-	r.gain.Store(math.Float64bits(1))
-	return r
-}
-
-// gainNow is what every sample is being multiplied by at this moment.
-//
-// A load rather than a lock, which is the point of storing the gain as bits:
-// write asks this on the way to the speakers fifty times a second, and the
-// lock it would otherwise need is the one the audio thread waits on.
-//
-// Returns:
-//   - the multiplier, 1 for audio passed through exactly as it arrived
-func (r *ring) gainNow() float64 {
-	return math.Float64frombits(r.gain.Load())
-}
-
-// fade ramps a run of samples between silence and full, in place.
-//
-// It is what stops the speakers clicking at the edges of a burst. Audio does
-// not start or end at zero, so handing the device a step from silence to the
-// middle of a waveform is handing it a click, and doing that at both ends of
-// every over is what somebody hears as a run that pops.
-//
-// Linear rather than anything shaped, because over 5 ms the difference is not
-// audible and the arithmetic is a multiply per sample on a path the audio
-// thread runs.
-//
-// Parameters:
-//   - pcm: the samples to ramp, signed 16-bit little-endian
-//   - in: true to ramp up from silence, false to ramp down to it
-func fade(pcm []byte, in bool) {
-	samples := len(pcm) / 2
-	if samples == 0 {
-		return
-	}
-
-	for i := range samples {
-		at := i * 2
-		v := int16(binary.LittleEndian.Uint16(pcm[at:]))
-
-		// The step along the ramp, counted from the silent end so that both
-		// directions are the same arithmetic read backwards.
-		step := i
-		if !in {
-			step = samples - 1 - i
-		}
-		binary.LittleEndian.PutUint16(pcm[at:], uint16(int16(int(v)*step/samples)))
-	}
-}
-
-// scale multiplies every sample by the ring's gain, in place, holding anything
-// that would overflow at full scale.
-//
-// Clamped rather than allowed to wrap, because a sample that wraps does not
-// come back quieter, it comes back inverted, which is a far worse noise than
-// the loud one it was meant to be.
-//
-// Parameters:
-//   - pcm: the samples to scale, signed 16-bit little-endian
-//   - gain: what to multiply each of them by
-func scale(pcm []byte, gain float64) {
-	for at := 0; at+1 < len(pcm); at += 2 {
-		v := float64(int16(binary.LittleEndian.Uint16(pcm[at:]))) * gain
-		if v > math.MaxInt16 {
-			v = math.MaxInt16
-		}
-		if v < math.MinInt16 {
-			v = math.MinInt16
-		}
-		binary.LittleEndian.PutUint16(pcm[at:], uint16(int16(v)))
-	}
-}
-
-// settle writes a short slope from a sample down to silence at the front of
-// pcm, which is already silent.
-//
-// It is the fade for the moment fade cannot reach: the ring running dry. The
-// sizes a real device deals in divide each other, so the ring drains to
-// exactly empty and the starving callback has no tail of audio left to ramp.
-// Whatever sample the previous callback ended on is still hanging in the air,
-// and stepping from it straight to silence is a click at the end of every
-// burst. This writes the slope that audio no longer exists to carry.
-//
-// Parameters:
-//   - pcm: the silence to write the slope into, ramped over at most fadeBytes
-//   - from: the sample the previous callback ended on, 0 to leave the silence
-//     alone
-func settle(pcm []byte, from int16) {
-	if from == 0 {
-		return
-	}
-
-	samples := min(len(pcm), fadeBytes) / 2
-	for i := range samples {
-		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(int16(int(from)*(samples-1-i)/samples)))
-	}
-}
-
 // Close stops the device and gives back everything the library allocated.
 //
 // The audio still waiting in the ring is not played out first. Close is what
@@ -230,6 +116,72 @@ func (p *Player) Stats() Stats {
 	return p.ring.stats
 }
 
+// newRing builds the jitter buffer a Player is opened with.
+//
+// The whole thing is allocated once, here, and never grows. Growing it would
+// mean allocating on the path that Play runs on, which is a path that can be
+// reached from an audio callback in the capture direction, and an allocation
+// there is a gap in somebody's recording.
+//
+// Parameters:
+//   - prime: how many bytes must be waiting before playing starts, which is
+//     the cushion that then stands in front of the audio for as long as it
+//     keeps coming
+//
+// Returns:
+//   - *ring holding bufferFrames of audio at most, empty and not yet primed
+func newRing(prime int) *ring {
+	r := &ring{buf: make([]byte, bufferFrames*FrameBytes), prime: prime}
+	r.gain.Store(math.Float64bits(1))
+	return r
+}
+
+// fade ramps a run of samples between silence and full, in place.
+//
+// It is what stops the speakers clicking at the edges of a burst. Audio does
+// not start or end at zero, so handing the device a step from silence to the
+// middle of a waveform is handing it a click, and doing that at both ends of
+// every over is what somebody hears as a run that pops.
+//
+// Linear rather than anything shaped, because over 5 ms the difference is not
+// audible and the arithmetic is a multiply per sample on a path the audio
+// thread runs.
+//
+// Parameters:
+//   - pcm: the samples to ramp, signed 16-bit little-endian
+//   - in: true to ramp up from silence, false to ramp down to it
+func fade(pcm []byte, in bool) {
+	samples := len(pcm) / 2
+	if samples == 0 {
+		return
+	}
+
+	for i := range samples {
+		at := i * 2
+		v := int16(binary.LittleEndian.Uint16(pcm[at:]))
+
+		// The step along the ramp, counted from the silent end so that both
+		// directions are the same arithmetic read backwards.
+		step := i
+		if !in {
+			step = samples - 1 - i
+		}
+		binary.LittleEndian.PutUint16(pcm[at:], uint16(int16(int(v)*step/samples)))
+	}
+}
+
+// gainNow is what every sample is being multiplied by at this moment.
+//
+// A load rather than a lock, which is the point of storing the gain as bits:
+// write asks this on the way to the speakers fifty times a second, and the
+// lock it would otherwise need is the one the audio thread waits on.
+//
+// Returns:
+//   - the multiplier, 1 for audio passed through exactly as it arrived
+func (r *ring) gainNow() float64 {
+	return math.Float64frombits(r.gain.Load())
+}
+
 // read fills out with whatever is waiting, and with silence for whatever is
 // not.
 //
@@ -301,6 +253,54 @@ func (r *ring) read(out []byte) {
 	// leaves the buffer ending on the right value: audio on its final sample,
 	// and a starve on the silence it settled to.
 	r.last = int16(binary.LittleEndian.Uint16(out[len(out)-2:]))
+}
+
+// scale multiplies every sample by the ring's gain, in place, holding anything
+// that would overflow at full scale.
+//
+// Clamped rather than allowed to wrap, because a sample that wraps does not
+// come back quieter, it comes back inverted, which is a far worse noise than
+// the loud one it was meant to be.
+//
+// Parameters:
+//   - pcm: the samples to scale, signed 16-bit little-endian
+//   - gain: what to multiply each of them by
+func scale(pcm []byte, gain float64) {
+	for at := 0; at+1 < len(pcm); at += 2 {
+		v := float64(int16(binary.LittleEndian.Uint16(pcm[at:]))) * gain
+		if v > math.MaxInt16 {
+			v = math.MaxInt16
+		}
+		if v < math.MinInt16 {
+			v = math.MinInt16
+		}
+		binary.LittleEndian.PutUint16(pcm[at:], uint16(int16(v)))
+	}
+}
+
+// settle writes a short slope from a sample down to silence at the front of
+// pcm, which is already silent.
+//
+// It is the fade for the moment fade cannot reach: the ring running dry. The
+// sizes a real device deals in divide each other, so the ring drains to
+// exactly empty and the starving callback has no tail of audio left to ramp.
+// Whatever sample the previous callback ended on is still hanging in the air,
+// and stepping from it straight to silence is a click at the end of every
+// burst. This writes the slope that audio no longer exists to carry.
+//
+// Parameters:
+//   - pcm: the silence to write the slope into, ramped over at most fadeBytes
+//   - from: the sample the previous callback ended on, 0 to leave the silence
+//     alone
+func settle(pcm []byte, from int16) {
+	if from == 0 {
+		return
+	}
+
+	samples := min(len(pcm), fadeBytes) / 2
+	for i := range samples {
+		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(int16(int(from)*(samples-1-i)/samples)))
+	}
 }
 
 // write puts audio at the newest end of the ring, dropping the oldest to make

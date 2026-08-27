@@ -27,17 +27,28 @@ const (
 	// ChannelAuto listens to both for a few seconds and decides.
 	ChannelAuto = "auto"
 
-	// ChannelLeft and ChannelRight take one side and ignore the other.
-	ChannelLeft  = "left"
-	ChannelRight = "right"
+	// ChannelLeft takes the left side and ignores the right.
+	ChannelLeft = "left"
 
 	// ChannelMix averages the two, which is right when the signal really is on
 	// both and wrong by 6 dB when it is not.
 	ChannelMix = "mix"
+
+	// ChannelRight takes the right side and ignores the left.
+	ChannelRight = "right"
 )
 
 // How long auto listens before it decides, and by how much one side has to win.
 const (
+	// cancelDB is how much level folding the two sides together may lose before
+	// folding is treated as destroying the signal rather than combining it.
+	//
+	// Two sides carrying the same mono audio fold with no loss at all, so any
+	// meaningful loss means they disagree. Four decibels is above anything a
+	// slightly unbalanced pair produces and far below the eleven measured on a
+	// scanner whose headphone output was set to invert one side.
+	cancelDB = 4.0
+
 	// cancelFrames is one second of audio that was above the floor, which is
 	// all it takes to see that folding the two sides destroys them.
 	//
@@ -52,15 +63,6 @@ const (
 	// one transmission, which is the smallest sample that says anything: half a
 	// second is one syllable, and a syllable can be quiet on both sides.
 	chooseFrames = 3 * 1000 / FrameMS
-
-	// cancelDB is how much level folding the two sides together may lose before
-	// folding is treated as destroying the signal rather than combining it.
-	//
-	// Two sides carrying the same mono audio fold with no loss at all, so any
-	// meaningful loss means they disagree. Four decibels is above anything a
-	// slightly unbalanced pair produces and far below the eleven measured on a
-	// scanner whose headphone output was set to invert one side.
-	cancelDB = 4.0
 
 	// dominanceDB is how much quieter one side has to be to be called empty.
 	//
@@ -98,9 +100,9 @@ const ringBytes = 1 << 21
 // opened in, and repeating the numbers here rather than importing them would be
 // two places to change one fact.
 const (
-	// SampleRate is 48 kHz, which the encoder requires and a line input
-	// natively provides.
-	SampleRate = audioin.SampleRate
+	// FrameBytes is one frame of interleaved stereo as it arrives from the
+	// card.
+	FrameBytes = audioin.FrameBytes
 
 	// FrameMS is 20 ms, the only frame length the encoder has.
 	FrameMS = audioin.FrameMS
@@ -108,13 +110,13 @@ const (
 	// FrameSamples is one frame in sample pairs.
 	FrameSamples = audioin.FrameSamples
 
-	// FrameBytes is one frame of interleaved stereo as it arrives from the
-	// card.
-	FrameBytes = audioin.FrameBytes
-
 	// MonoFrameBytes is one frame after the fold, which is what a listener gets
 	// and what the encoder takes.
 	MonoFrameBytes = FrameSamples * 2
+
+	// SampleRate is 48 kHz, which the encoder requires and a line input
+	// natively provides.
+	SampleRate = audioin.SampleRate
 )
 
 // silenceFloor is the quietest a frame can be and still count as evidence of

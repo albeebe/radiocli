@@ -11,6 +11,39 @@ import (
 	"strings"
 )
 
+// LevelOf measures one frame of mono, in dBFS.
+//
+// Decibels here rather than sample units because what reads this is either a
+// person or a gate: a meter on a page, and the level a transmission is judged
+// against. Both are naturally spoken in decibels, and neither cares about the
+// ratio arithmetic rmsPair exists for.
+//
+// It is exported because audio taken from a daemon arrives as samples with no
+// level attached, and whatever measures it there has to get the same answer as
+// the capture would. Two copies of this arithmetic would be two definitions of
+// how loud a frame is, and a gate tuned against one of them would behave
+// differently depending on where its audio came from.
+//
+// Parameters:
+//   - mono: one frame of mono samples
+//
+// Returns:
+//   - the frame's RMS level in dBFS, or the quietest value for an empty frame
+func LevelOf(mono []byte) float64 {
+	var sum float64
+	samples := len(mono) / 2
+
+	for i := range samples {
+		v := float64(int16(binary.LittleEndian.Uint16(mono[i*2:])))
+		sum += v * v
+	}
+
+	if samples == 0 {
+		return quietest
+	}
+	return dbfs(math.Sqrt(sum / float64(samples)))
+}
+
 // ParseChannel checks a channel mode and returns it in its canonical spelling.
 //
 // Parameters:
@@ -50,6 +83,29 @@ func newChooser(mode string) *chooser {
 	return c
 }
 
+// cancels reports whether folding the two sides together destroys them.
+//
+// Both sides carrying the signal is not on its own a reason to fold them: two
+// sides can be equally loud and still cancel, and that is the case that
+// matters. The headphone jack on an SDS100 and an SDS150 is wired out of phase,
+// which puts the same mono audio on the two sides with opposite polarity unless
+// the owner has found the menu that inverts one of them.
+//
+// Measured on one, folding those cost eleven decibels and took most of the
+// voice's body with it, because the low frequencies are the most alike between
+// the two sides and cancel the most completely. What is left is thin and reedy,
+// and sounds like the speaker is talking through a kazoo.
+//
+// So the fold is judged by what it produces rather than by the levels going
+// into it. Two sides carrying the same audio fold with no loss at all, so any
+// real loss means they disagree.
+//
+// Returns:
+//   - true if mixing comes out meaningfully quieter than the louder side alone
+func (c *chooser) cancels() bool {
+	return c.sumM > 0 && 10*math.Log10(math.Max(c.sumL, c.sumR)/c.sumM) > cancelDB
+}
+
 // dbfs turns a sample-unit level into decibels below full scale.
 //
 // Parameters:
@@ -87,27 +143,13 @@ func (c *chooser) decide() string {
 	return ChannelMix
 }
 
-// cancels reports whether folding the two sides together destroys them.
-//
-// Both sides carrying the signal is not on its own a reason to fold them: two
-// sides can be equally loud and still cancel, and that is the case that
-// matters. The headphone jack on an SDS100 and an SDS150 is wired out of phase,
-// which puts the same mono audio on the two sides with opposite polarity unless
-// the owner has found the menu that inverts one of them.
-//
-// Measured on one, folding those cost eleven decibels and took most of the
-// voice's body with it, because the low frequencies are the most alike between
-// the two sides and cancel the most completely. What is left is thin and reedy,
-// and sounds like the speaker is talking through a kazoo.
-//
-// So the fold is judged by what it produces rather than by the levels going
-// into it. Two sides carrying the same audio fold with no loss at all, so any
-// real loss means they disagree.
+// decided reports the choice, once there is one.
 //
 // Returns:
-//   - true if mixing comes out meaningfully quieter than the louder side alone
-func (c *chooser) cancels() bool {
-	return c.sumM > 0 && 10*math.Log10(math.Max(c.sumL, c.sumR)/c.sumM) > cancelDB
+//   - the settled channel mode, empty until there is one
+//   - whether the choice has been made
+func (c *chooser) decided() (string, bool) {
+	return c.settled, c.settled != ""
 }
 
 // dominant returns the side carrying the audio, when one of them plainly is.
@@ -134,35 +176,6 @@ func (c *chooser) dominant() string {
 		return ChannelRight
 	}
 	return ""
-}
-
-// louder returns whichever single side carries more.
-//
-// Returns:
-//   - ChannelLeft or ChannelRight
-func (c *chooser) louder() string {
-	if c.sumL >= c.sumR {
-		return ChannelLeft
-	}
-	return ChannelRight
-}
-
-// decided reports the choice, once there is one.
-//
-// Returns:
-//   - the settled channel mode, empty until there is one
-//   - whether the choice has been made
-func (c *chooser) decided() (string, bool) {
-	return c.settled, c.settled != ""
-}
-
-// reason reports why the chooser settled where it did, when that is worth
-// telling somebody.
-//
-// Returns:
-//   - ReasonOutOfPhase if the two sides were found to cancel, empty otherwise
-func (c *chooser) reason() string {
-	return c.why
 }
 
 // downmix folds one frame of interleaved stereo into one frame of mono.
@@ -198,37 +211,15 @@ func downmix(stereo, mono []byte, mode string) {
 	}
 }
 
-// LevelOf measures one frame of mono, in dBFS.
-//
-// Decibels here rather than sample units because what reads this is either a
-// person or a gate: a meter on a page, and the level a transmission is judged
-// against. Both are naturally spoken in decibels, and neither cares about the
-// ratio arithmetic rmsPair exists for.
-//
-// It is exported because audio taken from a daemon arrives as samples with no
-// level attached, and whatever measures it there has to get the same answer as
-// the capture would. Two copies of this arithmetic would be two definitions of
-// how loud a frame is, and a gate tuned against one of them would behave
-// differently depending on where its audio came from.
-//
-// Parameters:
-//   - mono: one frame of mono samples
+// louder returns whichever single side carries more.
 //
 // Returns:
-//   - the frame's RMS level in dBFS, or the quietest value for an empty frame
-func LevelOf(mono []byte) float64 {
-	var sum float64
-	samples := len(mono) / 2
-
-	for i := range samples {
-		v := float64(int16(binary.LittleEndian.Uint16(mono[i*2:])))
-		sum += v * v
+//   - ChannelLeft or ChannelRight
+func (c *chooser) louder() string {
+	if c.sumL >= c.sumR {
+		return ChannelLeft
 	}
-
-	if samples == 0 {
-		return quietest
-	}
-	return dbfs(math.Sqrt(sum / float64(samples)))
+	return ChannelRight
 }
 
 // observe takes one frame's measurements and answers how to fold that frame.
@@ -292,6 +283,15 @@ func (c *chooser) observe(left, right, mixed float64) string {
 	return ChannelMix
 }
 
+// reason reports why the chooser settled where it did, when that is worth
+// telling somebody.
+//
+// Returns:
+//   - ReasonOutOfPhase if the two sides were found to cancel, empty otherwise
+func (c *chooser) reason() string {
+	return c.why
+}
+
 // rmsPair measures both sides of one frame of interleaved stereo, in sample
 // units rather than decibels.
 //
@@ -305,6 +305,7 @@ func (c *chooser) observe(left, right, mixed float64) string {
 // Returns:
 //   - left: the left side's RMS in sample units
 //   - right: the right side's RMS in sample units
+//   - mixed: the RMS the two would have if folded together
 func rmsPair(stereo []byte) (left, right, mixed float64) {
 	var sumL, sumR, sumM float64
 	pairs := len(stereo) / 4
