@@ -1,23 +1,18 @@
 // Copyright 2026 Alan Beebe (radiocli.com). All Rights Reserved.
 // Author: Alan Beebe
-// Created: 8/2/2026
+// Created: 8/23/2026
 
 package audio
 
 import (
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"strings"
-	"syscall"
 
 	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
-	"github.com/albeebe/radiocli/internal/broker"
-	"github.com/albeebe/radiocli/internal/opusenc"
+	"github.com/albeebe/radiocli/internal/audiogate"
+	"github.com/albeebe/radiocli/internal/audioout"
 	"github.com/spf13/cobra"
 )
 
@@ -30,313 +25,246 @@ import (
 // Returns:
 //   - the "audio listen" command, with its flags already registered
 func newListen(app *appcontext.App) *cobra.Command {
-	var (
-		input   string
-		format  string
-		bitrate int
-		channel string
-	)
+	var opts listenOptions
 
 	cmd := &cobra.Command{
 		Use:   "listen",
-		Short: "Write the scanner's audio to standard output",
-		Long: "Listen writes the audio arriving on a sound input to standard output, as it\n" +
-			"arrives, until you stop it.\n\n" +
-			"By default the audio is raw samples: signed 16-bit little-endian mono at\n" +
-			"48000 Hz, with no header and no framing, which is what a player expects to be\n" +
-			"handed on a pipe. The exact flags to give one are printed to standard error\n" +
-			"when the stream starts, so they are never something to work out.\n\n" +
-			"The scanner's audio does not travel over the USB cable this tool controls it\n" +
-			"with. It leaves the scanner as an ordinary sound signal on a cable, so which\n" +
-			"input carries it is something only you can know. Run \"radiocli audio\" to see\n" +
-			"what this computer can record from.",
+		Short: "Play the scanner's audio on this computer's speakers",
+		Long: "Listen plays the scanner on this computer, until you stop it.\n\n" +
+			"By default it plays only the transmissions. The hiss between them is not\n" +
+			"worth listening to for an evening, and the same detector that finds them for\n" +
+			"\"audio record\" decides when to open the speakers. It opens them on the first\n" +
+			"frame above the noise floor rather than waiting to be sure, so nothing of the\n" +
+			"first word is lost. Pass --squelch=false to hear the input exactly as it\n" +
+			"arrives, hiss included, the way the scanner's own speaker does.\n\n" +
+			"The audio comes from a daemon, which is what lets this run while something\n" +
+			"else is recording the same radio: a sound input can only be open once, and\n" +
+			"sharing it is the daemon's whole job. --input opens a sound input directly\n" +
+			"instead, which is for checking a cable, and nothing else can listen while it\n" +
+			"does.\n\n" +
+			"Run \"radiocli audio\" to see what this computer can record from and play on.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runListen(cmd.Context(), app, listenOptions{
-				input:   input,
-				format:  format,
-				bitrate: bitrate,
-				channel: channel,
-			})
+			return runListen(cmd.Context(), app, opts)
 		},
 	}
 
-	cmd.Flags().StringVar(&input, "input", "",
-		"sound input to record from, as \"radiocli audio\" names it")
-	cmd.Flags().StringVar(&format, "format", formatPCM,
-		"how to write the audio: \"pcm\" or \"opus\"")
-	cmd.Flags().IntVar(&bitrate, "bitrate", defaultBitrate,
-		"bits per second, for --format opus")
-	cmd.Flags().StringVar(&channel, "channel", audiofeed.ChannelAuto,
+	cmd.Flags().StringVar(&opts.input, "input", "",
+		"sound input to listen to directly, as \"radiocli audio\" names it")
+	cmd.Flags().StringVar(&opts.channel, "channel", audiofeed.ChannelAuto,
 		"which side of the cable the scanner is on: \"auto\", \"left\", \"right\" or \"mix\"")
+	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
+		"speakers to play on, as \"radiocli audio\" names them (default: this computer's own)")
+	cmd.Flags().BoolVar(&opts.squelch, "squelch", true,
+		"play only the transmissions; --squelch=false plays everything the input carries")
+	cmd.Flags().DurationVar(&opts.hang, "hang", audiogate.DefaultQuietHang,
+		"how long the audio must stay quiet before the speakers close again")
+	cmd.Flags().Float64Var(&opts.gain, "gain", 0,
+		"decibels to turn the audio up by on the way to the speakers")
+	cmd.Flags().DurationVar(&opts.buffer, "buffer", audioout.DefaultBuffer,
+		"how much audio to keep between the radio and the speakers: bigger plays more "+
+			"smoothly, smaller plays sooner")
 
 	return cmd
 }
 
-// announce says what is about to arrive on stdout, on stderr.
+// announceListening says what is being played and where.
 //
-// On stderr because stdout is the audio, and this is the one piece of
-// information a person needs that the audio cannot carry: raw samples have no
-// header, so the rate, the width and the channel count have to be told rather
-// than discovered. Printing the player's own flags saves working them out.
+// To stderr, like every other running commentary in this package, so that a
+// person watching sees it and anything reading stdout is unaffected.
 //
 // Parameters:
 //   - app: the application context whose Stderr receives the line
 //   - source: the name of the sound input the audio is coming from
-//   - format: the audio format about to be written, formatPCM or formatOpus
-//   - bitrate: bits per second, said only when the format is formatOpus
-func announce(app *appcontext.App, source, format string, bitrate int) {
-	switch format {
-	case formatOpus:
-		app.Notef("Recording from %q as Opus at %d kbps, 48000 Hz mono, in 20 ms packets.\n"+
-			"Each packet is preceded by its length as two bytes, most significant first.\n"+
-			"This is for a program to read. Nothing that plays files will open it.\n",
-			source, bitrate/1000)
-	default:
-		app.Notef("Recording from %q: signed 16-bit little-endian mono at 48000 Hz.\n"+
-			"Play it with:  ffplay -f s16le -ar 48000 -ac 1 -i -\n"+
-			"           or: play -t raw -e signed -b 16 -c 1 -r 48000 -\n",
-			source)
+//   - speaker: the name of the output being played on, empty for one the
+//     library did not name
+//   - squelch: whether only the transmissions are being played
+func announceListening(app *appcontext.App, source, speaker string, squelch bool) {
+	// An empty name is the system's own choice of output, which the library
+	// does not always put a name to. "Playing on " is not a sentence, so it
+	// gets a description instead of a name.
+	where := fmt.Sprintf("%q", speaker)
+	if speaker == "" {
+		where = "this computer's own speakers"
 	}
+
+	what := "everything the input carries"
+	if squelch {
+		what = "the transmissions"
+	}
+
+	app.Notef("Playing %s from %q on %s. Press Ctrl-C to stop.\n", what, source, where)
 }
 
-// listenDirect opens the sound card itself and writes what it hears.
+// listenLoop plays what arrives until ctx is cancelled or the audio ends.
 //
-// Opening the card here means this process holds it, so nothing else can. That
-// is the right thing for checking a cable and the wrong thing for anything
-// sharing a scanner, which is why the daemon exists.
-//
-// Parameters:
-//   - ctx: context that ends the recording when it is cancelled
-//   - app: the application context holding the logger and the streams
-//   - input: the sound input to open, as "radiocli audio" names it
-//   - format: the audio format to write, formatPCM or formatOpus
-//   - bitrate: bits per second, used only when the format is formatOpus
-//   - channel: the side of the cable to take, as audiofeed.ParseChannel gave it
-//
-// Returns:
-//   - error if the sound input cannot be opened, if the encoder cannot be
-//     built, or if writing the audio out fails; nil once ctx is cancelled
-func listenDirect(ctx context.Context, app *appcontext.App, input, format string, bitrate int, channel string) error {
-	feed := audiofeed.New(app.Log)
-	sub := feed.Subscribe(listenQueue)
-	defer sub.Close()
-
-	capture, err := startCapture(audiofeed.Options{
-		Source:  input,
-		Channel: channel,
-		Log:     app.Log,
-	}, feed)
-	if err != nil {
-		return err
-	}
-	defer capture.Close()
-
-	announce(app, capture.Source(), format, bitrate)
-
-	return write(ctx, app, sub, format, bitrate)
-}
-
-// listenViaDaemon takes the audio from whichever daemon is holding this
-// scanner's sound input.
-//
-// This is the one command in the tool that does not try the scanner for itself
-// first and fall back to a daemon. Every other command can run either way,
-// because either way it ends up talking to the same radio. Audio cannot: a
-// sound card can only be open once, and if a daemon has it then opening it here
-// would fail, while if no daemon has it there is nothing to share. So there is
-// no fallback to arrange, and asking for one would only produce a worse error
-// message than saying plainly that a daemon is what serves this.
+// The frames played are the ones that have just arrived, and the gate is asked
+// only whether they are live. Neither of the things the gate emits is any use
+// here: it holds audio for the length of the hang so that it can trim the end
+// of a recording, and it does not announce a transmission at all until one has
+// proved itself long enough to be worth a file. Both are right for a file and
+// wrong for a speaker, where late is missing.
 //
 // Parameters:
-//   - ctx: context that ends the relay when it is cancelled
-//   - app: the application context holding the device name, the logger and the
-//     streams
-//   - format: the audio format to ask the daemon for, formatPCM or formatOpus
-//   - bitrate: bits per second, used only when the format is formatOpus
+//   - ctx: context that ends the listening when it is cancelled
+//   - app: the application context holding the logger
+//   - frames: the audio arriving
+//   - p: the speakers to play on
+//   - opts: what the flags asked for
 //
 // Returns:
-//   - error if no device was named, if no daemon is holding that device, or if
-//     the relay itself fails; nil once ctx is cancelled
-func listenViaDaemon(ctx context.Context, app *appcontext.App, format string, bitrate int) error {
-	if app.Config.Device == "" {
-		return fmt.Errorf("%w: name one with --device, or pass --input to open a sound "+
-			"input directly", appcontext.ErrNoDevice)
+//   - nil once ctx is cancelled or the audio ends, which are both ordinary ways
+//     for this to finish
+func listenLoop(ctx context.Context, app *appcontext.App, frames <-chan audiofeed.Frame,
+	p player, opts listenOptions) error {
+
+	// Only built when it is going to be asked something. Without the squelch
+	// every frame is played, and a detector nobody consults is work done for
+	// nothing on every frame of the evening.
+	var gate *audiogate.Gate
+	if opts.squelch {
+		// MinDuration and MaxDuration are left at their defaults and never
+		// matter: they decide what is worth a file, and nothing here is
+		// keeping anything.
+		gate = audiogate.New(audiogate.Options{
+			Hang: opts.hang,
+			// No radio to ask. This command does not need the scanner at all,
+			// and requiring it would mean nobody could listen to a cable
+			// without one plugged in.
+			RequireRadio: false,
+		})
 	}
 
-	stream, err := broker.DialAudio(app.Config.Device, format, bitrate)
-	if err != nil {
-		if errors.Is(err, broker.ErrNoDaemon) {
-			return fmt.Errorf("%w.\n"+
-				"Audio comes from a daemon, because a sound input can only be open once and\n"+
-				"sharing it is what the daemon is for. Start one with:\n"+
-				"  radiocli daemon --device %s --audio \"<sound input>\"\n"+
-				"Or pass --input to open a sound input directly, without sharing it",
-				err, app.Config.Device)
-		}
-		return err
-	}
-	defer stream.Close()
-
-	info := stream.Info()
-	announce(app, info.Source, format, info.Bitrate)
-	if info.Channel != "" {
-		app.Log.Debug("the daemon is folding the audio", "channel", info.Channel)
-	}
-
-	return relay(ctx, app, stream, format)
-}
-
-// relay moves what the daemon sends to stdout until ctx is cancelled.
-//
-// The audio is written on exactly as it arrived. For raw samples that is the
-// samples; for Opus it is the packet, with its length in front so that whatever
-// reads this can tell one from the next. Nothing is decoded and nothing is
-// re-encoded, so this end has no opinion about the audio at all.
-//
-// Parameters:
-//   - ctx: context that ends the relay when it is cancelled
-//   - app: the application context whose Stdout receives the audio
-//   - stream: the daemon's audio stream to read from
-//   - format: the audio format the stream carries, formatPCM or formatOpus
-//
-// Returns:
-//   - error if the daemon stops sending audio for any reason other than the
-//     cancellation, or if writing to Stdout fails; nil once ctx is cancelled
-func relay(ctx context.Context, app *appcontext.App, stream *broker.AudioStream, format string) error {
-	// The stream blocks in a read, so cancelling has to reach it by closing the
-	// socket underneath it rather than by being noticed between frames.
-	stopped := make(chan struct{})
-	defer close(stopped)
-	go func() {
-		select {
-		case <-ctx.Done():
-			stream.Close()
-		case <-stopped:
-		}
-	}()
-
-	var header [2]byte
+	var meter playbackMeter
 
 	for {
-		_, audio, event, err := stream.Next()
-		if err != nil {
-			// Ending is how this command ends, so a read that failed because
-			// the socket was closed on the way out is not a failure.
-			if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case frame, ok := <-frames:
+			if !ok {
+				// The audio stopping is how this ends when a daemon goes away
+				// or a capture is closed. Nothing was being kept, so there is
+				// nothing to finish.
 				return nil
 			}
-			return fmt.Errorf("the daemon stopped sending audio: %w", err)
-		}
 
-		if event != nil {
-			relayEvent(app, event)
-			continue
-		}
-
-		if format == formatOpus {
-			binary.BigEndian.PutUint16(header[:], uint16(len(audio)))
-			if _, err := app.Stdout.Write(header[:]); err != nil {
-				return writeError(err)
+			if gate == nil {
+				p.Play(frame.PCM)
+				meter.observe(app, p, true)
+				continue
 			}
-		}
-		if _, err := app.Stdout.Write(audio); err != nil {
-			return writeError(err)
+
+			// Offered for its own sake: the gate has to see every frame to
+			// track the noise floor and to know a transmission is running. The
+			// events it produces are dropped on the floor, and Live is the
+			// question worth asking of it here.
+			gate.Offer(frame)
+
+			live := gate.Live(frame)
+			if live {
+				p.Play(frame.PCM)
+			}
+			meter.observe(app, p, live)
 		}
 	}
 }
 
-// relayEvent passes on something the daemon said that was not audio.
+// observe counts one frame and, once a second's worth have gone by, says what
+// became of them.
+//
+// At debug, because it is a reading a second and belongs in a log rather than
+// on somebody's terminal. It is the same shape as the level meter the recorder
+// keeps, and for the same reason: a fault that only shows up on real traffic
+// has to be visible while the traffic is happening.
 //
 // Parameters:
-//   - app: the application context whose Stderr and logger receive it
-//   - raw: the JSON message the daemon sent in place of audio, ignored when it
-//     cannot be decoded or names a type this does not pass on
-func relayEvent(app *appcontext.App, raw json.RawMessage) {
-	var msg struct {
-		Type    string  `json:"type"`
-		Error   string  `json:"error"`
-		Channel string  `json:"channel"`
-		Seconds int     `json:"seconds"`
-		DBFS    float64 `json:"dbfs"`
+//   - app: the application context holding the logger
+//   - p: the speakers being played, for the counts they keep
+//   - played: whether this frame was handed to them
+func (m *playbackMeter) observe(app *appcontext.App, p player, played bool) {
+	m.seen++
+	if played {
+		m.played++
 	}
-	if err := json.Unmarshal(raw, &msg); err != nil {
+	if m.seen < meterFrames {
 		return
 	}
 
-	switch msg.Type {
-	case "channel":
-		app.Notef("The scanner's audio is on the %s channel.\n", msg.Channel)
-	case "silent":
-		app.Notef("There has been no signal at all for several seconds, not even noise.\n" +
-			"Check the cable, and on macOS check that the daemon is allowed to record:\n" +
-			"System Settings > Privacy & Security > Microphone.\n")
-	case "error":
-		app.Notef("%s\n", msg.Error)
-	case "level":
-		// The meter is for something drawing one. There is nothing useful to do
-		// with four numbers a second on a terminal that is also carrying audio.
-		app.Log.Debug("audio level", "dbfs", msg.DBFS)
+	stats := p.Stats()
+	app.Log.Debug("playback",
+		"played", fmt.Sprintf("%d/%d", m.played, m.seen),
+		"starved", stats.Starved-m.last.Starved,
+		"dropped", stats.Dropped-m.last.Dropped)
+
+	m.played, m.seen, m.last = 0, 0, stats
+}
+
+// reportPlayback says what the speakers had to do to keep up, on the way out.
+//
+// Both numbers are said, because between them they name the two ways playing
+// can go wrong and neither is visible while it is happening: audio that never
+// reached the speakers, and holes where the speakers had nothing to play. What
+// somebody hears in either case is choppy audio, and until this was printed the
+// only way to tell that from a bad cable was to open the recording and find it
+// perfect.
+//
+// Running dry needs the yardstick that goes with it. With the squelch on the
+// audio stops between transmissions, so the speakers run dry once per
+// transmission by design, and only a count far above that means the audio was
+// arriving in bursts too big to smooth out.
+//
+// Parameters:
+//   - app: the application context whose Stderr and logger receive it
+//   - p: the speakers that have been playing
+func reportPlayback(app *appcontext.App, p player) {
+	stats := p.Stats()
+	app.Log.Debug("playback finished",
+		"played", float64(stats.Played)/float64(playedBytesPerSecond),
+		"dropped", stats.Dropped, "starved", stats.Starved)
+
+	if stats.Dropped > 0 {
+		app.Notef("%.1f seconds of audio arrived faster than the speakers could play it and "+
+			"was dropped.\nThis computer is struggling to keep up, or the sound output is.\n",
+			float64(stats.Dropped)/float64(playedBytesPerSecond))
+	}
+
+	if stats.Starved > 0 {
+		app.Notef("The speakers ran dry %d time(s), and played silence until the audio caught "+
+			"up.\nOnce per transmission is expected, since the audio stops between them. Many\n"+
+			"more than that is what choppy playback sounds like.\n", stats.Starved)
 	}
 }
 
-// report passes on the things the capture has to say that are not audio.
-//
-// To stderr, for the same reason the format line goes there: stdout is the
-// audio and nothing else may appear in it.
+// runListen checks what was asked for and starts playing.
 //
 // Parameters:
-//   - app: the application context whose Stderr receives the message
-//   - ev: the event the capture raised, ignored when its kind is not one this
-//     passes on
-func report(app *appcontext.App, ev audiofeed.Event) {
-	fields, _ := ev.Payload.(map[string]any)
-
-	switch ev.Kind {
-	case "channel":
-		if channel, ok := fields["channel"].(string); ok {
-			app.Notef("The scanner's audio is on the %s channel.\n", channel)
-		}
-
-	case "silent":
-		// The one failure that looks exactly like working. A stream that opened
-		// and delivers digital zero is almost never a quiet radio: a real input
-		// has a noise floor a few counts wide even with nothing plugged in.
-		app.Notef("There has been no signal at all for several seconds, not even noise.\n" +
-			"Check the cable, and on macOS check that this tool is allowed to record:\n" +
-			"System Settings > Privacy & Security > Microphone.\n")
-	}
-}
-
-// runListen checks what was asked for and starts writing.
-//
-// Parameters:
-//   - ctx: context that ends the recording when it is cancelled
+//   - ctx: context that ends the listening when it is cancelled
 //   - app: the application context holding the configuration and the streams
 //   - opts: what the flags asked for
 //
 // Returns:
-//   - error if the command was run inside a daemon, if the format, the channel
-//     or the bitrate is not one this accepts, or if the recording itself fails;
-//     nil once ctx is cancelled
+//   - error if the command was run inside a daemon, if the channel or the
+//     speakers are not something this can use, or if the audio cannot be
+//     reached; nil once ctx is cancelled
 func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) error {
 	// A daemon lends a command its streams for as long as the command runs, on
 	// the reasonable assumption that a command finishes. This one does not, so
-	// inside a daemon it would hold those streams forever and pour audio down
-	// the socket of whichever client happened to ask. Refused here rather than
-	// merely left undocumented, because a client can send any command line.
+	// inside a daemon it would hold those streams forever and play the radio
+	// out of whichever machine the daemon is on rather than the one that asked.
 	if app.InDaemon {
 		return errors.New("\"audio listen\" runs until it is stopped, so it cannot be run " +
 			"inside a daemon:\nrun it in a terminal of its own instead")
 	}
 
-	format := strings.ToLower(strings.TrimSpace(opts.format))
-	if format == "" {
-		format = formatPCM
+	if opts.input == "" && app.Config.Device == "" {
+		return fmt.Errorf("%w: name one with --device, or pass --input to listen to a sound "+
+			"input directly", appcontext.ErrNoDevice)
 	}
-	if format != formatPCM && format != formatOpus {
-		return fmt.Errorf("there is no audio format called %q: it is %q or %q",
-			opts.format, formatPCM, formatOpus)
+
+	if opts.hang <= 0 {
+		return fmt.Errorf("a hang of %s is not a length of quiet to wait for", opts.hang)
 	}
 
 	channel, err := audiofeed.ParseChannel(opts.channel)
@@ -344,106 +272,24 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 		return err
 	}
 
-	if format == formatOpus && (opts.bitrate < opusenc.MinBitrate || opts.bitrate > opusenc.MaxBitrate) {
-		return fmt.Errorf("a bitrate of %d is outside what the encoder accepts, which is %d to %d",
-			opts.bitrate, opusenc.MinBitrate, opusenc.MaxBitrate)
+	// The speakers are opened before the audio is asked for, so that a typo in
+	// --speaker costs a moment rather than a sound card being taken and given
+	// straight back.
+	p, err := openPlayer(opts.speaker, opts.buffer)
+	if err != nil {
+		return err
 	}
+	defer p.Close()
+	p.SetGain(opts.gain)
 
-	// Naming an input means opening it here, which is the exception. Without
-	// one the audio comes from the daemon, which is the way that lets more than
-	// one thing listen at once.
-	if opts.input != "" {
-		return listenDirect(ctx, app, opts.input, format, opts.bitrate, channel)
+	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
+	if err != nil {
+		return err
 	}
-	return listenViaDaemon(ctx, app, format, opts.bitrate)
-}
+	defer closeAudio()
 
-// write moves frames from the feed to stdout until ctx is cancelled.
-//
-// Nothing is buffered between the frames and the stream. A buffer would trade
-// latency for syscalls at 50 writes a second, which is a trade worth making
-// nowhere and least of all here: the whole value of this is hearing the radio
-// at the moment it says something.
-//
-// Parameters:
-//   - ctx: context that ends the writing when it is cancelled
-//   - app: the application context whose Stdout receives the audio
-//   - sub: the subscription carrying frames and events from the capture
-//   - format: the audio format to write, formatPCM or formatOpus
-//   - bitrate: bits per second, used only when the format is formatOpus
-//
-// Returns:
-//   - error if the encoder cannot be built, if encoding a frame fails, or if
-//     writing to Stdout fails; nil once ctx is cancelled or the feed closes
-func write(ctx context.Context, app *appcontext.App, sub *audiofeed.Sub, format string, bitrate int) error {
-	var enc *opusenc.Encoder
-	var packet []byte
-	if format == formatOpus {
-		var err error
-		if enc, err = opusenc.New(bitrate); err != nil {
-			return err
-		}
-		packet = make([]byte, opusenc.MaxPacket)
-	}
+	announceListening(app, source, p.Name(), opts.squelch)
+	defer reportPlayback(app, p)
 
-	// Two bytes of length in front of each packet, which is enough for any Opus
-	// packet several times over.
-	var header [2]byte
-
-	for {
-		select {
-		case <-ctx.Done():
-			// Stopping is how this ends, so it is not a failure. Ctrl-C on a
-			// command with no natural end should leave the exit status alone.
-			return nil
-
-		case ev, ok := <-sub.Events():
-			if !ok {
-				return nil
-			}
-			report(app, ev)
-
-		case frame, ok := <-sub.Frames():
-			if !ok {
-				return nil
-			}
-
-			out := frame.PCM
-			if enc != nil {
-				n, err := enc.Encode(frame.PCM, packet)
-				if err != nil {
-					return err
-				}
-				binary.BigEndian.PutUint16(header[:], uint16(n))
-				if _, err := app.Stdout.Write(header[:]); err != nil {
-					return writeError(err)
-				}
-				out = packet[:n]
-			}
-
-			if _, err := app.Stdout.Write(out); err != nil {
-				return writeError(err)
-			}
-		}
-	}
-}
-
-// writeError reports a failure to write the audio out.
-//
-// A closed pipe is how this normally ends. Somebody pressed q in the player, or
-// closed the window it was in, and reporting that as an error would make every
-// ordinary use of this command exit non-zero and print a complaint about a
-// pipeline that did exactly what it was meant to.
-//
-// Parameters:
-//   - err: the failure the write returned
-//
-// Returns:
-//   - nil if err is a closed pipe, otherwise err wrapped with what was being
-//     written when it happened
-func writeError(err error) error {
-	if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, syscall.EPIPE) {
-		return nil
-	}
-	return fmt.Errorf("writing the audio out: %w", err)
+	return listenLoop(ctx, app, frames, p, opts)
 }

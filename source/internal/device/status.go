@@ -14,18 +14,6 @@ import (
 // LED is the colour of one of the scanner's indicator lights.
 type LED int
 
-// The colours an LED can show.
-const (
-	LEDOff LED = iota
-	LEDBlue
-	LEDRed
-	LEDMagenta
-	LEDGreen
-	LEDCyan
-	LEDYellow
-	LEDWhite
-)
-
 // Mode is what the scanner is doing, as far as the remote protocol is
 // concerned. It is coarse: every scanning and searching screen is ModeNormal.
 type Mode int

@@ -127,21 +127,6 @@ func (s *Scanner) Next(ctx context.Context, t Target, count int) error {
 	return s.step(ctx, "NXT", t, count)
 }
 
-// Previous moves back through entries of one kind, by count steps.
-//
-// Parameters:
-//   - ctx: context for cancellation and timeouts
-//   - t: which kind of entry to step through, from Channel, Department, or
-//     System
-//   - count: how many steps to take, from 1 to 8
-//
-// Returns:
-//   - error if count is out of range, the exchange fails, or the scanner
-//     refuses the command
-func (s *Scanner) Previous(ctx context.Context, t Target, count int) error {
-	return s.step(ctx, "PRV", t, count)
-}
-
 // PressKey presses a key on the scanner, as though someone had pressed it.
 //
 // This drives the scanner's own interface rather than the remote protocol, so
@@ -177,6 +162,21 @@ func (s *Scanner) PressKey(ctx context.Context, key Key, action KeyAction) error
 	defer func() { s.lastKey = time.Now() }()
 
 	return s.set(ctx, fmt.Sprintf("KEY,%s,%s", key, action))
+}
+
+// Previous moves back through entries of one kind, by count steps.
+//
+// Parameters:
+//   - ctx: context for cancellation and timeouts
+//   - t: which kind of entry to step through, from Channel, Department, or
+//     System
+//   - count: how many steps to take, from 1 to 8
+//
+// Returns:
+//   - error if count is out of range, the exchange fails, or the scanner
+//     refuses the command
+func (s *Scanner) Previous(ctx context.Context, t Target, count int) error {
+	return s.step(ctx, "PRV", t, count)
 }
 
 // QuickSearchHold puts the scanner into quick search hold on one frequency.

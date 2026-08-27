@@ -296,6 +296,70 @@ together, a `scanning` and a `battery` both failed and both blamed the cable.
 `TIOCEXCL`, which `go.bug.st/serial` sets, does not stop a second open of a
 `/dev/cu.*` on macOS. An advisory lock file was the fix.
 
+### The headphone jack is wired out of phase
+
+*2026-08-23*
+
+Folding the two sides of the headphone output together loses most of the audio.
+Measured on an SDS150 on firmware 1.00.37, against continuous NOAA weather
+voice, through the same cable and sound card:
+
+| Fold | RMS | Peak |
+| ---- | --- | ---- |
+| Left only | -25.2 dBFS | -9.5 dBFS |
+| Right only | -24.0 dBFS | -8.2 dBFS |
+| Both, averaged | **-35.0 dBFS** | **-19.5 dBFS** |
+
+Two sides carrying the same mono audio fold with no loss at all, so eleven
+decibels means they are fighting each other. The level is not the worst of it.
+Comparing the spectrum of one side against the fold, on the same source:
+
+| Band | One side | Folded |
+| ---- | -------- | ------ |
+| 300-1000 Hz | 67% | 13% |
+| 1-2 kHz | 22% | 43% |
+| 2-3.4 kHz | 11% | 43% |
+
+The fold guts the low end, because the low frequencies are the most alike
+between the two sides and cancel the most completely. What is left is a thin,
+reedy voice with its body removed, like a guy talking through a kazoo, and it
+is easy to mistake for a fault in the radio or for the artefacts of a digital
+voice codec.
+
+The cause is the jack itself, which is wired out of phase. Uniden addressed it
+in firmware rather than in hardware, by adding **Menu > Settings > Headphone L/R
+output** with the values `In Phase` and `Invert Phase`. So whether a given radio
+has the problem depends on which way that setting is left, and any tool reading
+this output has to cope with both.
+
+**Nothing about the levels reveals it.** Both sides are equally loud. Anything
+deciding how to fold by comparing the two sides sees a healthy stereo lead and
+picks the one option that destroys the signal. The fold has to be judged by what
+it produces: measure what mixing would give, and refuse to mix when it comes out
+quieter than either side on its own. That is what `audiofeed`'s chooser does.
+
+### `Mod` reports the demodulator, not the programming
+
+*2026-08-23*
+
+A conventional channel programmed with modulation `Auto` was reported by `GSI`
+as `Mod="NFM"`. The programming was read straight off the radio's own menus,
+Set Modulation showing `Auto` highlighted, minutes after eight documents from
+the same channel had all said NFM.
+
+So the attribute is the demodulator's current state, not the channel's setting.
+On an Auto channel carrying P25, the two disagree exactly when it is
+interesting: digital bursts the auto-detector fails to classify fall back to
+NFM analog, come out of the speaker as a constant-level buzz with no words in
+it, and are reported as an ordinary NFM stop. Nothing in the document says the
+scanner tried and failed to decode; the recording of modem noise labelled as
+narrowband FM is the only evidence.
+
+**Why it matters.** Anything using `Mod` to answer "what is this channel"
+gets a different answer depending on what happened to be transmitting at the
+moment it asked. It answers "what is the radio doing right now", and there is
+no field that reports the programmed value.
+
 ### Mass storage mode is a one-way door
 
 *2026-08-05*
@@ -585,6 +649,85 @@ This is what makes it safe to walk all 147 colors to check the palette. Verified
 rather than assumed: the check reports which area's picker it borrowed and what
 color was there, and the test sets that area to that same color and confirms
 nothing changed.
+
+### One conventional frequency carries analog and P25 traffic
+
+*2026-08-23*
+
+Merrimack police dispatch, 155.550 MHz, a plain conventional channel in a
+favorites list. Watched for five minutes while it was passing audio:
+
+```
+155.550000MHz: 291 polls on this frequency, 84 while passing audio,
+               0 carried a UnitID element
+```
+
+`P25Status="None"` throughout, and no `UnitID` element in any document. Read as
+a property of the channel, that says analog, and it is what I concluded.
+
+Fifteen minutes later, the same frequency, recorded through the ordinary path:
+
+```json
+"frequency": "155.550000MHz",
+"modulation": "NFM",
+"digital": "P25"
+```
+
+So the channel carries both. `Mod` reads `NFM` either way, because it is the
+demodulator and a decoded P25 signal leaves it there.
+
+**Why it matters.** "Is this frequency digital" is not a question with an
+answer, and any amount of sampling that treats it as one will eventually
+sample the wrong side and be confident about it. Eighty-four consecutive polls
+of live audio all said analog, which is a large enough sample to feel
+conclusive and was not. The reading only describes the transmission it was
+taken during, so it has to be recorded per transmission and cannot be cached
+against a channel.
+
+There is a second trap in it. A digital transmission with no unit id looks
+exactly like an analog one if the unit id is what you are inferring from,
+because a call the scanner joins after the grant names no radio at all. Both
+19:10 recordings above are P25 and neither carries a unit.
+
+### The unit id is an element, not an attribute
+
+*2026-08-23*
+
+A live P25 call on an SDS150, caught by dumping whole `GSI` documents rather
+than the attributes expected in them:
+
+```xml
+<TGID Name="Fire Dispatch" Index="20057" TGID="TGID:10003" SvcType="Fire Dispatch" ... />
+<UnitID Name="UID:101" U_Id="UID:101" />
+<Site Name="Manchester" Index="20034" ... />
+```
+
+The transmitting radio arrives as a `UnitID` element of its own, sitting between
+`TGID` and `Site`. It is **not** an attribute of `TGID`, which is where the
+conventional element puts the same idea: `ConvFrequency` really does carry
+`TGID="TGID None" U_Id="UID None"` inline, and modelling the trunked side to
+match reads empty on every document the radio sends.
+
+Between calls the element is still there and is written bare:
+
+```xml
+<UnitID />
+```
+
+No attributes at all, rather than the `U_Id="UID None"` the conventional element
+uses. So one document spells absence two different ways depending on which half
+of it is being read.
+
+`Name` and `U_Id` carried the same value on every capture. The value takes the
+same prefixed form as the talkgroup, `UID:101`, so whatever strips `TGID:`
+strips this too.
+
+**Why it matters.** Anything reading the unit id as an attribute of the
+talkgroup gets nothing, forever, on hardware that is working perfectly. The
+symptom is a field that is simply always empty, which reads as "this system does
+not send unit ids" rather than as a bug. It survived a probe that grepped the
+document for `U_Id=` and found it, because finding the string says nothing about
+which element it hangs off.
 
 ### `GST` is strictly better than `STS`
 

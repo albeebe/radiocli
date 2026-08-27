@@ -26,17 +26,45 @@ func (f Frequency) MHz() float64 {
 	return float64(f) / float64(Megahertz)
 }
 
-// String renders the frequency in megahertz to four decimal places, which is
-// the resolution the scanner tunes and displays.
+// ParseEnteredFrequency reads a frequency that is about to be typed into one
+// of the scanner's frequency entry screens, and says how to type it.
+//
+// It is ParseFrequency with one more question asked: can this be typed at all?
+// The entry screen has keys for the digits and the decimal point and nothing
+// else, so a sign or an exponent is not a frequency the scanner could be given
+// however valid a number it is. Checking here means a mistyped frequency costs
+// nothing and leaves the scanner where it was, rather than being discovered
+// halfway through an entry screen with a half-made channel on it.
+//
+// What comes back for typing is what was written, whenever what was written is
+// already digits and a decimal point. Only a frequency carrying a unit gets
+// rewritten, because it has to be: rewriting one that did not need it would
+// change what the scanner is given, and what the scanner is given is the part
+// that has been proven against the hardware.
+//
+// Parameters:
+//   - text: the frequency as it was typed
 //
 // Returns:
-//   - the frequency written in megahertz, or "" when there is no frequency to
-//     show
-func (f Frequency) String() string {
-	if f == 0 {
-		return ""
+//   - the frequency, read as megahertz unless the text carried a unit
+//   - the text to type into the entry screen, in digits and a decimal point
+//   - error wrapping ErrFrequencyNotTypeable when it could not be typed, or
+//     whatever ParseFrequency returns when it could not be read
+func ParseEnteredFrequency(text string) (Frequency, string, error) {
+	if strings.ContainsAny(text, "+-eE") {
+		return 0, "", fmt.Errorf("%q is %w", text, ErrFrequencyNotTypeable)
 	}
-	return fmt.Sprintf("%.4f MHz", f.MHz())
+
+	f, err := ParseFrequency(text)
+	if err != nil {
+		return 0, "", err
+	}
+
+	trimmed := strings.TrimSpace(text)
+	if strings.IndexFunc(trimmed, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }) < 0 {
+		return f, trimmed, nil
+	}
+	return f, strconv.FormatFloat(f.MHz(), 'f', -1, 64), nil
 }
 
 // ParseFrequency reads a frequency written by a person or written back by the
@@ -90,45 +118,17 @@ func ParseFrequency(text string) (Frequency, error) {
 	return f, nil
 }
 
-// ParseEnteredFrequency reads a frequency that is about to be typed into one
-// of the scanner's frequency entry screens, and says how to type it.
-//
-// It is ParseFrequency with one more question asked: can this be typed at all?
-// The entry screen has keys for the digits and the decimal point and nothing
-// else, so a sign or an exponent is not a frequency the scanner could be given
-// however valid a number it is. Checking here means a mistyped frequency costs
-// nothing and leaves the scanner where it was, rather than being discovered
-// halfway through an entry screen with a half-made channel on it.
-//
-// What comes back for typing is what was written, whenever what was written is
-// already digits and a decimal point. Only a frequency carrying a unit gets
-// rewritten, because it has to be: rewriting one that did not need it would
-// change what the scanner is given, and what the scanner is given is the part
-// that has been proven against the hardware.
-//
-// Parameters:
-//   - text: the frequency as it was typed
+// String renders the frequency in megahertz to four decimal places, which is
+// the resolution the scanner tunes and displays.
 //
 // Returns:
-//   - the frequency, read as megahertz unless the text carried a unit
-//   - the text to type into the entry screen, in digits and a decimal point
-//   - error wrapping ErrFrequencyNotTypeable when it could not be typed, or
-//     whatever ParseFrequency returns when it could not be read
-func ParseEnteredFrequency(text string) (Frequency, string, error) {
-	if strings.ContainsAny(text, "+-eE") {
-		return 0, "", fmt.Errorf("%q is %w", text, ErrFrequencyNotTypeable)
+//   - the frequency written in megahertz, or "" when there is no frequency to
+//     show
+func (f Frequency) String() string {
+	if f == 0 {
+		return ""
 	}
-
-	f, err := ParseFrequency(text)
-	if err != nil {
-		return 0, "", err
-	}
-
-	trimmed := strings.TrimSpace(text)
-	if strings.IndexFunc(trimmed, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }) < 0 {
-		return f, trimmed, nil
-	}
-	return f, strconv.FormatFloat(f.MHz(), 'f', -1, 64), nil
+	return fmt.Sprintf("%.4f MHz", f.MHz())
 }
 
 // parseFrequency reads the scanner's eight digit encoding. An empty field

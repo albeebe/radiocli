@@ -14,6 +14,7 @@ One reference document per subject, each stating the radio and firmware it was r
 | Document | Covers |
 | --- | --- |
 | [protocol.md](protocol.md) | What the serial port will and will not do |
+| [audio.md](audio.md) | Recording the sound, which does not come over the serial port |
 | [screen-map.md](screen-map.md) | Where every element of the display sits |
 | [colors.md](colors.md) | The palette, and reading it off the glass |
 | [glyphs.md](glyphs.md) | All 256 character codes, as pixel grids |
@@ -23,9 +24,12 @@ One reference document per subject, each stating the radio and firmware it was r
 
 [screen-map.md](screen-map.md) plus [colors.md](colors.md) is enough to redraw the scanner's display faithfully somewhere else, and [glyphs.md](glyphs.md) is the character shapes that redrawing needs.
 
+[audio.md](audio.md) is the odd one out. Everything else in here was read off the serial port or the glass; audio leaves the radio through a headphone socket and arrives by a path that shares no clock with the rest, which is most of what makes it hard.
+
 ## Further reading
 - **Reverse engineering** - Working a system out from its observable behaviour, and why the radio wins when it disagrees with its own specification
 - **Trunked radio** - Motorola, P25, DMR and NXDN systems, which is what makes the scanner's screens mean several different things
 - **Firmware versioning** - Why every file names the unit and version it was read from, and what that costs a claim that has never been checked against a second radio
 - **Screen scraping** - Reading the answer off the display because the protocol refuses to say, which is how the colors were obtained
 - **Bitmap fonts** - Fixed pixel grids per character code, and why the codes below 0x20 and above 0x7E are pictures rather than text
+- **Phase cancellation** - Why folding two out-of-phase channels together removes the signal rather than combining it, and why nothing about their levels warns you

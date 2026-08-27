@@ -1,699 +1,367 @@
 // Copyright 2026 Alan Beebe (radiocli.com). All Rights Reserved.
 // Author: Alan Beebe
-// Created: 8/12/2026
+// Created: 8/23/2026
 
 package audio
 
 import (
-	"bufio"
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
-	"net"
-	"os"
-	"path/filepath"
 	"strings"
-	"syscall"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
-	"github.com/albeebe/radiocli/internal/broker"
-	"github.com/albeebe/radiocli/internal/opusenc"
-	"github.com/albeebe/radiocli/internal/portlock"
+	"github.com/albeebe/radiocli/internal/audiogate"
+	"github.com/albeebe/radiocli/internal/audioout"
 )
 
-// daemon is a fake radiocli daemon: how it greets a connection, how it answers
-// the request for audio, and what it sends afterwards.
-//
-// It writes all three without waiting to be asked, which the client is happy
-// with because it reads the greeting, the answer and the frames from one
-// buffered reader. That keeps the fake to a single write and no state.
-type daemon struct {
-	// hello is the greeting, sent as the first line.
-	hello broker.Response
+// fakePlayer is a set of speakers that never made a sound, so everything that
+// plays audio can be tested without one and without a noise in the room the
+// tests are running in.
+type fakePlayer struct {
+	// mu guards everything below, because the recorder plays from its own
+	// goroutine while a test reads what was played.
+	mu sync.Mutex
 
-	// reply is the answer to the request for audio, sent as the second line.
-	reply broker.Response
+	// closes counts the teardowns, so a double close can be seen.
+	closes int
 
-	// tail is everything after the second line, already framed.
-	tail []byte
+	// heard is every byte handed over, in order.
+	heard []byte
 
-	// hangUp closes the connection once tail has been sent, which is how a
-	// stream that ends is told from one that is merely quiet.
-	hangUp bool
+	// gain is the last thing SetGain was asked for.
+	gain float64
+
+	// name is what Name reports, empty for the system's own output.
+	name string
+
+	// stats is what Stats reports.
+	stats audioout.Stats
 }
 
-// audioFrame builds one frame of the daemon's framing: the kind, the length in
-// three bytes, then the payload.
-//
-// Parameters:
-//   - kind: broker.FrameAudio, broker.FrameJSON, or something neither end knows
-//   - payload: the bytes the frame carries
-//
-// Returns:
-//   - the frame as it travels on the wire
-func audioFrame(kind byte, payload []byte) []byte {
-	frame := []byte{kind, byte(len(payload) >> 16), byte(len(payload) >> 8), byte(len(payload))}
-	return append(frame, payload...)
+// Close counts the teardown rather than doing one.
+func (f *fakePlayer) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closes++
 }
 
-// audioPacket builds an audio frame, which carries its frame number in front of
-// the audio.
-//
-// Parameters:
-//   - seq: the frame number to put in front of the audio
-//   - audio: the encoded audio the frame carries
-//
-// Returns:
-//   - the frame as it travels on the wire
-func audioPacket(seq uint32, audio []byte) []byte {
-	payload := make([]byte, 4, 4+len(audio))
-	binary.BigEndian.PutUint32(payload, seq)
-	return audioFrame(broker.FrameAudio, append(payload, audio...))
+// Name answers with whatever the test put there.
+func (f *fakePlayer) Name() string { return f.name }
+
+// Play keeps a copy of the audio, the way real speakers keep it long enough to
+// play it.
+func (f *fakePlayer) Play(pcm []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.heard = append(f.heard, pcm...)
 }
 
-// dialAudio stands up d for port and returns a stream connected to it, which is
-// the only way to build a broker.AudioStream from outside that package.
-//
-// Parameters:
-//   - t: the test the listener and the stream are cleaned up at the end of
-//   - port: the serial port the daemon is holding
-//   - d: the daemon to stand up
-//
-// Returns:
-//   - a stream carrying whatever d was told to send
-func dialAudio(t *testing.T, port string, d daemon) *broker.AudioStream {
-	t.Helper()
-	d.serve(t, port)
-
-	stream, err := broker.DialAudio(port, formatPCM, defaultBitrate)
-	if err != nil {
-		t.Fatalf("asking the daemon for audio: %v", err)
-	}
-	t.Cleanup(func() { stream.Close() })
-	return stream
+// SetGain records what it was asked for rather than applying it.
+func (f *fakePlayer) SetGain(dB float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gain = dB
 }
 
-// fakeCapture is an open sound card that never was, so listenDirect can be run
-// without opening one and without the microphone permission prompt that opening
-// one raises.
-type fakeCapture struct {
-	// source is what Source reports the audio is coming from.
-	source string
+// Stats answers with whatever the test put there.
+func (f *fakePlayer) Stats() audioout.Stats { return f.stats }
+
+// played is how many bytes of audio reached the speakers.
+func (f *fakePlayer) played() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.heard)
 }
 
-// Close stops a recording that never started.
-func (c fakeCapture) Close() {}
-
-// Source is what the operating system would call the input.
-func (c fakeCapture) Source() string { return c.source }
-
-// fakeStart installs a sound card opener that answers with what it was given,
+// fakeOpenPlayer installs a speaker opener that answers with what it was given,
 // and restores the real one at the end of the test.
 //
 // Parameters:
 //   - t: the test the real opener is restored at the end of
-//   - source: the name the capture reports it is recording from
+//   - p: the speakers to hand back
 //   - err: the failure to report instead, if there is one
-func fakeStart(t *testing.T, source string, err error) {
+//
+// Returns:
+//   - the name the opener was asked for, readable after the command has run
+func fakeOpenPlayer(t *testing.T, p *fakePlayer, err error) *string {
 	t.Helper()
-	original := startCapture
-	t.Cleanup(func() { startCapture = original })
-	startCapture = func(opts audiofeed.Options, out audiofeed.Publisher) (capture, error) {
+
+	asked := new(string)
+	original := openPlayer
+	t.Cleanup(func() { openPlayer = original })
+	openPlayer = func(name string, _ time.Duration) (player, error) {
+		*asked = name
 		if err != nil {
 			return nil, err
 		}
-		return fakeCapture{source: source}, nil
+		return p, nil
 	}
+	return asked
 }
 
-// hello is the greeting a daemon of this build sends.
+// listenFrames returns a channel already holding frames, then closed, which is
+// what the loop sees when the audio ends.
+//
+// Parameters:
+//   - frames: the audio to put in it
 //
 // Returns:
-//   - a greeting the client accepts
-func hello() broker.Response {
-	return broker.Response{Type: broker.TypeHello, Protocol: broker.Version, Version: "test"}
-}
-
-// serve listens on the socket a daemon for port would use and speaks to
-// whoever connects.
-//
-// Parameters:
-//   - t: the test the listener is cleaned up at the end of
-//   - port: the serial port the daemon is holding
-func (d daemon) serve(t *testing.T, port string) {
-	t.Helper()
-
-	path := portlock.SocketPath(port)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("making the socket directory: %v", err)
+//   - the channel, closed, so a loop reading it ends on its own
+func listenFrames(frames []audiofeed.Frame) chan audiofeed.Frame {
+	ch := make(chan audiofeed.Frame, len(frames))
+	for _, f := range frames {
+		ch <- f
 	}
-
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatalf("listening on %s: %v", path, err)
-	}
-	t.Cleanup(func() { listener.Close() })
-
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-
-				for _, msg := range []broker.Response{d.hello, d.reply} {
-					if msg.Type == "" {
-						continue
-					}
-					line, _ := json.Marshal(msg)
-					conn.Write(append(line, '\n'))
-				}
-				conn.Write(d.tail)
-
-				// The request for audio is read before anything hangs up,
-				// because a client whose request lands on a closed socket sees
-				// a broken pipe rather than the answer already waiting for it.
-				bufio.NewReader(conn).ReadBytes('\n')
-
-				if d.hangUp {
-					return
-				}
-
-				// Held open until the caller hangs up, so a stream that is
-				// merely quiet is never mistaken for one that ended.
-				io.Copy(io.Discard, conn)
-			}(conn)
-		}
-	}()
-}
-
-// sockets points the daemon socket directory at a temporary one of its own.
-//
-// Nothing here may reach a daemon the developer is actually running, and
-// nothing may leave a socket behind. The base is /tmp rather than the default
-// temporary directory because macOS refuses a unix socket path much over 100
-// bytes and the default is most of that by itself.
-//
-// Parameters:
-//   - t: the test whose temporary directory the sockets are made in
-func sockets(t *testing.T) {
-	t.Helper()
-	t.Setenv("TMPDIR", "/tmp")
-	t.Setenv("TMPDIR", t.TempDir())
+	close(ch)
+	return ch
 }
 
 // Test_newListen tests the newListen function with 100% coverage.
 //
-// Coverage: 100% (2 test cases covering the command and the closure it holds)
+// Coverage: 100% (3 test cases covering the command and the closure it holds)
 //
 // Test cases:
-//   - Wiring: the command carries its name and its four flags, with defaults
+//   - Wiring: the command carries its name and its flags
+//   - Defaults: the squelch is on and the speakers are this computer's own
 //   - Runs: executing the command reaches runListen, which refuses it in a daemon
 func Test_newListen(t *testing.T) {
-	// Verify that the command and its flags are described the way the tool wires them
+	// Verify that the command is described the way the tool wires it
 	t.Run("Wiring", func(t *testing.T) {
 		cmd := newListen(appcontext.New())
 
 		if cmd.Use != "listen" {
 			t.Errorf("the command is %q, wanted %q", cmd.Use, "listen")
 		}
-
-		defaults := map[string]string{
-			"input":   "",
-			"format":  formatPCM,
-			"bitrate": "32000",
-			"channel": audiofeed.ChannelAuto,
+		for _, name := range []string{"input", "channel", "speaker", "squelch", "hang", "gain"} {
+			if cmd.Flags().Lookup(name) == nil {
+				t.Errorf("the command has no --%s flag", name)
+			}
 		}
-		for name, want := range defaults {
-			flag := cmd.Flags().Lookup(name)
-			if flag == nil {
-				t.Errorf("the command has no --%s flag, wanted one", name)
-				continue
-			}
-			if flag.DefValue != want {
-				t.Errorf("--%s defaults to %q, wanted %q", name, flag.DefValue, want)
-			}
+	})
+
+	// Verify the two defaults a person is most likely to rely on without
+	// reading: the hiss is kept out, and the audio goes where everything else
+	// on this computer goes.
+	t.Run("Defaults", func(t *testing.T) {
+		cmd := newListen(appcontext.New())
+
+		if got := cmd.Flags().Lookup("squelch").DefValue; got != "true" {
+			t.Errorf("--squelch defaults to %q, wanted the transmissions only", got)
+		}
+		if got := cmd.Flags().Lookup("speaker").DefValue; got != "" {
+			t.Errorf("--speaker defaults to %q, wanted this computer's own", got)
+		}
+		if got := cmd.Flags().Lookup("hang").DefValue; got != audiogate.DefaultQuietHang.String() {
+			t.Errorf("--hang defaults to %q, wanted the gate's own quiet hang", got)
 		}
 	})
 
 	// Verify that running the command reaches runListen, which is what the
 	// closure newListen hands cobra exists to do
 	t.Run("Runs", func(t *testing.T) {
-		app, _, _ := newApp()
+		app := appcontext.New()
 		app.InDaemon = true
 
 		cmd := newListen(app)
-		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		cmd.SetOut(&strings.Builder{})
+		cmd.SetErr(&strings.Builder{})
 
 		err := cmd.ExecuteContext(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "cannot be run inside a daemon") {
-			t.Errorf("the failure is %v, wanted the daemon to have refused it", err)
+		if err == nil || !strings.Contains(err.Error(), "inside a daemon") {
+			t.Errorf("running the command gave %v, wanted the daemon refusal", err)
 		}
 	})
 }
 
-// Test_announce tests the announce function with 100% coverage.
+// Test_announceListening tests the announceListening function with 100%
+// coverage, and that it writes to stderr.
 //
-// Coverage: 100% (2 test cases covering both formats)
+// Coverage: 100% (4 test cases covering every branch)
 //
 // Test cases:
-//   - Opus: the packet framing and the rate are described
-//   - PCM: the player's own flags are printed
-func Test_announce(t *testing.T) {
-	// Verify that Opus is described as something for a program to read
-	t.Run("Opus", func(t *testing.T) {
-		app, out, notes := newApp()
+//   - Named: the speakers are quoted as the system spells them
+//   - DefaultSpeakers: an unnamed default is described rather than left blank
+//   - Squelched: the transmissions are what it says it is playing
+//   - Everything: with the squelch off it says so
+func Test_announceListening(t *testing.T) {
+	// Verify that the input and the speakers are both named, on stderr, so
+	// that a person can see the audio is going where they meant.
+	t.Run("Named", func(t *testing.T) {
+		app, out, errs := recorderApp()
+		announceListening(app, "USB Audio CODEC", "MacBook Pro Speakers", true)
 
-		announce(app, "Cubilux CB5 Line In", formatOpus, 48000)
-
-		if !strings.Contains(notes.String(), "as Opus at 48 kbps") {
-			t.Errorf("the announcement is %q, wanted the rate in kbps", notes.String())
+		if out.Len() != 0 {
+			t.Errorf("wrote %q to stdout, want the commentary on stderr", out.String())
 		}
-		if !strings.Contains(notes.String(), "Cubilux CB5 Line In") {
-			t.Errorf("the announcement is %q, wanted the sound input named", notes.String())
-		}
-		if out.String() != "" {
-			t.Errorf("the audio stream is %q, wanted nothing but audio in it", out.String())
+		if !strings.Contains(errs.String(), "USB Audio CODEC") ||
+			!strings.Contains(errs.String(), "MacBook Pro Speakers") {
+			t.Errorf("wrote %q, want the input and the speakers named", errs.String())
 		}
 	})
 
-	// Verify that raw samples come with the flags a player needs
-	t.Run("PCM", func(t *testing.T) {
-		app, _, notes := newApp()
+	// Verify that the system's own output, which the library does not always
+	// put a name to, is described rather than quoted as nothing.
+	t.Run("DefaultSpeakers", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		announceListening(app, "USB Audio CODEC", "", true)
 
-		announce(app, "Cubilux CB5 Line In", formatPCM, 0)
+		if !strings.Contains(errs.String(), "this computer's own speakers") {
+			t.Errorf("wrote %q, want the default speakers described", errs.String())
+		}
+	})
 
-		if !strings.Contains(notes.String(), "ffplay -f s16le -ar 48000 -ac 1 -i -") {
-			t.Errorf("the announcement is %q, wanted the player's flags", notes.String())
+	// Verify that the squelch being on is said, since it explains the silence
+	// between transmissions.
+	t.Run("Squelched", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		announceListening(app, "USB Audio CODEC", "", true)
+
+		if !strings.Contains(errs.String(), "the transmissions") {
+			t.Errorf("wrote %q, want it to say only the transmissions are played", errs.String())
+		}
+	})
+
+	// Verify that the squelch being off is said too, since it explains the hiss.
+	t.Run("Everything", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		announceListening(app, "USB Audio CODEC", "", false)
+
+		if !strings.Contains(errs.String(), "everything the input carries") {
+			t.Errorf("wrote %q, want it to say everything is played", errs.String())
 		}
 	})
 }
 
-// Test_listenDirect tests the listenDirect function with 100% coverage.
+// Test_listenLoop tests the listenLoop function with 100% coverage.
 //
-// Coverage: 100% (3 test cases covering the recording and both failures)
+// Coverage: 100% (4 test cases covering every branch)
 //
 // Test cases:
-//   - Success: the capture is announced and the audio is written until stopped
-//   - StartError: a sound input that cannot be opened is reported
-//   - WriteError: a failure once the audio is flowing is reported
-func Test_listenDirect(t *testing.T) {
-	// Verify that a capture which opened is announced and then written out
-	t.Run("Success", func(t *testing.T) {
-		app, _, notes := newApp()
-		fakeStart(t, "Cubilux CB5 Line In", nil)
+//   - Everything: with the squelch off every frame reaches the speakers
+//   - OnlyTransmissions: with it on the quiet is not played
+//   - AudioEnds: the audio stopping ends the loop without complaint
+//   - Cancelled: Ctrl-C ends the loop without complaint
+func Test_listenLoop(t *testing.T) {
+	// Verify that the squelch being off means exactly what it says: what
+	// arrives is what is played, hiss included.
+	t.Run("Everything", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		quiet, _ := feed(0, 20, quietLevel)
+		p := &fakePlayer{}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		err := listenDirect(ctx, app, "Cubilux CB5 Line In", formatPCM, defaultBitrate, audiofeed.ChannelMix)
+		err := listenLoop(context.Background(), app, listenFrames(quiet), p, listenOptions{})
 		if err != nil {
-			t.Fatalf("listening: %v", err)
+			t.Fatalf("listening gave %v, want it to end quietly", err)
 		}
-		if !strings.Contains(notes.String(), "Cubilux CB5 Line In") {
-			t.Errorf("the announcement is %q, wanted the sound input named", notes.String())
-		}
-	})
-
-	// Verify that a sound input which cannot be opened is passed back
-	t.Run("StartError", func(t *testing.T) {
-		app, _, _ := newApp()
-		fakeStart(t, "", errors.New("the sound input is gone"))
-
-		err := listenDirect(context.Background(), app, "Nothing", formatPCM, defaultBitrate, audiofeed.ChannelMix)
-		if err == nil || !strings.Contains(err.Error(), "the sound input is gone") {
-			t.Errorf("the failure is %v, wanted the sound card's own error", err)
+		if p.played() != 20*len(quiet[0].PCM) {
+			t.Errorf("%d bytes were played, want every frame", p.played())
 		}
 	})
 
-	// Verify that a failure once the audio is flowing is passed back
-	t.Run("WriteError", func(t *testing.T) {
-		app, _, _ := newApp()
-		fakeStart(t, "Cubilux CB5 Line In", nil)
+	// Verify that the squelch keeps the noise floor out and lets a transmission
+	// through, which is the whole point of it being on by default.
+	t.Run("OnlyTransmissions", func(t *testing.T) {
+		quiet, next := feed(0, 40, quietLevel)
+		loud, next := feed(next, 60, loudLevel)
+		tail, _ := feed(next, 40, quietLevel)
 
-		err := listenDirect(context.Background(), app, "Cubilux CB5 Line In", formatOpus, 1, audiofeed.ChannelMix)
-		if err == nil {
-			t.Error("the recording succeeded, wanted the encoder to have refused the rate")
-		}
-	})
-}
+		app, _, _ := recorderApp()
+		p := &fakePlayer{}
+		frames := append(append(append([]audiofeed.Frame{}, quiet...), loud...), tail...)
 
-// Test_listenViaDaemon tests the listenViaDaemon function with 100% coverage.
-//
-// Coverage: 100% (4 test cases covering the relay and every way it is refused)
-//
-// Test cases:
-//   - Success: the stream is announced and relayed until the daemon stops
-//   - NoDevice: not naming a scanner is refused with what to do instead
-//   - NoDaemon: nothing holding the scanner is answered with how to start one
-//   - DialError: any other refusal is passed back as it came
-func Test_listenViaDaemon(t *testing.T) {
-	// Verify that a daemon holding the audio is announced and relayed
-	t.Run("Success", func(t *testing.T) {
-		sockets(t)
-		app, out, notes := newApp()
-		app.Config.Device = "/dev/tty.usbmodem1"
+		err := listenLoop(context.Background(), app, listenFrames(frames), p,
+			listenOptions{squelch: true, hang: 200 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("listening gave %v, want it to end quietly", err)
+		}
 
-		d := daemon{
-			hello: hello(),
-			reply: broker.Response{
-				Type: broker.TypeAudio, Format: formatPCM, Rate: 48000, Channels: 1,
-				Source: "Cubilux CB5 Line In", Channel: audiofeed.ChannelLeft,
-			},
-			tail:   audioPacket(1, []byte{1, 2, 3, 4}),
-			hangUp: true,
+		played := p.played()
+		if played == 0 {
+			t.Fatal("nothing was played, want the transmission")
 		}
-		d.serve(t, "/dev/tty.usbmodem1")
-
-		err := listenViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
-		if err == nil || !strings.Contains(err.Error(), "the daemon stopped sending audio") {
-			t.Fatalf("the failure is %v, wanted the daemon hanging up to be reported", err)
-		}
-		if !strings.Contains(notes.String(), "Cubilux CB5 Line In") {
-			t.Errorf("the announcement is %q, wanted the daemon's sound input named", notes.String())
-		}
-		if out.String() != "\x01\x02\x03\x04" {
-			t.Errorf("the audio is %q, wanted the four bytes the daemon sent", out.String())
+		// Everything is a possibility worth ruling out: it would mean the gate
+		// opened on the noise floor and the squelch does nothing.
+		if played >= len(frames)*len(quiet[0].PCM) {
+			t.Errorf("%d bytes were played of %d, want the quiet left out",
+				played, len(frames)*len(quiet[0].PCM))
 		}
 	})
 
-	// Verify that not naming a scanner is refused with the two ways forward
-	t.Run("NoDevice", func(t *testing.T) {
-		app, _, _ := newApp()
+	// Verify that the audio ending, which is what a daemon going away looks
+	// like, finishes the command rather than failing it.
+	t.Run("AudioEnds", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		p := &fakePlayer{}
+		ch := make(chan audiofeed.Frame)
+		close(ch)
 
-		err := listenViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
-		if err == nil || !errors.Is(err, appcontext.ErrNoDevice) {
-			t.Fatalf("the failure is %v, wanted it to be ErrNoDevice", err)
-		}
-		if !strings.Contains(err.Error(), "--input") {
-			t.Errorf("the failure is %v, wanted --input offered as the other way", err)
-		}
-	})
-
-	// Verify that no daemon at all is answered with the command to start one
-	t.Run("NoDaemon", func(t *testing.T) {
-		sockets(t)
-		app, _, _ := newApp()
-		app.Config.Device = "/dev/tty.usbmodem9"
-
-		err := listenViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
-		if err == nil || !errors.Is(err, broker.ErrNoDaemon) {
-			t.Fatalf("the failure is %v, wanted it to be ErrNoDaemon", err)
-		}
-		if !strings.Contains(err.Error(), "radiocli daemon --device /dev/tty.usbmodem9") {
-			t.Errorf("the failure is %v, wanted the command to start one", err)
+		if err := listenLoop(context.Background(), app, ch, p, listenOptions{}); err != nil {
+			t.Errorf("listening gave %v, want the audio ending to be an ending", err)
 		}
 	})
 
-	// Verify that a refusal which is not the absence of a daemon is passed back
-	t.Run("DialError", func(t *testing.T) {
-		sockets(t)
-		app, _, _ := newApp()
-		app.Config.Device = "/dev/tty.usbmodem1"
-
-		d := daemon{
-			hello:  broker.Response{Type: broker.TypeHello, Protocol: broker.Version + 1},
-			hangUp: true,
-		}
-		d.serve(t, "/dev/tty.usbmodem1")
-
-		err := listenViaDaemon(context.Background(), app, formatPCM, defaultBitrate)
-		if err == nil || !strings.Contains(err.Error(), "speaks protocol") {
-			t.Errorf("the failure is %v, wanted the protocol mismatch", err)
-		}
-	})
-}
-
-// Test_relay tests the relay function with 100% coverage.
-//
-// Coverage: 100% (6 test cases covering both formats, events, and every ending)
-//
-// Test cases:
-//   - PCM: raw samples are written on exactly as they arrived
-//   - Opus: each packet is written with its length in front of it
-//   - Event: something that was not audio is passed on rather than written
-//   - Cancelled: stopping the command is not a failure
-//   - HeaderError: a stream that refuses the length is reported
-//   - AudioError: a stream that refuses the audio is reported
-func Test_relay(t *testing.T) {
-	// Verify that raw samples reach stdout unchanged
-	t.Run("PCM", func(t *testing.T) {
-		sockets(t)
-		app, out, _ := newApp()
-		stream := dialAudio(t, "/dev/tty.usbmodem1", daemon{
-			hello:  hello(),
-			reply:  broker.Response{Type: broker.TypeAudio},
-			tail:   audioPacket(1, []byte{1, 2, 3, 4}),
-			hangUp: true,
-		})
-
-		err := relay(context.Background(), app, stream, formatPCM)
-		if err == nil || !strings.Contains(err.Error(), "the daemon stopped sending audio") {
-			t.Fatalf("the failure is %v, wanted the daemon hanging up to be reported", err)
-		}
-		if out.String() != "\x01\x02\x03\x04" {
-			t.Errorf("the audio is %q, wanted the four bytes the daemon sent", out.String())
-		}
-	})
-
-	// Verify that an Opus packet is preceded by its length
-	t.Run("Opus", func(t *testing.T) {
-		sockets(t)
-		app, out, _ := newApp()
-		stream := dialAudio(t, "/dev/tty.usbmodem1", daemon{
-			hello:  hello(),
-			reply:  broker.Response{Type: broker.TypeAudio},
-			tail:   audioPacket(1, []byte{9, 9, 9}),
-			hangUp: true,
-		})
-
-		if err := relay(context.Background(), app, stream, formatOpus); err == nil {
-			t.Fatal("the relay succeeded, wanted the daemon hanging up to be reported")
-		}
-		if out.String() != "\x00\x03\x09\x09\x09" {
-			t.Errorf("the audio is %q, wanted the length in front of the packet", out.String())
-		}
-	})
-
-	// Verify that news from the daemon is passed on rather than written as audio
-	t.Run("Event", func(t *testing.T) {
-		sockets(t)
-		app, out, notes := newApp()
-		stream := dialAudio(t, "/dev/tty.usbmodem1", daemon{
-			hello:  hello(),
-			reply:  broker.Response{Type: broker.TypeAudio},
-			tail:   audioFrame(broker.FrameJSON, []byte(`{"type":"channel","channel":"left"}`)),
-			hangUp: true,
-		})
-
-		if err := relay(context.Background(), app, stream, formatPCM); err == nil {
-			t.Fatal("the relay succeeded, wanted the daemon hanging up to be reported")
-		}
-		if !strings.Contains(notes.String(), "on the left channel") {
-			t.Errorf("the note is %q, wanted the channel passed on", notes.String())
-		}
-		if out.String() != "" {
-			t.Errorf("the audio is %q, wanted nothing but audio in it", out.String())
-		}
-	})
-
-	// Verify that stopping the command leaves the exit status alone
+	// Verify that Ctrl-C leaves the exit status alone, since stopping is how a
+	// command with no natural end is meant to finish.
 	t.Run("Cancelled", func(t *testing.T) {
-		sockets(t)
-		app, _, _ := newApp()
-		stream := dialAudio(t, "/dev/tty.usbmodem1", daemon{
-			hello: hello(),
-			reply: broker.Response{Type: broker.TypeAudio},
-		})
-
+		app, _, _ := recorderApp()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		if err := relay(ctx, app, stream, formatPCM); err != nil {
-			t.Errorf("the failure is %v, wanted stopping to be no failure at all", err)
-		}
-	})
-
-	// Verify that a stream which cannot take the length says so
-	t.Run("HeaderError", func(t *testing.T) {
-		sockets(t)
-		app, _, _ := newApp()
-		app.Stdout = failWriter{}
-		stream := dialAudio(t, "/dev/tty.usbmodem1", daemon{
-			hello:  hello(),
-			reply:  broker.Response{Type: broker.TypeAudio},
-			tail:   audioPacket(1, []byte{9, 9, 9}),
-			hangUp: true,
-		})
-
-		err := relay(context.Background(), app, stream, formatOpus)
-		if err == nil || !strings.Contains(err.Error(), "writing the audio out") {
-			t.Errorf("the failure is %v, wanted the audio to be named", err)
-		}
-	})
-
-	// Verify that a stream which cannot take the audio says so
-	t.Run("AudioError", func(t *testing.T) {
-		sockets(t)
-		app, _, _ := newApp()
-		app.Stdout = failWriter{}
-		stream := dialAudio(t, "/dev/tty.usbmodem1", daemon{
-			hello:  hello(),
-			reply:  broker.Response{Type: broker.TypeAudio},
-			tail:   audioPacket(1, []byte{9, 9, 9}),
-			hangUp: true,
-		})
-
-		err := relay(context.Background(), app, stream, formatPCM)
-		if err == nil || !strings.Contains(err.Error(), "writing the audio out") {
-			t.Errorf("the failure is %v, wanted the audio to be named", err)
+		p := &fakePlayer{}
+		if err := listenLoop(ctx, app, make(chan audiofeed.Frame), p, listenOptions{}); err != nil {
+			t.Errorf("listening gave %v, want stopping to be quiet", err)
 		}
 	})
 }
 
-// Test_relayEvent tests the relayEvent function with 100% coverage.
+// Test_reportPlayback tests the reportPlayback function with 100% coverage.
 //
-// Coverage: 100% (6 test cases covering every message this passes on and both
-// it ignores)
-//
-// Test cases:
-//   - Channel: the side of the cable the scanner is on is passed on
-//   - Silent: a stream carrying nothing at all is explained
-//   - Error: the daemon's own complaint is passed on
-//   - Level: the meter goes to the log rather than to the terminal
-//   - Unknown: a message this does not pass on is ignored
-//   - Malformed: something that is not a message at all is ignored
-func Test_relayEvent(t *testing.T) {
-	// Verify that the chosen channel is passed on
-	t.Run("Channel", func(t *testing.T) {
-		app, _, notes := newApp()
-
-		relayEvent(app, json.RawMessage(`{"type":"channel","channel":"right"}`))
-
-		if !strings.Contains(notes.String(), "on the right channel") {
-			t.Errorf("the note is %q, wanted the channel named", notes.String())
-		}
-	})
-
-	// Verify that digital silence is explained rather than left to be guessed at
-	t.Run("Silent", func(t *testing.T) {
-		app, _, notes := newApp()
-
-		relayEvent(app, json.RawMessage(`{"type":"silent"}`))
-
-		if !strings.Contains(notes.String(), "no signal at all") {
-			t.Errorf("the note is %q, wanted the silence explained", notes.String())
-		}
-	})
-
-	// Verify that the daemon's own complaint reaches the person watching
-	t.Run("Error", func(t *testing.T) {
-		app, _, notes := newApp()
-
-		relayEvent(app, json.RawMessage(`{"type":"error","error":"the sound input is gone"}`))
-
-		if !strings.Contains(notes.String(), "the sound input is gone") {
-			t.Errorf("the note is %q, wanted the daemon's complaint", notes.String())
-		}
-	})
-
-	// Verify that the meter is not printed over a terminal that carries audio
-	t.Run("Level", func(t *testing.T) {
-		app, out, notes := newApp()
-
-		relayEvent(app, json.RawMessage(`{"type":"level","dbfs":-42.5}`))
-
-		if notes.String() != "" || out.String() != "" {
-			t.Errorf("the meter printed %q and %q, wanted neither", out.String(), notes.String())
-		}
-	})
-
-	// Verify that a message this does not pass on costs nothing
-	t.Run("Unknown", func(t *testing.T) {
-		app, _, notes := newApp()
-
-		relayEvent(app, json.RawMessage(`{"type":"tx_start"}`))
-
-		if notes.String() != "" {
-			t.Errorf("the note is %q, wanted nothing said", notes.String())
-		}
-	})
-
-	// Verify that something which is not a message at all is ignored
-	t.Run("Malformed", func(t *testing.T) {
-		app, _, notes := newApp()
-
-		relayEvent(app, json.RawMessage(`not json`))
-
-		if notes.String() != "" {
-			t.Errorf("the note is %q, wanted nothing said", notes.String())
-		}
-	})
-}
-
-// Test_report tests the report function with 100% coverage.
-//
-// Coverage: 100% (4 test cases covering both events this passes on and both it
-// ignores)
+// Coverage: 100% (3 test cases covering every branch)
 //
 // Test cases:
-//   - Channel: the side of the cable the scanner is on is passed on
-//   - ChannelMissing: a channel event with no channel in it says nothing
-//   - Silent: a stream carrying nothing at all is explained
-//   - Unknown: an event this does not pass on is ignored
-func Test_report(t *testing.T) {
-	// Verify that the chosen channel is passed on
-	t.Run("Channel", func(t *testing.T) {
-		app, _, notes := newApp()
+//   - Clean: a run where nothing went wrong says nothing
+//   - Dropped: audio thrown away is reported, in seconds
+//   - Starved: holes are reported with the yardstick that reads them
+func Test_reportPlayback(t *testing.T) {
+	// Verify that a run where neither thing happened is silent, since there is
+	// nothing to say and this prints as a command is exiting.
+	t.Run("Clean", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		reportPlayback(app, &fakePlayer{})
 
-		report(app, audiofeed.Event{
-			Kind:    "channel",
-			Payload: map[string]any{"channel": audiofeed.ChannelRight},
-		})
-
-		if !strings.Contains(notes.String(), "on the right channel") {
-			t.Errorf("the note is %q, wanted the channel named", notes.String())
+		if errs.Len() != 0 {
+			t.Errorf("wrote %q, want nothing said about a run that kept up", errs.String())
 		}
 	})
 
-	// Verify that a channel event carrying no channel is not announced blank
-	t.Run("ChannelMissing", func(t *testing.T) {
-		app, _, notes := newApp()
+	// Verify that running dry is reported with what makes the number mean
+	// something. One per transmission is the buffer working; a hundred of them
+	// is what somebody hears as choppy audio.
+	t.Run("Starved", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		reportPlayback(app, &fakePlayer{stats: audioout.Stats{Starved: 12}})
 
-		report(app, audiofeed.Event{Kind: "channel", Payload: map[string]any{"channel": 3}})
-
-		if notes.String() != "" {
-			t.Errorf("the note is %q, wanted nothing said", notes.String())
+		said := errs.String()
+		if !strings.Contains(said, "ran dry 12 time(s)") {
+			t.Errorf("wrote %q, want the number of holes", said)
+		}
+		if !strings.Contains(said, "per transmission") {
+			t.Errorf("wrote %q, want the yardstick that reads the number", said)
 		}
 	})
 
-	// Verify that digital silence is explained rather than left to be guessed at
-	t.Run("Silent", func(t *testing.T) {
-		app, _, notes := newApp()
+	// Verify that audio which never reached the speakers is reported in a unit
+	// a person can picture, since it is the one number here worth acting on.
+	t.Run("Dropped", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		reportPlayback(app, &fakePlayer{stats: audioout.Stats{Dropped: playedBytesPerSecond * 2}})
 
-		report(app, audiofeed.Event{Kind: "silent"})
-
-		if !strings.Contains(notes.String(), "no signal at all") {
-			t.Errorf("the note is %q, wanted the silence explained", notes.String())
-		}
-	})
-
-	// Verify that an event this does not pass on costs nothing
-	t.Run("Unknown", func(t *testing.T) {
-		app, _, notes := newApp()
-
-		report(app, audiofeed.Event{Kind: "level", Payload: map[string]any{"dbfs": -42.5}})
-
-		if notes.String() != "" {
-			t.Errorf("the note is %q, wanted nothing said", notes.String())
+		if !strings.Contains(errs.String(), "2.0 seconds") {
+			t.Errorf("wrote %q, want the dropped audio in seconds", errs.String())
 		}
 	})
 }
@@ -704,307 +372,169 @@ func Test_report(t *testing.T) {
 //
 // Test cases:
 //   - InDaemon: a command that never ends is refused inside a daemon
-//   - BadFormat: a format this cannot write is named back
-//   - BadChannel: a channel mode this does not know is refused
-//   - BadBitrate: a rate outside what the encoder accepts is refused
-//   - Direct: naming an input opens it here
-//   - ViaDaemon: naming no input takes the audio from a daemon
-//   - DefaultFormat: leaving the format empty writes raw samples
+//   - NoDevice: with no scanner named and no input given there is nothing to hear
+//   - BadHang: a hang that is not a length of quiet is refused
+//   - BadChannel: a side of the cable that does not exist is refused
+//   - SpeakersFail: speakers that will not open are reported before anything
+//     else is
+//   - AudioFails: a sound input that will not open is reported
+//   - Listens: a named input is opened and played, and given back afterwards
 func Test_runListen(t *testing.T) {
-	// Verify that a command which never ends is refused inside a daemon
+	// Verify that a daemon is refused, since this command holds the streams it
+	// was lent until somebody stops it.
 	t.Run("InDaemon", func(t *testing.T) {
-		app, _, _ := newApp()
+		app, _, _ := recorderApp()
 		app.InDaemon = true
 
 		err := runListen(context.Background(), app, listenOptions{})
-		if err == nil || !strings.Contains(err.Error(), "cannot be run inside a daemon") {
-			t.Errorf("the failure is %v, wanted the daemon to have refused it", err)
+		if err == nil || !strings.Contains(err.Error(), "inside a daemon") {
+			t.Errorf("listening gave %v, want the daemon refusal", err)
 		}
 	})
 
-	// Verify that a format this cannot write is named back with the two it can
-	t.Run("BadFormat", func(t *testing.T) {
-		app, _, _ := newApp()
+	// Verify that with nothing to listen to, the advice names both ways out
+	// rather than reporting a daemon that was never going to be there.
+	t.Run("NoDevice", func(t *testing.T) {
+		app, _, _ := recorderApp()
 
-		err := runListen(context.Background(), app, listenOptions{format: "flac"})
-		if err == nil || !strings.Contains(err.Error(), `no audio format called "flac"`) {
-			t.Errorf("the failure is %v, wanted the format named back", err)
+		err := runListen(context.Background(), app, listenOptions{})
+		if !errors.Is(err, appcontext.ErrNoDevice) {
+			t.Errorf("listening gave %v, want it to say no scanner was named", err)
+		}
+		if !strings.Contains(err.Error(), "--input") {
+			t.Errorf("listening gave %v, want the other way out named as well", err)
 		}
 	})
 
-	// Verify that a channel mode this does not know is refused
+	// Verify that a hang of nothing is caught rather than handed to the gate,
+	// which would quietly replace it with its own default.
+	t.Run("BadHang", func(t *testing.T) {
+		app, _, _ := recorderApp()
+
+		err := runListen(context.Background(), app, listenOptions{input: "Line In", hang: -time.Second})
+		if err == nil || !strings.Contains(err.Error(), "not a length of quiet") {
+			t.Errorf("listening gave %v, want the hang refused", err)
+		}
+	})
+
+	// Verify that a channel nobody has is refused before a sound card is
+	// opened.
 	t.Run("BadChannel", func(t *testing.T) {
-		app, _, _ := newApp()
+		app, _, _ := recorderApp()
 
 		err := runListen(context.Background(), app, listenOptions{
-			format: formatPCM, channel: "sideways",
+			input: "Line In", channel: "middle", hang: time.Second,
 		})
 		if err == nil {
-			t.Error("the recording started, wanted the channel mode refused")
+			t.Fatal("listening succeeded with a channel that does not exist")
 		}
 	})
 
-	// Verify that a rate the encoder will not take is refused before anything opens
-	t.Run("BadBitrate", func(t *testing.T) {
-		app, _, _ := newApp()
+	// Verify that the speakers are opened before the audio, so that a typo in
+	// --speaker costs a moment rather than a sound card being taken and given
+	// straight back.
+	t.Run("SpeakersFail", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		fakeOpenPlayer(t, nil, errors.New("no speaker by that name"))
+
+		opened := false
+		original := startCapture
+		t.Cleanup(func() { startCapture = original })
+		startCapture = func(audiofeed.Options, audiofeed.Publisher) (capture, error) {
+			opened = true
+			return fakeCapture{source: "Line In"}, nil
+		}
 
 		err := runListen(context.Background(), app, listenOptions{
-			format: formatOpus, channel: audiofeed.ChannelMix, bitrate: 1,
+			input: "Line In", channel: audiofeed.ChannelAuto, speaker: "Kitchen Radio",
+			hang: time.Second,
 		})
-		if err == nil || !strings.Contains(err.Error(), "outside what the encoder accepts") {
-			t.Errorf("the failure is %v, wanted the rate refused", err)
+		if err == nil || !strings.Contains(err.Error(), "no speaker by that name") {
+			t.Errorf("listening gave %v, want the speakers' own failure", err)
+		}
+		if opened {
+			t.Error("the sound input was opened even though the speakers had already failed")
 		}
 	})
 
-	// Verify that naming an input opens it here rather than asking a daemon
-	t.Run("Direct", func(t *testing.T) {
-		app, _, notes := newApp()
+	// Verify that a sound input which will not open is reported, and that the
+	// speakers opened for it are given back.
+	t.Run("AudioFails", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		p := &fakePlayer{}
+		fakeOpenPlayer(t, p, nil)
+		fakeStart(t, "", errors.New("the input is already open"))
+
+		err := runListen(context.Background(), app, listenOptions{
+			input: "Line In", channel: audiofeed.ChannelAuto, hang: time.Second,
+		})
+		if err == nil || !strings.Contains(err.Error(), "already open") {
+			t.Errorf("listening gave %v, want the input's own failure", err)
+		}
+		if p.closes != 1 {
+			t.Errorf("the speakers were closed %d times, want them given back", p.closes)
+		}
+	})
+
+	// Verify the whole path: the named speakers are asked for, the input is
+	// opened, and stopping ends it quietly with everything given back.
+	t.Run("Listens", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		p := &fakePlayer{name: "MacBook Pro Speakers"}
+		asked := fakeOpenPlayer(t, p, nil)
 		fakeStart(t, "Cubilux CB5 Line In", nil)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
 		err := runListen(ctx, app, listenOptions{
-			input: "Cubilux CB5 Line In", format: formatPCM,
-			channel: audiofeed.ChannelMix, bitrate: defaultBitrate,
+			input: "Line In", channel: audiofeed.ChannelAuto,
+			speaker: "MacBook Pro Speakers", hang: time.Second, gain: 6,
 		})
 		if err != nil {
-			t.Fatalf("listening: %v", err)
+			t.Fatalf("listening gave %v, want stopping to be quiet", err)
 		}
-		if !strings.Contains(notes.String(), "Cubilux CB5 Line In") {
-			t.Errorf("the announcement is %q, wanted the sound input named", notes.String())
+		if *asked != "MacBook Pro Speakers" {
+			t.Errorf("the speakers asked for were %q, want the ones named", *asked)
 		}
-	})
-
-	// Verify that naming no input takes the audio from a daemon
-	t.Run("ViaDaemon", func(t *testing.T) {
-		app, _, _ := newApp()
-
-		err := runListen(context.Background(), app, listenOptions{
-			format: formatPCM, channel: audiofeed.ChannelMix, bitrate: defaultBitrate,
-		})
-		if err == nil || !errors.Is(err, appcontext.ErrNoDevice) {
-			t.Errorf("the failure is %v, wanted the daemon path to have been taken", err)
+		if p.gain != 6 {
+			t.Errorf("the speakers were set to %v dB, want what --gain asked for", p.gain)
 		}
-	})
-
-	// Verify that leaving the format out writes raw samples
-	t.Run("DefaultFormat", func(t *testing.T) {
-		app, _, _ := newApp()
-
-		err := runListen(context.Background(), app, listenOptions{format: "  "})
-		if err == nil || !errors.Is(err, appcontext.ErrNoDevice) {
-			t.Errorf("the failure is %v, wanted an empty format to have been accepted", err)
+		if !strings.Contains(errs.String(), "Cubilux CB5 Line In") {
+			t.Errorf("wrote %q, want the input it settled on named", errs.String())
+		}
+		if p.closes != 1 {
+			t.Errorf("the speakers were closed %d times, want them given back", p.closes)
 		}
 	})
 }
 
-// Test_write tests the write function with 100% coverage.
-//
-// Coverage: 100% (7 test cases covering both formats, events, and every ending)
-//
-// Test cases:
-//   - PCM: raw samples are written on as they arrive
-//   - Opus: each frame is encoded and written with its length in front
-//   - EncoderError: a rate the encoder will not take is reported
-//   - EncodeError: a frame the encoder will not take is reported
-//   - Event: news from the capture is passed on rather than written
-//   - Closed: a feed that has gone ends the writing without a failure
-//   - WriteError: a stream that refuses the audio is reported
-func Test_write(t *testing.T) {
-	// feed returns a feed and a subscription to it, closed at the end of the test.
-	feed := func(t *testing.T) (*audiofeed.Feed, *audiofeed.Sub) {
-		t.Helper()
-		f := audiofeed.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-		sub := f.Subscribe(listenQueue)
-		t.Cleanup(sub.Close)
-		return f, sub
-	}
-
-	// Verify that raw samples reach stdout as they arrive
-	t.Run("PCM", func(t *testing.T) {
-		app, _, _ := newApp()
-		f, sub := feed(t)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		out := &cancelWriter{cancel: cancel}
-		app.Stdout = out
-
-		f.Publish(audiofeed.Frame{Seq: 1, PCM: []byte{1, 2, 3, 4}})
-
-		if err := write(ctx, app, sub, formatPCM, defaultBitrate); err != nil {
-			t.Fatalf("writing: %v", err)
-		}
-		if out.buf.String() != "\x01\x02\x03\x04" {
-			t.Errorf("the audio is %q, wanted the four bytes published", out.buf.String())
-		}
-	})
-
-	// Verify that a frame is encoded and written with its length in front
-	t.Run("Opus", func(t *testing.T) {
-		app, _, _ := newApp()
-		f, sub := feed(t)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		out := &cancelWriter{cancel: cancel}
-		app.Stdout = out
-
-		f.Publish(audiofeed.Frame{Seq: 1, PCM: make([]byte, opusenc.FrameBytes)})
-
-		if err := write(ctx, app, sub, formatOpus, defaultBitrate); err != nil {
-			t.Fatalf("writing: %v", err)
-		}
-
-		written := out.buf.Bytes()
-		if len(written) < 3 {
-			t.Fatalf("the audio is %d bytes, wanted a length and a packet", len(written))
-		}
-		if int(binary.BigEndian.Uint16(written[:2])) != len(written)-2 {
-			t.Errorf("the length says %d and the packet is %d bytes",
-				binary.BigEndian.Uint16(written[:2]), len(written)-2)
-		}
-	})
-
-	// Verify that a rate the encoder will not take is reported before anything is written
-	t.Run("EncoderError", func(t *testing.T) {
-		app, _, _ := newApp()
-		_, sub := feed(t)
-
-		if err := write(context.Background(), app, sub, formatOpus, 1); err == nil {
-			t.Error("the writing started, wanted the encoder to have refused the rate")
-		}
-	})
-
-	// Verify that a frame the encoder will not take is reported
-	t.Run("EncodeError", func(t *testing.T) {
-		app, _, _ := newApp()
-		f, sub := feed(t)
-
-		f.Publish(audiofeed.Frame{Seq: 1, PCM: []byte{1, 2, 3, 4}})
-
-		err := write(context.Background(), app, sub, formatOpus, defaultBitrate)
-		if err == nil || !errors.Is(err, opusenc.ErrFrameSize) {
-			t.Errorf("the failure is %v, wanted the frame size refused", err)
-		}
-	})
-
-	// Verify that news from the capture is passed on rather than written as audio
-	t.Run("Event", func(t *testing.T) {
-		app, out, _ := newApp()
-		f, sub := feed(t)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		notes := &cancelWriter{cancel: cancel}
-		app.Stderr = notes
-
-		f.PublishEvent("channel", map[string]any{"channel": audiofeed.ChannelLeft})
-
-		if err := write(ctx, app, sub, formatPCM, defaultBitrate); err != nil {
-			t.Fatalf("writing: %v", err)
-		}
-		if !strings.Contains(notes.buf.String(), "on the left channel") {
-			t.Errorf("the note is %q, wanted the channel passed on", notes.buf.String())
-		}
-		if out.String() != "" {
-			t.Errorf("the audio is %q, wanted nothing but audio in it", out.String())
-		}
-	})
-
-	// Verify that a feed which has gone ends the writing rather than failing it.
-	//
-	// Both channels close together, so which of the two ends this is whichever
-	// the runtime picks. Repeated so that both are taken.
-	t.Run("Closed", func(t *testing.T) {
-		app, _, _ := newApp()
-
-		for i := 0; i < 32; i++ {
-			f := audiofeed.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-			sub := f.Subscribe(listenQueue)
-			sub.Close()
-
-			if err := write(context.Background(), app, sub, formatPCM, defaultBitrate); err != nil {
-				t.Fatalf("writing: %v", err)
-			}
-		}
-	})
-
-	// Verify that a stream which cannot take the audio says so
-	t.Run("WriteError", func(t *testing.T) {
-		app, _, _ := newApp()
-		app.Stdout = failWriter{}
-		f, sub := feed(t)
-
-		f.Publish(audiofeed.Frame{Seq: 1, PCM: []byte{1, 2, 3, 4}})
-
-		err := write(context.Background(), app, sub, formatPCM, defaultBitrate)
-		if err == nil || !strings.Contains(err.Error(), "writing the audio out") {
-			t.Errorf("the failure is %v, wanted the audio to be named", err)
-		}
-	})
-
-	// Verify that a stream which cannot take the packet length says so
-	t.Run("HeaderError", func(t *testing.T) {
-		app, _, _ := newApp()
-		app.Stdout = failWriter{}
-		f, sub := feed(t)
-
-		f.Publish(audiofeed.Frame{Seq: 1, PCM: make([]byte, opusenc.FrameBytes)})
-
-		err := write(context.Background(), app, sub, formatOpus, defaultBitrate)
-		if err == nil || !strings.Contains(err.Error(), "writing the audio out") {
-			t.Errorf("the failure is %v, wanted the audio to be named", err)
-		}
-	})
-}
-
-// Test_startCapture tests the startCapture variable with 100% coverage.
+// Test_openPlayer tests the openPlayer variable with 100% coverage.
 //
 // Coverage: 100% (1 test case covering the one call the real opener makes)
 //
-// The real opener is only ever called with somewhere to publish to, so the
-// refusal below is the whole of it that can be reached without a sound card.
-// Nothing here opens one: audiofeed.Start checks its Publisher before it goes
-// anywhere near the hardware.
+// The name below cannot belong to anything attached, so the refusal happens
+// while the library is still reading its device list and no speakers are ever
+// opened. That is the whole of the real opener that can be reached without
+// making a noise in the room the tests are running in.
 //
 // Test cases:
-//   - NoPublisher: opening a capture with nowhere to publish to is refused
-func Test_startCapture(t *testing.T) {
-	// Verify that the default opener is the real one, refusing what it refuses
-	t.Run("NoPublisher", func(t *testing.T) {
-		if _, err := startCapture(audiofeed.Options{}, nil); err == nil {
-			t.Error("the capture opened, wanted nowhere to publish to to be refused")
+//   - NoSuchSpeaker: a name nothing answers to is refused, and what comes back
+//     with the refusal is harmless to close
+func Test_openPlayer(t *testing.T) {
+	// Verify that the default opener is the real one, refusing what it refuses.
+	//
+	// The player handed back alongside a refusal is a nil *audioout.Player in an
+	// interface, which does not read as nil. Nothing checks it, because every
+	// caller checks the error first, and closing it anyway has to be harmless
+	// or that arrangement would be a crash waiting for a typo in --speaker.
+	t.Run("NoSuchSpeaker", func(t *testing.T) {
+		p, err := openPlayer("no speaker is called this, and none ever will be",
+			audioout.DefaultBuffer)
+		if err == nil {
+			p.Close()
+			t.Fatal("the speakers opened, wanted a name nothing answers to to be refused")
 		}
-	})
-}
-
-// Test_writeError tests the writeError function with 100% coverage.
-//
-// Coverage: 100% (3 test cases covering both ways a pipe closes and a real failure)
-//
-// Test cases:
-//   - ClosedPipe: a player that was closed is how this command ends
-//   - EPIPE: the same ending as the operating system reports it
-//   - Other: anything else is reported with what was being written
-func Test_writeError(t *testing.T) {
-	// Verify that a closed pipe leaves the exit status alone
-	t.Run("ClosedPipe", func(t *testing.T) {
-		if err := writeError(io.ErrClosedPipe); err != nil {
-			t.Errorf("the failure is %v, wanted a closed pipe to be no failure at all", err)
-		}
-	})
-
-	// Verify that the operating system's own name for it is treated the same
-	t.Run("EPIPE", func(t *testing.T) {
-		if err := writeError(syscall.EPIPE); err != nil {
-			t.Errorf("the failure is %v, wanted a closed pipe to be no failure at all", err)
-		}
-	})
-
-	// Verify that anything else says what was being written when it happened
-	t.Run("Other", func(t *testing.T) {
-		err := writeError(errors.New("the disk is full"))
-		if err == nil || !strings.Contains(err.Error(), "writing the audio out") {
-			t.Errorf("the failure is %v, wanted the audio to be named", err)
-		}
+		p.Close()
 	})
 }

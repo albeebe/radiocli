@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,116 +25,140 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// tree builds the command tree the way run does, so these tests ask the real
-// commands rather than a copy of what they are believed to say.
-func tree() *cobra.Command {
-	app := appcontext.New()
-	cmd := root.New(app)
-	for _, newCmd := range commands {
-		cmd.AddCommand(newCmd(app))
-	}
-	return cmd
-}
-
-// asks resolves a command line the way the reader does and reports whether it
-// would be allowed to run alongside another command.
-func asks(t *testing.T, line string) bool {
-	t.Helper()
-
-	argv := strings.Fields(line)
-	found, rest, err := tree().Find(argv)
-	if err != nil {
-		t.Fatalf("resolving %q: %v", line, err)
-	}
-	return onlyReads(found, rest)
-}
-
-// TestOnlyReadsIsRefusedByDefault is the rule that makes the rest of this safe.
+// Test_onlyReads tests the onlyReads function with 100% coverage.
 //
-// A command added later must not become able to run alongside a menu walk
-// because nobody thought about it. Refusing anything unmarked is what makes
-// forgetting the safe mistake rather than the dangerous one.
-func TestOnlyReadsIsRefusedByDefault(t *testing.T) {
-	for _, line := range []string{
-		"key 1",
-		"tune 154.415",
-		"scan",
-		"weather",
-		"banks",
-		"banks scan 8",
-		"banks set 8 --name x",
-		"favorites",
-		"systems 1",
-		"clock sync",
-		"backlight on",
-		"location gps",
-		"menu open top",
-		"menu close",
-		"volume set 5",
-		"squelch set 4",
-		"display mode color",
-		"colors reset",
-		"colors set System_name --text White",
-	} {
-		if asks(t, line) {
-			t.Errorf("%q is allowed to run alongside another command, and it can move the scanner", line)
-		}
-	}
-}
-
-// TestOnlyReadsAllowsTheReads covers the commands a mirror needs, which are the
-// reason the whole mechanism exists.
-func TestOnlyReadsAllowsTheReads(t *testing.T) {
-	for _, line := range []string{
-		"screen",
-		"screen -o json",
-		"display",
-		"menu",
-		"status",
-		"battery",
-		"volume",
-		"squelch",
-		"version",
-	} {
-		if !asks(t, line) {
-			t.Errorf("%q cannot run alongside another command, and it only reads", line)
-		}
-	}
-}
-
-// TestOnlyReadsFollowsTheFlagsForColors is the case that needed a second
-// mechanism, and the one that broke the display mirror when it was got wrong.
+// Coverage: 100% (4 test cases covering all branches)
 //
-// Reading a layout's colors walks every one of its color pickers, and asking
-// for the stored answer instead opens nothing. Marking the command either way
-// is wrong: one way lets the walk run alongside somebody else's, and the other
-// froze the mirror's colors for the length of every command, which showed as a
-// new screen drawn in an old screen's colors.
-func TestOnlyReadsFollowsTheFlagsForColors(t *testing.T) {
-	allowed := []string{
-		"colors --cache",
-		"colors --cache -o json",
-		"colors --positions",
-		"colors --positions -o json",
-	}
-	for _, line := range allowed {
-		if !asks(t, line) {
-			t.Errorf("%q cannot run alongside another command, and it opens no menus", line)
+// Test cases:
+//   - RefusedByDefault: anything unmarked cannot share the scanner
+//   - AllowsTheReads: the commands a mirror needs are allowed
+//   - FollowsTheFlagsForColors: a command whose answer depends on its flags
+//   - RefusesALineThatWillNotParse: unparseable flags are refused, not guessed at
+func Test_onlyReads(t *testing.T) {
+	// tree builds the command tree the way run does, so these tests ask the
+	// real commands rather than a copy of what they are believed to say.
+	tree := func() *cobra.Command {
+		app := appcontext.New()
+		cmd := root.New(app)
+		for _, newCmd := range commands {
+			cmd.AddCommand(newCmd(app))
 		}
+		return cmd
 	}
 
-	refused := []string{
-		"colors",
-		"colors weather",
-		"colors -o json",
-		"colors --verify-positions",
-		"colors --verify-palette",
-	}
-	for _, line := range refused {
-		if asks(t, line) {
-			t.Errorf("%q is allowed to run alongside another command, and it walks the menus", line)
+	// asks resolves a command line the way the reader does and reports whether
+	// it would be allowed to run alongside another command.
+	asks := func(t *testing.T, line string) bool {
+		t.Helper()
+
+		argv := strings.Fields(line)
+		found, rest, err := tree().Find(argv)
+		if err != nil {
+			t.Fatalf("resolving %q: %v", line, err)
 		}
+		return onlyReads(found, rest)
 	}
+
+	// Verify the rule that makes the rest of this safe. A command added later
+	// must not become able to run alongside a menu walk because nobody thought
+	// about it. Refusing anything unmarked is what makes forgetting the safe
+	// mistake rather than the dangerous one.
+	t.Run("RefusedByDefault", func(t *testing.T) {
+		for _, line := range []string{
+			"key 1",
+			"tune 154.415",
+			"scan",
+			"weather",
+			"banks",
+			"banks scan 8",
+			"banks set 8 --name x",
+			"favorites",
+			"systems 1",
+			"clock sync",
+			"backlight on",
+			"location gps",
+			"menu open top",
+			"menu close",
+			"volume set 5",
+			"squelch set 4",
+			"display mode color",
+			"colors reset",
+			"colors set System_name --text White",
+		} {
+			if asks(t, line) {
+				t.Errorf("%q is allowed to run alongside another command, and it can move the scanner", line)
+			}
+		}
+	})
+
+	// Verify the commands a mirror needs are allowed, which are the reason the
+	// whole mechanism exists.
+	t.Run("AllowsTheReads", func(t *testing.T) {
+		for _, line := range []string{
+			"screen",
+			"screen -o json",
+			"display",
+			"menu",
+			"status",
+			"battery",
+			"volume",
+			"squelch",
+			"version",
+		} {
+			if !asks(t, line) {
+				t.Errorf("%q cannot run alongside another command, and it only reads", line)
+			}
+		}
+	})
+
+	// Verify the case that needed a second mechanism, and the one that broke
+	// the display mirror when it was got wrong. Reading a layout's colors walks
+	// every one of its color pickers, and asking for the stored answer instead
+	// opens nothing. Marking the command either way is wrong: one way lets the
+	// walk run alongside somebody else's, and the other froze the mirror's
+	// colors for the length of every command, which showed as a new screen
+	// drawn in an old screen's colors.
+	t.Run("FollowsTheFlagsForColors", func(t *testing.T) {
+		allowed := []string{
+			"colors --cache",
+			"colors --cache -o json",
+			"colors --positions",
+			"colors --positions -o json",
+		}
+		for _, line := range allowed {
+			if !asks(t, line) {
+				t.Errorf("%q cannot run alongside another command, and it opens no menus", line)
+			}
+		}
+
+		refused := []string{
+			"colors",
+			"colors weather",
+			"colors -o json",
+			"colors --verify-positions",
+			"colors --verify-palette",
+		}
+		for _, line := range refused {
+			if asks(t, line) {
+				t.Errorf("%q is allowed to run alongside another command, and it walks the menus", line)
+			}
+		}
+	})
+
+	// Verify the last branch of onlyReads, which is a command whose answer
+	// depends on its flags being handed flags that do not parse. Guessing is
+	// the wrong answer here: the same line fails a moment later when it runs,
+	// with the message the terminal would have given.
+	t.Run("RefusesALineThatWillNotParse", func(t *testing.T) {
+		argv := []string{"colors", "--cache", "--nosuchflag"}
+		found, rest, err := tree().Find(argv)
+		if err != nil {
+			t.Fatalf("resolving %q: %v", argv, err)
+		}
+		if onlyReads(found, rest) {
+			t.Error("a line that will not parse was allowed to run alongside another command")
+		}
+	})
 }
 
 // program points the program at the test's own config file and streams, so a
@@ -528,23 +553,6 @@ func Test_viaDaemon(t *testing.T) {
 	})
 }
 
-// TestOnlyReadsRefusesALineThatWillNotParse covers the last branch of
-// onlyReads, which is a command whose answer depends on its flags being handed
-// flags that do not parse.
-//
-// Guessing is the wrong answer here: the same line fails a moment later when it
-// runs, with the message the terminal would have given.
-func TestOnlyReadsRefusesALineThatWillNotParse(t *testing.T) {
-	argv := []string{"colors", "--cache", "--nosuchflag"}
-	found, rest, err := tree().Find(argv)
-	if err != nil {
-		t.Fatalf("resolving %q: %v", argv, err)
-	}
-	if onlyReads(found, rest) {
-		t.Error("a line that will not parse was allowed to run alongside another command")
-	}
-}
-
 // TestWrite tests the witness Write method with 100% coverage.
 //
 // Coverage: 100% (2 test cases covering all branches)
@@ -584,6 +592,27 @@ func TestWrite(t *testing.T) {
 		}
 		if w.written {
 			t.Error("nothing was written and the witness remembered something")
+		}
+	})
+}
+
+// TestUnwrap tests the witness Unwrap method with 100% coverage.
+//
+// Coverage: 100% (1 test case, since the method has one branch)
+//
+// Test cases:
+//   - Returns: the stream underneath comes back, so a caller can ask what the
+//     output really is
+func TestUnwrap(t *testing.T) {
+	// Verify the wrapped stream is handed back. Colour is what needs this: a
+	// wrapper is not a terminal, so a check that stops here would turn the
+	// colour off for every stream in the program.
+	t.Run("Returns", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := &witness{to: &buf}
+
+		if w.Unwrap() != io.Writer(&buf) {
+			t.Error("Unwrap did not return the stream underneath")
 		}
 	})
 }

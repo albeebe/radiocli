@@ -246,6 +246,164 @@ doing. `GSI` answers once; `PSI` streams.
 The specification says `PSI` takes a parameter controlling the push interval but
 never says what it is. That parameter remains undocumented.
 
+### A real document, read off the radio
+
+Everything above and below this comes from the specification. This is what an
+SDS150 on firmware 1.00.37 actually sent, scanning a conventional system, with
+the names changed:
+
+```xml
+<ScannerInfo Mode="Scan Mode" V_Screen="conventional_scan">
+  <MonitorList Name="Pocahontas County" Index="2" ListType="FL" Q_Key="0" N_Tag="None" DB_Counter="1" />
+  <System Name="PUBLIC SAFETY" Index="10" Avoid="Off" SystemType="Conventional" Q_Key="None" N_Tag="None" Hold="Off" />
+  <Department Name="POLICE DEPARTMENT" Index="13" Avoid="Off" Q_Key="None" Hold="Off" />
+  <ConvFrequency Name="MARLINTON DISPATCH" Index="15" Avoid="Off" Freq=" 155.550000MHz" Mod="NFM"
+                 N_Tag="None" Hold="Off" SvcType="Custom 1" P_Ch="Off" SAS="All" SAD="None"
+                 RecSlot="Slot None" LVL="0" IFX="Off" TGID="TGID None" U_Id="UID None" />
+  <DualWatch PRI="Off" CC="Off" WX="Off" />
+  <Property F="Off" VOL="13" SQL="5" Sig="0" Att="Off" Rec="Off" KeyLock="Off" P25Status="None"
+            Mute="Unmute" Backlight="100" A_Led="Blue" Dir="Up" Rssi="-87" />
+</ScannerInfo>
+```
+
+Three things in it are worth writing down, because each was guessed wrongly
+first.
+
+**There is no `Channel` element.** The specification describes one and this
+firmware never sends it. A conventional channel arrives as `ConvFrequency` and
+carries its own `Name`, and a talkgroup arrives as `TGID`. Anything reading "the
+channel" has to look in whichever of those two turned up, and code that reads a
+`Channel` element gets an empty string forever without ever failing.
+
+**An absent identifier is written out rather than omitted, in more than one
+way.** Four forms were seen for the same two fields:
+
+```
+TGID="TGID None"     conventional channel, nothing decoded
+TGID="TGID: ---"     trunked, waiting
+TGID="TGID:10003"    trunked, receiving
+U_Id="UID None"      nothing decoded
+```
+
+Every value carries the name of the field in front of it, absence is spelled two
+different ways depending on the mode, and the separator is a space in one and a
+colon in the other. Code comparing against the empty string is wrong about all
+four, and code stripping only the word `None` reports a talkgroup of `TGID: ---`
+for as long as a trunked scanner sits waiting. `Freq` also carries a leading
+space.
+
+A trunked document, from the same radio on the full database:
+
+```xml
+<MonitorList Name="Full Database" Index="4294967295" ListType="FullDb" Q_Key="None" N_Tag="None" DB_Counter="6" />
+<TGID Index="4294967295" Avoid="Off" TGID="TGID: ---" SetSlot="Slot Any" RecSlot="Slot None" N_Tag="None" Hold="Off" P_Ch="Off" LVL="0" />
+<Site Name="Manchester" Index="20034" Avoid="Off" Q_Key="None" Hold="Off" Mod="NFM" />
+<SiteFrequency Freq=" 859.487500MHz" IFX="Off" SAS="NAC 8A1h" SAD="None" />
+```
+
+Captured again on a live P25 call, which fills in what the waiting document
+leaves out:
+
+```xml
+<ScannerInfo Mode="Trunk Scan" V_Screen="trunk_scan">
+  <System Name="City of Manchester" Index="20031" Avoid="Off" SystemType="P25 Trunk" .../>
+  <Department Name="Fire" Index="20049" Avoid="Off" Q_Key="None" Hold="Off" />
+  <TGID Name="Fire Tac 3" Index="20061" Avoid="Off" TGID="TGID:10007" SvcType="Fire-Tac" .../>
+  <UnitID Name="UID:100045" U_Id="UID:100045" />
+  <Site Name="Manchester" Index="20034" Avoid="Off" Q_Key="None" Hold="Off" Mod="NFM" />
+  <SiteFrequency Freq=" 856.762500MHz" IFX="Off" SAS="NAC 8A1h" SAD="NAC 8A1h" />
+  <Property ... Sig="4" P25Status="P25" Mute="Unmute" Rssi="-97" />
+</ScannerInfo>
+```
+
+Three things worth taking from it. `SiteFrequency` carries the **voice** channel
+the site handed out for this call, not the control channel, and it matches the
+frequency on the radio's own screen. The modulation is on `Site` rather than
+anywhere else, since a trunked document has no `ConvFrequency` to read it from.
+And the network access code arrives in the sub-audio fields, spelled `NAC 8A1h`,
+in the same attributes a conventional channel uses for CTCSS and DCS.
+
+**`SystemStatus` is not in a `GSI` reply**, on an SDS150 at least, in either
+mode. The elements listed for it below carry `WACN`, the system and sub ids and
+the site id, which the radio's detailed display does show, so those cost a
+different command rather than being free alongside everything above.
+
+Note that the `TGID` element carries no `Name` while it is waiting, and gains
+one once the scanner stops on a talkgroup. The index of the full database, and
+of a talkgroup within it, is `4294967295`, which is the same all-ones value the
+protocol uses elsewhere to mean "not one of the numbered entries".
+
+**`Mute` opens before `Sig` catches up.** These two consecutive documents are
+the same transmission, a third of a second apart:
+
+```
+Sig="0" Mute="Unmute" Rssi="-87"     first poll of the transmission
+Sig="5" Mute="Unmute" Rssi="-87"     the next one
+```
+
+The audio gate is already open while the signal reading still says nothing.
+Anything waiting for bars therefore misses the start of every transmission,
+which is the part hardest to get back, so `Mute` is the field to watch for "is
+it receiving right now" and `Sig` is a measure of how strong the signal is once
+there is one. `Rssi` reads `-999` when nothing is coming in.
+
+`Property` also carries `Rec`, which is the state of the radio's own recorder,
+and `A_Led`, the alert light. The specification presents that as a receive
+indicator, `Blue` while receiving and `Off` otherwise, and the captured document
+above agrees. A later capture does not: polling through two real transmissions
+on a Marlinton police channel, `A_Led` read `Off` for every document including
+the ones with the mute open. It is most likely following the channel's own alert
+colour rather than reception, and it is not a field to build on either way.
+`Mute` is.
+
+### `Mute` is the closest thing to a keyup event
+
+There is no keyup event. Nothing in the protocol is an edge or a notification:
+`GSI` is a poll and `PSI` is the same document pushed on a timer, not on a
+change. What there is instead is `Mute`, and it is enough, because it follows
+the carrier rather than the speech.
+
+That distinction is the whole value of it. A pause in the middle of somebody's
+transmission does not close the mute, because they are still keyed up. The gap
+between one person unkeying and the next answering does. So a mute that closes
+and reopens is two transmissions, reliably, in a way no amount of listening to
+the audio can establish.
+
+Polled flat out, through a dispatcher and a cruiser answering on
+155.550 MHz NFM, printing only the documents that differed from the one before:
+
+```
+ 59.907  mute=Mute    rssi=-999  sig=0  ch=Fire/EMS Operations - Analog
+ 60.112  mute=Mute    rssi=-999  sig=0  ch=Police Operations
+ 60.390  mute=Unmute  rssi=-86   sig=5  ch=Police Operations   <- dispatcher keys up
+ 61.921  mute=Mute    rssi=-999  sig=5  ch=Police Operations   <- and unkeys
+ 62.093  mute=Mute    rssi=-999  sig=0  ch=Police Operations
+ 62.557  mute=Unmute  rssi=-87   sig=5  ch=Police Operations   <- the unit answers
+ 63.708  mute=Mute    rssi=-999  sig=5  ch=Police Operations
+ 63.865  mute=Mute    rssi=-999  sig=0  ch=Police Operations
+```
+
+Three things are worth taking from it.
+
+**The gap is short.** 640 milliseconds of closed mute between the two. Anything
+polling a few times a second cannot tell that from two questions that happened
+to land either side of nothing, so the rate the radio is asked at decides
+whether the two speakers can be separated at all.
+
+**`Rssi` adds nothing over `Mute`.** They flip in the same document, in both
+directions, every time. `Rssi` looked like the better field on the theory that
+it reports the receiver while `Mute` reports the audio path, and that the
+scanner's channel delay would hold the mute open over a gap the RSSI could see
+through. It does not: the delay holds the *channel*, not the mute.
+
+**`Sig` lags on the way down as well as up.** It stayed at 5 for about 170
+milliseconds after the carrier went, in both transmissions, while `Rssi` had
+already gone to `-999`. It is late at both ends and should not be used as a
+receive indicator in either direction.
+
+The radio sustained 81 `GSI` documents per second on this cable, so polling fast
+enough to catch these edges costs less than it looks like it should.
+
 ### What is always there
 
 A root element, plus `Property`, `AGC`, `DispFormat`, a `ViewDescription` when an
@@ -317,7 +475,7 @@ enough.
 | `Att` | Off, On, G-Att |
 | `Rec` | Off, On |
 | `KeyLock` | Off, On |
-| `P25Status` | None, Data, P25, DMR, CAP, CON, DT3, XPT, NX9, NX4, ND9, ND4, IDS, NXD |
+| `P25Status` | None, Data, P25, DMR, CAP, CON, DT3, XPT, NX9, NX4, ND9, ND4, IDS, NXD, and **`Link`**, which is not in the documented list but was read off an SDS150 on a P25 conventional channel. It is sustained rather than transient: transmissions on one frequency, with one access code, alternate between reporting `P25` and reporting `Link` seconds apart, and a `Link` transmission reports it across most of its readings rather than in one stray poll. Whatever it describes belongs to the transmission and not to the channel, and it is not a reception problem: it was captured on a five bar signal at -82 dBm, the strongest reading of the night, and on two different systems minutes apart. What it means is not known here. The only field that says whether what is coming in right now is digital, and the values run past P25 despite the name. `Mod` cannot answer it, since it reports the demodulator rather than the programming. It describes the transmission, not the channel: one conventional frequency was measured reading `None` across 84 polls of live audio and `P25` a quarter of an hour later, so a channel can carry both and only the reading taken during a given transmission means anything |
 | `Mute` | Unmute, Mute |
 | `A_Led` | Off, Blue, Red, Magenta, Green, Cyan, Yellow, White |
 | `Dir` | Up, Down |
@@ -338,6 +496,7 @@ off or priority only).
 | `System` | Name, Index, Avoid, SystemType, quick key, number tag, Hold |
 | `Department` | Name, Index, Avoid, quick key, Hold |
 | `Site` | Name, Index, Avoid, quick key, Hold, Mod (Auto, NFM, FM) |
+| `UnitID` | Name and `U_Id`, both carrying the transmitting radio as `UID:101`. **Trunked documents only.** Six documents captured during live P25 conventional calls, across two systems, carried no `UnitID` element at all and reported `U_Id="UID None"` on `ConvFrequency`, the same spelling an analog channel uses. So a conventional P25 recording having no unit id is the radio saying it has none, not something missed on the way out. Sent bare, `<UnitID />`, between calls rather than carrying the `UID None` the conventional element uses. It is an element of its own and **not** an attribute of `TGID`, which is where `ConvFrequency` puts the same idea |
 
 Avoid is always one of `Off`, `T-Avoid` or `Avoid`.
 

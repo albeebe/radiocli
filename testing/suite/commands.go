@@ -26,6 +26,8 @@ import "strings"
 var All = [][]string{
 	{"audio"},
 	{"audio", "listen"},
+	{"audio", "output"},
+	{"audio", "record"},
 	{"backlight"},
 	{"backlight", "keys"},
 	{"backlight", "keys", "disable"},
@@ -80,6 +82,8 @@ var All = [][]string{
 	{"favorites", "new"},
 	{"favorites", "rename"},
 	{"favorites", "scan"},
+	{"headphone"},
+	{"headphone", "set"},
 	{"key"},
 	{"location"},
 	{"location", "gps"},
@@ -89,6 +93,7 @@ var All = [][]string{
 	{"menu", "close"},
 	{"menu", "open"},
 	{"menu", "set"},
+	{"receiving"},
 	{"scan"},
 	{"scanning"},
 	{"scanning", "systems"},
@@ -138,6 +143,14 @@ var index = func() map[string]bool {
 // The command is looked up rather than guessed, because nothing in the name
 // says where the command stops: "channels new" is two words and
 // "backlight keys enable" is three, and only this list knows which.
+//
+// Parameters:
+//   - function: the test function's name, as written, including the "Test"
+//
+// Returns:
+//   - path: the command's words in order, nil for the root command
+//   - variant: what followed the underscore, empty when nothing did
+//   - ok: false when the name matches no command in All
 func Split(function string) (path []string, variant string, ok bool) {
 	base := strings.TrimPrefix(function, "Test")
 	command, variant, _ := strings.Cut(base, "_")
@@ -157,6 +170,12 @@ func Split(function string) (path []string, variant string, ok bool) {
 //
 // A run of capitals is one word, so "LocationGPS" reads as "Location GPS"
 // rather than as "Location G P S".
+//
+// Parameters:
+//   - name: a name in Go's style, such as "BacklightKeysEnable"
+//
+// Returns:
+//   - the same name with a space before each word after the first
 func Words(name string) string {
 	runes := []rune(name)
 
@@ -172,6 +191,8 @@ func Words(name string) string {
 	return out.String()
 }
 
-// upper and lower report the case of a letter, for splitting names.
-func upper(r rune) bool { return r >= 'A' && r <= 'Z' }
+// lower reports whether a rune is a lowercase letter, for splitting names.
 func lower(r rune) bool { return r >= 'a' && r <= 'z' }
+
+// upper reports whether a rune is an uppercase letter, for splitting names.
+func upper(r rune) bool { return r >= 'A' && r <= 'Z' }

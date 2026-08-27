@@ -32,9 +32,11 @@ import (
 	"github.com/albeebe/radiocli/internal/commands/devices"
 	"github.com/albeebe/radiocli/internal/commands/display"
 	"github.com/albeebe/radiocli/internal/commands/favorites"
+	"github.com/albeebe/radiocli/internal/commands/headphone"
 	"github.com/albeebe/radiocli/internal/commands/key"
 	"github.com/albeebe/radiocli/internal/commands/location"
 	"github.com/albeebe/radiocli/internal/commands/menu"
+	"github.com/albeebe/radiocli/internal/commands/receiving"
 	"github.com/albeebe/radiocli/internal/commands/root"
 	"github.com/albeebe/radiocli/internal/commands/scan"
 	"github.com/albeebe/radiocli/internal/commands/scanning"
@@ -71,9 +73,11 @@ var commands = []func(*appcontext.App) *cobra.Command{
 	devices.New,
 	display.New,
 	favorites.New,
+	headphone.New,
 	key.New,
-	menu.New,
 	location.New,
+	menu.New,
+	receiving.New,
 	scan.New,
 	scanning.New,
 	screen.New,
@@ -103,6 +107,9 @@ func main() {
 }
 
 // run wires the application together and executes the requested command.
+//
+// Returns:
+//   - the process exit code: 0 when the command succeeded, 1 when it failed
 func run() int {
 	// Ctrl-C and SIGTERM cancel this context, which cobra passes to every
 	// command so in-flight work can stop cleanly.
@@ -207,6 +214,16 @@ func run() int {
 // Anything that goes wrong finding or reaching a daemon means there is no
 // sharing to be had, and the caller falls back to reporting the busy scanner
 // exactly as it always did.
+//
+// Parameters:
+//   - ctx: context for cancellation, so Ctrl-C stops a run the daemon carries
+//   - app: the application context, which names the device whose daemon to dial
+//   - err: the failure the first attempt ended with
+//   - stdout, stderr: the witnesses the run wrote through, which say whether it spoke
+//
+// Returns:
+//   - the exit code the daemon reported
+//   - whether the invocation ran on a daemon at all
 func viaDaemon(ctx context.Context, app *appcontext.App, err error, stdout, stderr *witness) (int, bool) {
 	if !errors.Is(err, portlock.ErrBusy) || stdout.written || stderr.written {
 		return 0, false
@@ -245,6 +262,13 @@ func viaDaemon(ctx context.Context, app *appcontext.App, err error, stdout, stde
 //
 // Anything unmarked is refused, so a command added later has to be looked at
 // before it can run alongside anything.
+//
+// Parameters:
+//   - cmd: the resolved command, whose annotations carry its answer
+//   - args: the arguments left after resolving it, parsed only when flags decide
+//
+// Returns:
+//   - whether the command only reads and so can share the scanner
 func onlyReads(cmd *cobra.Command, args []string) bool {
 	if cmd.Annotations[appcontext.OnlyReads] == "true" {
 		return true
@@ -271,11 +295,30 @@ func onlyReads(cmd *cobra.Command, args []string) bool {
 
 // witness passes writes through and remembers whether there were any.
 type witness struct {
-	to      io.Writer
+	// to is the stream everything is passed on to.
+	to io.Writer
+
+	// written records whether anything non-empty has been written.
 	written bool
 }
 
+// Unwrap returns the stream underneath, so that anything needing to know what
+// the output really is can see past this. Colour is the caller that needs it:
+// a wrapper is not a terminal, and asking one would turn the colour off for the
+// whole program.
+//
+// Returns:
+//   - the writer this passes everything on to
+func (w *witness) Unwrap() io.Writer { return w.to }
+
 // Write records that something was produced and passes it on.
+//
+// Parameters:
+//   - p: the bytes to write
+//
+// Returns:
+//   - the number of bytes written
+//   - error if the underlying stream refused the write
 func (w *witness) Write(p []byte) (int, error) {
 	if len(p) > 0 {
 		w.written = true

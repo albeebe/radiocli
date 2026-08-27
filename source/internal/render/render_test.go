@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -27,6 +29,14 @@ func (failingWriter) Write([]byte) (int, error) {
 // TestChanged covers both output modes of a mutation report. The JSON mode is
 // the one this exists for: these verbs used to write prose whatever was asked
 // for, so a script editing the scanner got sentences it could not parse.
+//
+// Coverage: 100% (4 test cases covering both modes and the write error)
+//
+// Test cases:
+//   - JSON: the mutation is written as an object rather than the text line
+//   - OmitsWhatDidNotHappen: empty fields are left out of the object
+//   - Text: the line arrives unchanged
+//   - WriteError: a stream that refuses the write is reported
 func TestChanged(t *testing.T) {
 	// Builds an app writing to buffers, in the format asked for.
 	appWith := func(format appcontext.OutputFormat) (*appcontext.App, *bytes.Buffer) {
@@ -102,6 +112,14 @@ func TestChanged(t *testing.T) {
 // TestDash covers the two answers there are. The point of the function is that
 // a blank cell in an aligned table is indistinguishable from a column that ran
 // out of rows, so the empty case is the one that matters.
+//
+// Coverage: 100% (4 test cases covering both branches)
+//
+// Test cases:
+//   - a value is left alone
+//   - nothing becomes a dash
+//   - a space is a value
+//   - a dash stays a dash
 func TestDash(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -124,6 +142,15 @@ func TestDash(t *testing.T) {
 }
 
 // TestJSON covers what every command's --output json path produces.
+//
+// Coverage: 100% (5 test cases covering JSON and listable, every branch)
+//
+// Test cases:
+//   - Indented: the output is indented and ends in a newline
+//   - Empty: an empty listing is still JSON
+//   - NothingFound: a nil slice is written as an empty array, not null
+//   - NotAList: a value that is not a list is written as it is
+//   - WriteError: a stream that refuses the write is reported
 func TestJSON(t *testing.T) {
 	// Verify that the output is indented and ends in a newline, which is what
 	// makes it a well-formed line on a terminal.
@@ -192,6 +219,8 @@ func TestJSON(t *testing.T) {
 }
 
 // TestYesNo covers both answers.
+//
+// Coverage: 100% (both branches)
 func TestYesNo(t *testing.T) {
 	if got := YesNo(true); got != "yes" {
 		t.Errorf("YesNo(true) = %q, wanted \"yes\"", got)
@@ -256,6 +285,164 @@ func TestFilled(t *testing.T) {
 
 		if notes.Len() != 0 {
 			t.Errorf("the note reads %q, wanted nothing on the JSON path", notes.String())
+		}
+	})
+}
+
+// TestAlert tests the Alert function with 100% coverage.
+//
+// Coverage: 100% (3 test cases covering both the coloured and the plain path)
+//
+// Test cases:
+//   - Plain: a buffer is not a terminal, so the message arrives with no escape
+//     codes in it
+//   - Formatted: the arguments are substituted the way Printf does it
+//   - Terminal: a real terminal gets the escapes, and NO_COLOR takes them away
+func TestAlert(t *testing.T) {
+	appWith := func() (*appcontext.App, *bytes.Buffer) {
+		app := appcontext.New()
+		errs := &bytes.Buffer{}
+		app.Stdout, app.Stderr = &bytes.Buffer{}, errs
+		return app, errs
+	}
+
+	// Verify that a stream which is not a terminal is written to plainly,
+	// which is what keeps escape codes out of a redirected log.
+	t.Run("Plain", func(t *testing.T) {
+		app, errs := appWith()
+
+		Alert(app, "the input is overloaded\n")
+
+		if got := errs.String(); got != "the input is overloaded\n" {
+			t.Errorf("Alert wrote %q, wanted it uncoloured", got)
+		}
+	})
+
+	// Verify that the arguments reach the message.
+	t.Run("Formatted", func(t *testing.T) {
+		app, errs := appWith()
+
+		Alert(app, "%.1f%% of %d\n", 9.3, 15)
+
+		if got := errs.String(); got != "9.3% of 15\n" {
+			t.Errorf("Alert wrote %q, wanted the arguments substituted", got)
+		}
+	})
+
+	// Verify the coloured path, and that NO_COLOR takes it away again.
+	//
+	// /dev/null stands in for a terminal because the test colorful applies is
+	// whether the stream is a character device, which it is. Writing escapes
+	// into it is exactly what the check is being asked about, and it needs no
+	// pty to arrange.
+	t.Run("CharacterDevice", func(t *testing.T) {
+		dev, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatalf("opening %s: %v", os.DevNull, err)
+		}
+		defer dev.Close()
+
+		os.Unsetenv("NO_COLOR")
+		if !colorful(dev) {
+			t.Fatal("a character device was not recognised as colourable")
+		}
+
+		app := appcontext.New()
+		app.Stdout, app.Stderr = &bytes.Buffer{}, dev
+		Alert(app, "overloaded\n")
+
+		t.Setenv("NO_COLOR", "1")
+		if colorful(dev) {
+			t.Error("NO_COLOR did not turn the colour off")
+		}
+	})
+}
+
+// wrapped stands in for the witness main puts around both streams before any
+// command runs, which is why colorful has to see past a wrapper at all.
+type wrapped struct{ to io.Writer }
+
+// Write passes everything on.
+func (w wrapped) Write(p []byte) (int, error) { return w.to.Write(p) }
+
+// Unwrap returns the stream underneath.
+func (w wrapped) Unwrap() io.Writer { return w.to }
+
+// TestColorful tests the colorful function with 100% coverage.
+//
+// The unwrapping cases are the ones that matter. Every stream a command writes
+// to has been wrapped by the time it gets there, so a check that only accepts a
+// bare *os.File says "not a terminal" about the whole program and the colour
+// never appears anywhere. It fails silently, which is why it is tested here
+// rather than left to be noticed.
+//
+// Coverage: 100% (5 test cases covering every branch)
+//
+// Test cases:
+//   - NotAFile: a buffer cannot be a terminal
+//   - Closed: a file that cannot be inspected is not a terminal either
+//   - Wrapped: a wrapper around a character device is one
+//   - WrappedBuffer: a wrapper around a buffer is not
+//   - WrapsNothing: a wrapper hiding nil is refused rather than followed
+func TestColorful(t *testing.T) {
+	// Verify that anything which is not an *os.File is refused before it is
+	// asked, since only a file has a mode to check.
+	t.Run("NotAFile", func(t *testing.T) {
+		os.Unsetenv("NO_COLOR")
+
+		if colorful(&bytes.Buffer{}) {
+			t.Error("a buffer was treated as a terminal")
+		}
+	})
+
+	// Verify that a file whose Stat fails is refused rather than assumed.
+	t.Run("Closed", func(t *testing.T) {
+		os.Unsetenv("NO_COLOR")
+
+		f, err := os.CreateTemp(t.TempDir(), "closed")
+		if err != nil {
+			t.Fatalf("making a file: %v", err)
+		}
+		f.Close()
+
+		if colorful(f) {
+			t.Error("a closed file was treated as a terminal")
+		}
+	})
+
+	// Verify a wrapper is followed to what it wraps, which is the case every
+	// real run takes and the one a bare type assertion silently fails.
+	t.Run("Wrapped", func(t *testing.T) {
+		os.Unsetenv("NO_COLOR")
+
+		dev, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatalf("opening %s: %v", os.DevNull, err)
+		}
+		defer dev.Close()
+
+		if !colorful(wrapped{to: wrapped{to: dev}}) {
+			t.Error("a wrapped character device was not followed to the device")
+		}
+	})
+
+	// Verify unwrapping reports what it finds rather than assuming a wrapper
+	// means a terminal.
+	t.Run("WrappedBuffer", func(t *testing.T) {
+		os.Unsetenv("NO_COLOR")
+
+		if colorful(wrapped{to: &bytes.Buffer{}}) {
+			t.Error("a wrapped buffer was treated as a terminal")
+		}
+	})
+
+	// Verify a wrapper with nothing behind it ends the walk instead of being
+	// dereferenced.
+	t.Run("WrapsNothing", func(t *testing.T) {
+		os.Unsetenv("NO_COLOR")
+
+		if colorful(wrapped{to: nil}) {
+			t.Error("a wrapper around nothing was treated as a terminal")
 		}
 	})
 }

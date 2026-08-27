@@ -167,18 +167,21 @@ func (r *ring) capacity() uint64 { return uint64(len(r.buf)) }
 //   - seq: the frame's number, counted in frames since the capture started
 //   - now: when the frame was cut, carried on it as Frame.At
 func (p *pump) cut(seq uint32, now time.Time) {
-	left, right := rmsPair(p.stereo)
-	mode := p.pick.observe(left, right)
+	left, right, mixed := rmsPair(p.stereo)
+	mode := p.pick.observe(left, right, mixed)
 
 	// Said once, when there is an answer, because a listener joining later is
 	// told the settled channel when it subscribes.
 	if settled, ok := p.pick.decided(); ok && !p.told {
 		p.told = true
-		p.out.PublishEvent("channel", map[string]any{"channel": settled})
+		p.out.PublishEvent("channel", map[string]any{
+			"channel": settled,
+			"reason":  p.pick.reason(),
+		})
 	}
 
 	downmix(p.stereo, p.mono, mode)
-	level := levelOf(p.mono)
+	level := LevelOf(p.mono)
 
 	// Fresh for each frame. See Frame.PCM for why this is not pooled.
 	pcm := make([]byte, MonoFrameBytes)

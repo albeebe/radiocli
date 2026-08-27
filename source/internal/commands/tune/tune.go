@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -178,8 +177,7 @@ func parse(arg string) (device.Frequency, error) {
 // Returns:
 //   - true if the scanner is showing at least one signal bar
 func receiving(p device.Property) bool {
-	bars, err := strconv.Atoi(strings.TrimSpace(p.Signal))
-	return err == nil && bars > 0
+	return p.Receiving()
 }
 
 // refused explains a rejection, which the scanner gives no reason for.

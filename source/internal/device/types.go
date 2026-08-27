@@ -143,14 +143,6 @@ const (
 	Megahertz           = 1000 * Kilohertz
 )
 
-// units are the suffixes a frequency may be written with, and what one of each
-// is worth. Matched in lower case, so any spelling of "MHz" is accepted.
-var units = map[string]Frequency{
-	"hz":  Hertz,
-	"khz": Kilohertz,
-	"mhz": Megahertz,
-}
-
 // holdSuffix is how the scanner names every one of its hold modes: "Scan
 // Hold", "Trunk Scan Hold", "Custom Search Hold" and the rest. Matching the
 // suffix covers them all, including any a later firmware adds, which matters
@@ -237,6 +229,18 @@ const (
 
 	// KeyRelease releases a key held by KeyHeld.
 	KeyRelease KeyAction = "R"
+)
+
+// The colours an LED can show.
+const (
+	LEDOff LED = iota
+	LEDBlue
+	LEDRed
+	LEDMagenta
+	LEDGreen
+	LEDCyan
+	LEDYellow
+	LEDWhite
 )
 
 // The lists List accepts. Each takes one index, naming its immediate parent: a
@@ -493,23 +497,6 @@ const (
 // can substitute a fake.
 var acquirePort = portlock.Acquire
 
-// ErrNoScanners is returned when no scanner is attached. The advice is part of
-// the error because the answer is never "try again": something about the
-// physical setup has to change first.
-var ErrNoScanners = errors.New(`no scanner found
-
-Check the following, then run this command again:
-
-  1. Connect the scanner to this computer with a USB data cable. Charge-only
-     cables carry power but no data, so the scanner will never appear.
-  2. Turn the scanner on and wait for it to finish starting up.
-  3. If the scanner asks what the USB connection is for, choose the serial or
-     PC connection mode rather than mass storage.
-  4. Close any other program that might be holding the serial port, such as
-     scanner programming software or a serial terminal.
-
-If you know the port already, pass it directly: radiocli status --device /dev/tty.usbmodem14201`)
-
 // ErrFrequencyNotANumber means a frequency written by hand could not be read
 // as a number, with or without a unit.
 //
@@ -530,6 +517,23 @@ var ErrFrequencyNotTypeable = errors.New("not a frequency the scanner's screen w
 // ErrFrequencyTooSmall means a frequency was positive but rounds to nothing at
 // the resolution the scanner tunes, such as "0.00001kHz".
 var ErrFrequencyTooSmall = errors.New("frequency is smaller than the scanner can tune")
+
+// ErrNoScanners is returned when no scanner is attached. The advice is part of
+// the error because the answer is never "try again": something about the
+// physical setup has to change first.
+var ErrNoScanners = errors.New(`no scanner found
+
+Check the following, then run this command again:
+
+  1. Connect the scanner to this computer with a USB data cable. Charge-only
+     cables carry power but no data, so the scanner will never appear.
+  2. Turn the scanner on and wait for it to finish starting up.
+  3. If the scanner asks what the USB connection is for, choose the serial or
+     PC connection mode rather than mass storage.
+  4. Close any other program that might be holding the serial port, such as
+     scanner programming software or a serial terminal.
+
+If you know the port already, pass it directly: radiocli status --device /dev/tty.usbmodem14201`)
 
 // ErrNotInMenu means the scanner is not showing a menu, so there is no menu to
 // report. It is a normal answer rather than a fault, and it is the cheapest
@@ -569,6 +573,14 @@ var Paces = []Pace{PaceSlow, PaceMedium, PaceFast, PaceTurbo}
 // Trunk Scan is that same scan, named for the kind of system it has reached
 // rather than for a different activity, so both count.
 var scanModes = []string{"Scan Mode", "Trunk Scan"}
+
+// units are the suffixes a frequency may be written with, and what one of each
+// is worth. Matched in lower case, so any spelling of "MHz" is accepted.
+var units = map[string]Frequency{
+	"hz":  Hertz,
+	"khz": Kilohertz,
+	"mhz": Megahertz,
+}
 
 // Conn is the transport to a scanner: it sends command strings and returns
 // response strings, and knows nothing about what any command means.
@@ -672,6 +684,57 @@ type conn struct {
 	mu sync.Mutex // Held for a whole exchange, so a command and its response stay together
 }
 
+// ConvFrequency is the conventional channel the scanner is on.
+//
+// It is the closest thing the protocol has to "the channel", and it is what a
+// conventional system reports instead of the Channel element the specification
+// describes. Read off an SDS150 on firmware 1.00.37.
+type ConvFrequency struct {
+	// Name is the channel's alpha tag, such as "FIREGROUND 3".
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the channel.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Avoid is "Off", "T-Avoid" or "Avoid".
+	Avoid string `xml:"Avoid,attr" json:"avoid,omitempty"`
+
+	// Frequency carries its own unit, such as "155.235000MHz". The scanner
+	// writes it with a leading space, which ScannerInfo strips.
+	Frequency string `xml:"Freq,attr" json:"frequency,omitempty"`
+
+	// Modulation is how the scanner is demodulating, such as "NFM".
+	Modulation string `xml:"Mod,attr" json:"modulation,omitempty"`
+
+	// ServiceType is the category the channel is filed under, such as
+	// "Custom 1".
+	ServiceType string `xml:"SvcType,attr" json:"serviceType,omitempty"`
+
+	// Held reports whether the scanner is parked on this channel, "On" or
+	// "Off".
+	Held string `xml:"Hold,attr" json:"held,omitempty"`
+
+	// SubAudio is what the channel is set to decode below the audio, and
+	// SubAudioDecoded is what it actually found there.
+	//
+	// On an analog channel these carry the tone squelch, spelled "All" when the
+	// channel accepts anything and "None" when nothing was found. On a P25
+	// conventional channel they carry the network access code instead, spelled
+	// "NAC 293h", which is the same idea doing the same job: a code that says
+	// which traffic on this frequency is meant for this receiver.
+	SubAudio        string `xml:"SAS,attr" json:"subAudio,omitempty"`
+	SubAudioDecoded string `xml:"SAD,attr" json:"subAudioDecoded,omitempty"`
+
+	// Talkgroup and UnitID carry the identifiers decoded out of a digital
+	// signal on this frequency, and are empty when there are none.
+	//
+	// The scanner writes the words "TGID None" and "UID None" rather than
+	// leaving them out, which ScannerInfo turns into the empty string so that
+	// absent reads as absent everywhere above here.
+	Talkgroup string `xml:"TGID,attr" json:"talkgroup,omitempty"`
+	UnitID    string `xml:"U_Id,attr" json:"unitId,omitempty"`
+}
+
 // Display is the scanner's screen as text.
 //
 // It is the closest thing the protocol has to "what is happening right now":
@@ -684,6 +747,83 @@ type Display struct {
 	// LargeFont holds one flag per line, reporting whether the scanner drew
 	// that line in the large font.
 	LargeFont []bool `json:"largeFont"`
+}
+
+// Heard is what the scanner is listening to at one instant, flattened out of
+// the several elements that describe it.
+//
+// It exists because two very different callers need the same answer in the same
+// shape: the "receiving" command renders it, and the recorder reads that
+// command's JSON back over a daemon socket to label a transmission. Defining it
+// once here is what stops those two drifting apart, since a command package may
+// not import another command package and would otherwise carry its own copy of
+// the field names.
+//
+// The channel fields are filled in whether or not anything is being received,
+// because a scanning radio names whichever channel it is stepping past at the
+// instant it is asked. Receiving is what separates the two, and it is the field
+// to read first.
+type Heard struct {
+	// Receiving reports whether audio is coming out of the scanner right now,
+	// and is what makes the rest of this either a transmission or a channel the
+	// scanner happened to be passing.
+	Receiving bool `json:"receiving"`
+
+	// List is the favorites list or database the channel was found in.
+	List string `json:"list,omitempty"`
+
+	// System and Department are where the channel sits in the scanner memory.
+	System     string `json:"system,omitempty"`
+	Department string `json:"department,omitempty"`
+
+	// Site is the trunked site being listened to, empty on a conventional
+	// system.
+	Site string `json:"site,omitempty"`
+
+	// Channel is the channel alpha tag, such as "Marlinton Dispatch".
+	Channel string `json:"channel,omitempty"`
+
+	// Frequency is the frequency the scanner is tuned to, carrying its own
+	// unit, and Talkgroup is the number on a trunked system.
+	//
+	// A trunked call has both, and that is deliberate. The talkgroup says who
+	// is talking and the frequency says where the radio actually is, which on a
+	// trunked system changes from one call to the next as the site hands out
+	// voice channels. Anything comparing a recording against a spectrum
+	// capture, or against what another receiver heard, needs the second one.
+	Frequency string `json:"frequency,omitempty"`
+	Talkgroup string `json:"talkgroup,omitempty"`
+
+	// Unit is the radio heard transmitting, when the scanner decoded one.
+	Unit string `json:"unit,omitempty"`
+
+	// Modulation is how the scanner is demodulating, such as "NFM".
+	Modulation string `json:"modulation,omitempty"`
+
+	// Digital is the digital format being decoded, such as "P25" or "DMR", and
+	// is empty when the transmission is analog.
+	//
+	// It answers the question Modulation looks like it should and does not.
+	// A channel programmed Auto and carrying P25 reports its modulation as
+	// "NFM", because that is what the demodulator settled on, so nothing else
+	// here distinguishes a digital transmission from an analog one.
+	Digital string `json:"digital,omitempty"`
+
+	// NAC is the network access code a P25 system is using, spelled the way the
+	// scanner spells it, such as "8A1h". It is empty on anything that is not
+	// P25, and on a P25 site the radio has not decoded yet.
+	NAC string `json:"nac,omitempty"`
+
+	// Signal is the number of bars the scanner is showing, from "0" to "5".
+	Signal string `json:"signal,omitempty"`
+
+	// RSSI is the received signal strength in the scanner own units. It reads
+	// "-999" when nothing is coming in, which is the scanner saying it has
+	// nothing to report rather than a measurement.
+	RSSI string `json:"rssi,omitempty"`
+
+	// Mode is what the scanner is doing, in its own words.
+	Mode string `json:"mode"`
 }
 
 // Info identifies a scanner found on the system.
@@ -787,6 +927,20 @@ type MenuItem struct {
 	Index string `xml:"Index,attr" json:"index"` // The scanner's own index for the entry, which is not its position
 }
 
+// MonitorList is the favorites list or database the scanner is working
+// through, which sits above the system in the hierarchy.
+type MonitorList struct {
+	// Name is the list's name, such as "Green Bank".
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the list.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Type is where the entries come from: "FL" for a favorites list, "FullDb"
+	// for the downloaded database, or "SWS" for a service search.
+	Type string `xml:"ListType,attr" json:"type,omitempty"`
+}
+
 // Named is an element carrying a name and an index, which is how the scanner
 // reports most database entries.
 type Named struct {
@@ -833,6 +987,30 @@ type Property struct {
 
 	// Mute is "Mute" or "Unmute".
 	Mute string `xml:"Mute,attr" json:"mute,omitempty"`
+
+	// Recording is "On" or "Off", and reports the scanner's own recorder,
+	// which writes to the memory card inside it and has nothing to do with
+	// anything this tool records. See SetRecording.
+	Recording string `xml:"Rec,attr" json:"recording,omitempty"`
+
+	// Digital is the digital format the scanner is decoding right now, and is
+	// "None" when what is coming in is analog or when nothing is.
+	//
+	// The scanner calls the attribute P25Status, which undersells it: the
+	// values run to DMR and NXDN as well, so it is the decoder's answer rather
+	// than a question about P25 specifically. Named for what it reports.
+	//
+	// This is the only field that says whether a transmission was digital.
+	// Modulation cannot: it is the demodulator's state, so an Auto channel
+	// carrying P25 still reads "NFM".
+	//
+	// It describes the transmission rather than the channel, which is not a
+	// distinction worth drawing until it bites. Measured on 2026-08-23, one
+	// conventional frequency read "None" across 84 polls of live audio and
+	// "P25" a quarter of an hour later. A channel can carry both, so asking
+	// "is this frequency digital" has no answer and only the reading taken
+	// during a given transmission means anything.
+	Digital string `xml:"P25Status,attr" json:"digital,omitempty"`
 }
 
 // Scanner is a connected scanner, with one method per command it understands.
@@ -870,9 +1048,42 @@ type ScannerInfo struct {
 
 	// System, Department, and Channel describe where the scanner is in the
 	// database. They are empty unless it is receiving or holding.
+	//
+	// Channel is the odd one out and is usually empty even then. The scanner
+	// does not send a Channel element on this firmware: a conventional channel
+	// arrives as ConvFrequency and a talkgroup as TGID, each carrying its own
+	// name. Use Tuned, which returns whichever of them applies. The field is
+	// kept because the protocol specification describes it and a different
+	// model or firmware may yet send one.
 	System     Named `xml:"System" json:"system"`
 	Department Named `xml:"Department" json:"department"`
 	Channel    Named `xml:"Channel" json:"channel"`
+
+	// List is the favorites list or database the scanner is working through,
+	// which sits above System. The scanner calls it the monitor list.
+	List MonitorList `xml:"MonitorList" json:"list,omitempty"`
+
+	// Site is the trunked site being listened to, and is absent on a
+	// conventional system.
+	Site Site `xml:"Site" json:"site,omitempty"`
+
+	// SiteFrequency is the frequency a trunked site is on, present only in
+	// trunked modes. It is where a trunked call's frequency comes from, since
+	// such a document carries no ConvFrequency at all.
+	SiteFrequency SiteFrequency `xml:"SiteFrequency" json:"siteFrequency,omitempty"`
+
+	// Frequency is the conventional channel the scanner is on, present only in
+	// conventional modes.
+	Frequency ConvFrequency `xml:"ConvFrequency" json:"frequency,omitempty"`
+
+	// Talkgroup is the trunked talkgroup the scanner is on, present only in
+	// trunked modes.
+	Talkgroup Talkgroup `xml:"TGID" json:"talkgroup,omitempty"`
+
+	// Unit is the radio heard transmitting on a trunked call, which the scanner
+	// sends as an element of its own beside TGID rather than as an attribute of
+	// it.
+	Unit UnitID `xml:"UnitID" json:"unit,omitempty"`
 
 	// Menu describes the menu the scanner is in, when it is in one.
 	Menu Named `xml:"MenuSummary" json:"menu"`
@@ -968,6 +1179,89 @@ type Signal struct {
 	Frequency Frequency `json:"frequency"`
 }
 
+// Site is the trunked site being listened to.
+//
+// It is a type of its own rather than a Named, because it carries one thing
+// beyond the name that nothing else reports: on a trunked call there is no
+// ConvFrequency to read the modulation from, and this is where it lives:
+//
+//	<Site Name="Manchester" Index="20034" Avoid="Off" Q_Key="None" Hold="Off" Mod="NFM" />
+type Site struct {
+	// Name is what the site is called, such as "Manchester".
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the site.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Modulation is how the scanner is demodulating the site, such as "NFM".
+	Modulation string `xml:"Mod,attr" json:"modulation,omitempty"`
+}
+
+// SiteFrequency is the frequency a trunked site is on, and what it is decoding
+// there.
+//
+// It is where a trunked call's frequency lives, which is not obvious: the
+// conventional side puts it on ConvFrequency, and a document with a talkgroup
+// in it has no ConvFrequency at all. Read off an SDS150 on a P25 call, this is
+// the voice channel the scanner has followed rather than the site's control
+// channel, and it matches the frequency on the radio's own screen:
+//
+//	<SiteFrequency Freq=" 856.762500MHz" IFX="Off" SAS="NAC 8A1h" SAD="NAC 8A1h" />
+type SiteFrequency struct {
+	// Frequency is the frequency the site is on, carrying its own unit and a
+	// leading space, such as " 856.762500MHz".
+	Frequency string `xml:"Freq,attr" json:"frequency,omitempty"`
+
+	// SubAudio is what the channel is set to decode below the audio, and
+	// SubAudioDecoded is what it actually found there. On a P25 system both
+	// carry the network access code, spelled "NAC 8A1h".
+	//
+	// Both are read because they are not the same claim. The setting says what
+	// the scanner was told to expect and the decode says what arrived, and on a
+	// site the radio has not decoded yet the second is "None" while the first
+	// still names a code.
+	SubAudio        string `xml:"SAS,attr" json:"subAudio,omitempty"`
+	SubAudioDecoded string `xml:"SAD,attr" json:"subAudioDecoded,omitempty"`
+}
+
+// Talkgroup is the trunked talkgroup the scanner is on.
+//
+// The attribute names were first taken from the protocol specification,
+// following the spelling ConvFrequency uses for the same identifiers, and were
+// confirmed against hardware on 2026-08-23 when a live P25 transmission came
+// through: Name and TGID arrived spelled as modelled, with the ID carrying the
+// same "TGID:" prefix the conventional element uses.
+//
+// UnitID was modelled here too, and that was wrong. A trunked document does not
+// put the transmitting radio on this element at all: it sends a UnitID element
+// of its own, beside this one. The attribute is kept because the specification
+// describes it and another model may yet send it, but the element is what a
+// real SDS150 uses and Tuned reads that first.
+type Talkgroup struct {
+	// Name is the talkgroup's alpha tag.
+	Name string `xml:"Name,attr" json:"name,omitempty"`
+
+	// Index is the scanner's own index for the talkgroup.
+	Index string `xml:"Index,attr" json:"index,omitempty"`
+
+	// Avoid is "Off", "T-Avoid" or "Avoid".
+	Avoid string `xml:"Avoid,attr" json:"avoid,omitempty"`
+
+	// ID is the talkgroup number itself.
+	ID string `xml:"TGID,attr" json:"id,omitempty"`
+
+	// UnitID is the radio heard transmitting on this talkgroup, and is empty on
+	// every document a real SDS150 has sent. See the UnitID element, which is
+	// where the scanner actually puts it.
+	UnitID string `xml:"U_Id,attr" json:"unitId,omitempty"`
+
+	// ServiceType is the category the talkgroup is filed under.
+	ServiceType string `xml:"SvcType,attr" json:"serviceType,omitempty"`
+
+	// Held reports whether the scanner is parked on this talkgroup.
+	Held string `xml:"Hold,attr" json:"held,omitempty"`
+}
+
 // Target names one entry in the scanner's database, for the commands that act
 // on a system, department, or channel.
 //
@@ -982,6 +1276,32 @@ type Target struct {
 	// when the keyword takes only one.
 	First  string
 	Second string
+}
+
+// UnitID is the radio heard transmitting on a trunked call.
+//
+// It is an element rather than an attribute of the talkgroup, which is the
+// whole reason this type exists. Modelling it as a U_Id attribute on TGID, the
+// way the conventional element carries it, reads empty on every document the
+// scanner sends, so the transmitting radio never reached a recording.
+//
+// Captured from an SDS150 on 2026-08-23, on a live P25 call:
+//
+//	<TGID Name="Fire Dispatch" TGID="TGID:10003" ... />
+//	<UnitID Name="UID:101" U_Id="UID:101" />
+//
+// The element is always sent and is empty between calls, written as a bare
+// <UnitID /> with no attributes at all rather than as the "UID None" the
+// conventional element uses for the same idea. Both spellings of absence end up
+// empty here, since present handles one and an absent attribute is already the
+// other.
+//
+// Name and U_Id carried the same value on every capture. U_Id is read because
+// it is the one the specification names; Name on this element is the scanner's
+// own label for the same thing rather than an alpha tag for the radio.
+type UnitID struct {
+	// ID is the radio's identifier, such as "101", and is empty between calls.
+	ID string `xml:"U_Id,attr" json:"id,omitempty"`
 }
 
 // Waterfall describes the waterfall display's tuning.

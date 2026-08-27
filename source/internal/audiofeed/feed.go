@@ -168,6 +168,25 @@ func (f *Feed) Subscribers() int {
 	return len(f.subs)
 }
 
+// drop counts one frame this listener was not fast enough to take, and says so
+// the first time it happens to it.
+//
+// Only the first, because a listener that has fallen behind drops steadily and
+// a line per frame would be fifty a second saying the same thing. The first one
+// is the event worth having: it carries the moment the audio started being
+// late, which is what a maintainer is looking for afterwards, and the running
+// total is on the listener already for anybody who wants the rest.
+//
+// The caller holds the feed's lock, which is what makes reading the count back
+// straight after adding to it safe: nothing else is publishing to this listener
+// while that happens.
+func (s *Sub) drop() {
+	if s.dropped.Add(1) == 1 {
+		s.feed.log.Warn("dropping audio frames for a listener that is behind",
+			"depth", cap(s.frames))
+	}
+}
+
 // offer puts one frame in front of this listener without waiting for it.
 //
 // The caller holds the feed's lock, which is what makes the send safe: Close
@@ -195,24 +214,5 @@ func (s *Sub) offer(frame Frame) {
 	case s.frames <- frame:
 	default:
 		s.drop()
-	}
-}
-
-// drop counts one frame this listener was not fast enough to take, and says so
-// the first time it happens to it.
-//
-// Only the first, because a listener that has fallen behind drops steadily and
-// a line per frame would be fifty a second saying the same thing. The first one
-// is the event worth having: it carries the moment the audio started being
-// late, which is what a maintainer is looking for afterwards, and the running
-// total is on the listener already for anybody who wants the rest.
-//
-// The caller holds the feed's lock, which is what makes reading the count back
-// straight after adding to it safe: nothing else is publishing to this listener
-// while that happens.
-func (s *Sub) drop() {
-	if s.dropped.Add(1) == 1 {
-		s.feed.log.Warn("dropping audio frames for a listener that is behind",
-			"depth", cap(s.frames))
 	}
 }

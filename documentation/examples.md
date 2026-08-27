@@ -40,11 +40,17 @@ built-in table.
 ## What is it doing right now
 
 ```
+radiocli receiving                # what it is hearing at this instant
 radiocli scanning                 # the channels being scanned   (writes)
 radiocli scanning systems         # the systems being cycled
 radiocli screen                   # the display, as text
 radiocli menu                     # the menu it is showing, if any
 ```
+
+`receiving` is the one to reach for when the scanner has stopped on something
+and you want to know what. Read its first line before the rest: a scanning radio
+still names a channel, because it answers with whichever one it happened to be
+checking, and only `receiving: yes` says it actually stopped there.
 
 `scanning systems` is the one to reach for. It is complete rather than a
 sample, and it works whether you are scanning your own lists or the full
@@ -129,6 +135,70 @@ cover:
 ```
 $ radiocli tune 1030kHz
 error: the scanner cannot receive 1.0300 MHz: it covers 25.0000 MHz to 512.0000 MHz, ...
+```
+
+## Hearing it, and keeping what it hears
+
+The USB cable carries commands, not sound. To hear the scanner on the computer,
+run an audio cable from its headphone or record socket into an input, then find
+out what that input is called:
+
+```
+radiocli audio                    # the sound inputs and speakers on this computer
+```
+
+With the cable in, you can listen on this computer's own speakers:
+
+```
+radiocli audio listen --input "USB Audio CODEC"
+```
+
+That plays the transmissions and keeps the hiss between them out. Add
+`--squelch=false` to hear everything the input carries, which is how to tell a
+connected cable from one that is not.
+
+To send the audio to another program instead:
+
+```
+radiocli audio output --input "USB Audio CODEC" | ffplay -f s16le -ar 48000 -ac 1 -i -
+```
+
+Or keep what it hears, one file per transmission, playing each as it lands:
+
+```
+radiocli --device $SDS audio record ~/scanner --input "USB Audio CODEC" --listen
+```
+
+That writes a WAV every time the scanner stops on something, with a JSON file
+beside it naming the system, department, channel and frequency. It needs
+`--device` as well as the audio, because that is what labels every recording and
+what lets it warn you when the input turns out not to be the scanner.
+
+Each of those JSON files describes one recording, so a night of traffic is
+searchable afterwards with nothing to install:
+
+```
+find ~/scanner -name '*.json' -exec jq -r 'select(.channel == "MARLINTON DISPATCH") | .file' {} +
+find ~/scanner -name '*.json' -exec jq -r 'select(.duration > 10) | "\(.duration)s \(.channel)"' {} +
+```
+
+If recordings sound thin, hollow, or unexpectedly quiet, the scanner's headphone
+socket is wired the wrong way round. Recording works around it on its own, but
+one command fixes it for everything else too:
+
+```
+radiocli --device $SDS headphone                  # which way is it wired?
+radiocli --device $SDS headphone set in-phase     # the one to want   (writes)
+```
+
+To listen and record at the same time, or to keep using the scanner while a
+recording runs, start a daemon holding both and leave `--input` off. A sound
+input can only be open once, and sharing it is what the daemon is for:
+
+```
+radiocli daemon --device $SDS --audio "USB Audio CODEC" &
+radiocli --device $SDS audio record ~/scanner        # in one terminal
+radiocli --device $SDS audio listen                  # in another, at the same time
 ```
 
 ## Listening to the weather
