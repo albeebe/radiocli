@@ -25,7 +25,7 @@ import (
 )
 ```
 
-The rest are supporting: `audioin`, `audioout` and `opusenc` wall off the audio libraries, `audiofeed` serves one sound card to many listeners, `audiogate` finds the transmissions in that audio, `wavfile` writes one of them to a playable file, `recordings` files those on disk with their descriptions and a searchable index, `buildinfo` carries what the binary was built from, `cmdline` splits a typed line into arguments, `render` holds the three formatters every command's output uses, and `commandtree` reads the cobra tree into plain data so anything presenting the tool can offer every command without keeping its own list.
+The rest are supporting: `audioin`, `audioout` and `opusenc` wall off the audio libraries, `audiofeed` serves one sound card to many listeners, `audiogate` finds the transmissions in that audio, `wavfile` writes one of them to a playable file, `recordings` files those on disk, each beside a JSON description of what it holds, `buildinfo` carries what the binary was built from, `cmdline` splits a typed line into arguments, `render` holds the formatters and the colour-aware warning every command's output uses, and `commandtree` reads the cobra tree into plain data so anything presenting the tool can offer every command without keeping its own list.
 
 Each package has its own README with the detail.
 
