@@ -126,6 +126,20 @@ it is not worth risking.
 | `-writes` | on | The tests that change the scanner. `-writes=false` for a run that only reads. |
 | `-port` | whichever scanner is attached | The serial port to test against, when more than one is plugged in. |
 | `-pace` | whatever the tool chooses | Passed as `--pace` to every command, to run the whole suite slowly or quickly. |
+| `-audio` | none | The sound input the scanner's audio is cabled into, named as `radiocli audio` names it. Without it the test that records is skipped. |
+
+The audio the scanner produces leaves it through the headphone socket rather
+than the USB cable, so no run can find it on its own. Name the input the cable
+arrives on and the recorder is tested for real:
+
+```
+go run . -audio "Cubilux CB5 Line In"
+```
+
+A run allowed to write puts the scanner on the NOAA weather channels for that
+test. The broadcast is continuous, so there is always something to record,
+where a scanning radio on a quiet night gives the recorder nothing to catch and
+leaves the half of the test that reads what landed on disk unrun.
 
 ## What it does to the scanner
 
@@ -321,7 +335,9 @@ testing/
   suite/             the tests themselves
 ```
 
-Inside `suite/`, one file per command, named after it, plus:
+Inside `suite/`, one file per command, named after it. A command whose
+subcommands are tests of their own splits the same way: `audio` is covered by
+`listen_test.go` and `record_test.go`, named for the subcommands. Plus:
 
 | File | What is in it |
 | ---- | ------------- |

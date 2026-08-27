@@ -79,10 +79,32 @@ func TestAudioRecord_RefusesATemplateThatNamesEveryFileTheSame(t *testing.T) {
 // It is skipped unless -audio names an input, because the audio reaches this
 // computer over a cable somebody has to have run, and nothing in the tool can
 // know whether they have.
+//
+// A run that may change the scanner puts it on the NOAA weather channels first.
+// Left scanning, the test records whatever the air happens to carry, and a quiet
+// twenty seconds means nothing lands on disk and the interesting half of the
+// test never runs. The weather broadcast is continuous, so there is always
+// something to record, and a transmission that never ends is written out when
+// the recorder is stopped. A run forbidden from writing, or one with no NOAA
+// transmitter in range, records what is being scanned and settles for whatever
+// it catches.
 func TestAudioRecord_WritesRecordings(t *testing.T) {
 	needScanner(t)
 	if *audioInput == "" {
 		t.Skip("no sound input named: pass -audio \"<input>\" to record from the scanner")
+	}
+
+	// Guaranteed audio, when the run is allowed to reach for it.
+	guaranteed := false
+	if *writes {
+		t.Cleanup(func() {
+			mustRun(t, "weather", "stop")
+			mustRun(t, "scan")
+		})
+
+		var started weatherReport
+		mustJSON(t, &started, "weather")
+		guaranteed = started.Receiving
 	}
 
 	dir := t.TempDir()
@@ -115,6 +137,12 @@ func TestAudioRecord_WritesRecordings(t *testing.T) {
 		t.Fatalf("looking through %s: %v", dir, err)
 	}
 	if len(sidecars) == 0 {
+		// On the weather channels there was something to record for every second
+		// the recorder was running, so an empty destination is the recorder's
+		// failure rather than a quiet night.
+		if guaranteed {
+			t.Fatalf("nothing was recorded from the weather broadcast in %v", recordFor)
+		}
 		t.Skip("nothing was transmitted while the recorder was running")
 	}
 
