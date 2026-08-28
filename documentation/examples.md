@@ -153,9 +153,10 @@ With the cable in, you can listen on this computer's own speakers:
 radiocli audio listen --input "USB Audio CODEC"
 ```
 
-That plays the transmissions and keeps the hiss between them out. Add
-`--squelch=false` to hear everything the input carries, which is how to tell a
-connected cable from one that is not.
+That plays everything the input carries, hiss included, which is how to tell a
+connected cable from one that is not. Add `--squelch` to play only the
+transmissions and keep the hiss between them out, which is the better setting
+for leaving running.
 
 To send the audio to another program instead:
 

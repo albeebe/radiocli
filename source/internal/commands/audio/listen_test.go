@@ -149,7 +149,7 @@ func listenFrames(frames []audiofeed.Frame) chan audiofeed.Frame {
 //
 // Test cases:
 //   - Wiring: the command carries its name and its flags
-//   - Defaults: the squelch is on and the speakers are this computer's own
+//   - Defaults: the squelch is off and the speakers are this computer's own
 //   - Runs: executing the command reaches runListen, which refuses it in a daemon
 func Test_newListen(t *testing.T) {
 	// Verify that the command is described the way the tool wires it
@@ -172,8 +172,8 @@ func Test_newListen(t *testing.T) {
 	t.Run("Defaults", func(t *testing.T) {
 		cmd := newListen(appcontext.New())
 
-		if got := cmd.Flags().Lookup("squelch").DefValue; got != "true" {
-			t.Errorf("--squelch defaults to %q, wanted the transmissions only", got)
+		if got := cmd.Flags().Lookup("squelch").DefValue; got != "false" {
+			t.Errorf("--squelch defaults to %q, wanted everything the input carries", got)
 		}
 		if got := cmd.Flags().Lookup("speaker").DefValue; got != "" {
 			t.Errorf("--speaker defaults to %q, wanted this computer's own", got)

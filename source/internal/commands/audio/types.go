@@ -324,6 +324,7 @@ type recordOptions struct {
 	maxDuration time.Duration // Longest a recording may run before it is split
 	normalize   bool          // Scale each recording up to just under full scale once it has ended, on unless --normalize=false
 	listen      bool          // Play the transmissions as they are recorded, off unless --listen
+	squelch     bool          // Play only the transmissions with --listen, off unless --squelch
 	speaker     string        // Speakers to play on with --listen, empty for whichever this computer is already using
 	gain        float64       // Decibels to turn the played audio up by, as --gain gave it
 	buffer      time.Duration // How much audio stands between the radio and the speakers with --listen
@@ -377,6 +378,12 @@ type recorder struct {
 	// player is the speakers the transmissions are being played on, nil unless
 	// --listen asked for them.
 	player player
+
+	// squelch is whether the speakers are opened only for transmissions. Off
+	// by default, which plays the input as it arrives the way the scanner's own
+	// speaker does, so a run that goes quiet is heard going quiet rather than
+	// sounding the same as one that has stopped.
+	squelch bool
 
 	// speakers reports what the player did with each second of audio, for
 	// somebody watching a run that sounds wrong.

@@ -537,13 +537,14 @@ func Test_reportRecording(t *testing.T) {
 // Test cases:
 //   - Recording: the input and the destination are named, on stderr
 //   - Listening: the speakers are named as well when there are any
+//   - Squelched: the line says the transmissions rather than everything
 //   - DefaultSpeakers: an unnamed default is described rather than left blank
 func Test_announceRecording(t *testing.T) {
 	// Verify that what is being recorded and where it is going are said, and
 	// that stdout is left for the recordings themselves.
 	t.Run("Recording", func(t *testing.T) {
 		app, out, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", nil)
+		announceRecording(app, "USB Audio CODEC", "./rec", nil, false)
 
 		if out.Len() != 0 {
 			t.Errorf("wrote %q to stdout, want it kept for the recordings", out.String())
@@ -560,10 +561,25 @@ func Test_announceRecording(t *testing.T) {
 	// left on and the audio may be going somewhere unexpected.
 	t.Run("Listening", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{name: "MacBook Pro Speakers"})
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{name: "MacBook Pro Speakers"}, false)
 
 		if !strings.Contains(errs.String(), "MacBook Pro Speakers") {
 			t.Errorf("wrote %q, want the speakers named", errs.String())
+		}
+		// The default plays the lot, so the line has to say so rather than
+		// promising only the transmissions.
+		if !strings.Contains(errs.String(), "everything the input carries") {
+			t.Errorf("wrote %q, want it to say everything is played", errs.String())
+		}
+	})
+
+	// Verify the squelched line, which is what --squelch asks for.
+	t.Run("Squelched", func(t *testing.T) {
+		app, _, errs := recorderApp()
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{}, true)
+
+		if !strings.Contains(errs.String(), "each transmission") {
+			t.Errorf("wrote %q, want it to say only the transmissions are played", errs.String())
 		}
 	})
 
@@ -571,7 +587,7 @@ func Test_announceRecording(t *testing.T) {
 	// put a name to, is described rather than quoted as nothing.
 	t.Run("DefaultSpeakers", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{})
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{}, false)
 
 		if !strings.Contains(errs.String(), "this computer's own speakers") {
 			t.Errorf("wrote %q, want the default speakers described", errs.String())
@@ -1287,6 +1303,21 @@ func Test_runRecord(t *testing.T) {
 			destination: t.TempDir(), buffer: audioout.DefaultBuffer, bufferSet: true})
 		if err == nil || !strings.Contains(err.Error(), "--listen") {
 			t.Fatalf("got %v, want it to say --buffer needs --listen", err)
+		}
+	})
+
+	// Verify that asking for the squelch with nothing playing is refused the
+	// way the other playback flags are. It decides what reaches the speakers
+	// and nothing else, so a run that passed it without --listen would have
+	// changed nothing at all.
+	t.Run("SquelchWithoutListen", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+
+		err := runRecord(context.Background(), app, recordOptions{
+			destination: t.TempDir(), squelch: true})
+		if err == nil || !strings.Contains(err.Error(), "--listen") {
+			t.Fatalf("got %v, want it to say --squelch needs --listen", err)
 		}
 	})
 
@@ -2356,7 +2387,7 @@ func Test_recorderMonitor(t *testing.T) {
 	// something to measure a transmission against.
 	gated := func(p player) (*recorder, uint32) {
 		app, _, _ := recorderApp()
-		r := &recorder{app: app, player: p, gate: audiogate.New(audiogate.Options{
+		r := &recorder{app: app, player: p, squelch: true, gate: audiogate.New(audiogate.Options{
 			Hang: 200 * time.Millisecond, MinDuration: 500 * time.Millisecond,
 		})}
 
@@ -2406,6 +2437,30 @@ func Test_recorderMonitor(t *testing.T) {
 
 		if p.audible() != 10*len(loud[0].PCM) {
 			t.Errorf("%d bytes were played, want every frame of the transmission", p.audible())
+		}
+	})
+
+	// Verify the default, which is the squelch off: everything the input
+	// carries reaches the speakers, quiet included, the way the scanner's own
+	// speaker gives it.
+	t.Run("SquelchOff", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		p := &fakePlayer{}
+		r := &recorder{app: app, player: p, gate: audiogate.New(audiogate.Options{
+			Hang: 200 * time.Millisecond, MinDuration: 500 * time.Millisecond,
+		})}
+
+		quiet, _ := feed(0, 40, quietLevel)
+		for _, f := range quiet {
+			r.gate.Offer(f)
+			r.monitor(f)
+		}
+
+		// The noise floor is not a transmission, so a squelched run would have
+		// played none of it.
+		if p.audible() != 40*len(quiet[0].PCM) {
+			t.Errorf("%d bytes were heard of %d, want the input played as it arrives",
+				p.audible(), 40*len(quiet[0].PCM))
 		}
 	})
 

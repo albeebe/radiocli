@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
@@ -31,12 +32,12 @@ func newListen(app *appcontext.App) *cobra.Command {
 		Use:   "listen",
 		Short: "Play the scanner's audio on this computer's speakers",
 		Long: "Listen plays the scanner on this computer, until you stop it.\n\n" +
-			"By default it plays only the transmissions. The hiss between them is not\n" +
-			"worth listening to for an evening, and the same detector that finds them for\n" +
-			"\"audio record\" decides when to open the speakers. It opens them on the first\n" +
-			"frame above the noise floor rather than waiting to be sure, so nothing of the\n" +
-			"first word is lost. Pass --squelch=false to hear the input exactly as it\n" +
-			"arrives, hiss included, the way the scanner's own speaker does.\n\n" +
+			"By default it plays the input exactly as it arrives, hiss and all, the way\n" +
+			"the scanner's own speaker does with the squelch down. Pass --squelch to play\n" +
+			"only the transmissions instead: the same detector that finds them for \"audio\n" +
+			"record\" then decides when to open the speakers, and it opens them on the\n" +
+			"first frame above the noise floor rather than waiting to be sure, so nothing\n" +
+			"of the first word is lost.\n\n" +
 			"The audio comes from a daemon, which is what lets this run while something\n" +
 			"else is recording the same radio: a sound input can only be open once, and\n" +
 			"sharing it is the daemon's whole job. --input opens a sound input directly\n" +
@@ -55,8 +56,8 @@ func newListen(app *appcontext.App) *cobra.Command {
 		"which side of the cable the scanner is on: \"auto\", \"left\", \"right\" or \"mix\"")
 	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
 		"speakers to play on, as \"radiocli audio\" names them (default: this computer's own)")
-	cmd.Flags().BoolVar(&opts.squelch, "squelch", true,
-		"play only the transmissions; --squelch=false plays everything the input carries")
+	cmd.Flags().BoolVar(&opts.squelch, "squelch", false,
+		"play only the transmissions; the default plays everything the input carries")
 	cmd.Flags().DurationVar(&opts.hang, "hang", audiogate.DefaultQuietHang,
 		"how long the audio must stay quiet before the speakers close again")
 	cmd.Flags().Float64Var(&opts.gain, "gain", 0,
@@ -200,7 +201,15 @@ func (m *playbackMeter) observe(app *appcontext.App, p player, played bool) {
 	app.Log.Debug("playback",
 		"played", fmt.Sprintf("%d/%d", m.played, m.seen),
 		"starved", stats.Starved-m.last.Starved,
-		"dropped", stats.Dropped-m.last.Dropped)
+		"dropped", stats.Dropped-m.last.Dropped,
+		// Absolute rather than a difference: it is a level, and which way it is
+		// creeping is the whole point of reading it every second.
+		"waiting", (time.Duration(stats.Waiting) * time.Second /
+			time.Duration(audiofeed.FrameBytes*50)).Round(time.Millisecond),
+		// What the device is actually asking in, which is not necessarily what
+		// --buffer asked it for. See audioout.Stats.Period.
+		"period", (time.Duration(stats.Period) * time.Second /
+			audioout.SampleRate).Round(time.Millisecond))
 
 	m.played, m.seen, m.last = 0, 0, stats
 }

@@ -238,13 +238,15 @@ it.
 path from a radio on a shelf to a speaker on a desk. It keeps nothing and writes
 nothing.
 
-By default it plays only the transmissions. Between them a scanner's output is
-hiss, and an evening of that is not worth listening to, so the same detector
-that decides where a recording begins decides when to open the speakers. This
-and [`audio record`](#audio-record) therefore agree about what a transmission
-is: if one would write a file, the other would play it. Pass `--squelch=false`
-to hear the input exactly as it arrives, hiss included, the way the scanner's
-own speaker does.
+By default it plays the input exactly as it arrives, hiss included, the way the
+scanner's own speaker does with the squelch down. The hiss is information: it
+says the lead is connected and carrying something, so a channel that has gone
+quiet sounds different from a tool that has stopped.
+
+Pass `--squelch` to play only the transmissions instead. The same detector that
+decides where a recording begins then decides when to open the speakers, so this
+and [`audio record`](#audio-record) agree about what a transmission is: if one
+would write a file, the other would play it.
 
 **The audio comes from a daemon, not from this command.** A sound input can only
 be open once, and sharing it is the daemon's whole job, which is what lets this
@@ -264,18 +266,18 @@ nothing else can listen or record while it does. To hear and record at once from
 a single directly opened input, use [`audio record --listen`](#audio-record)
 instead.
 
-A quarter of a second of audio is held in front of the speakers, so everything
+Forty milliseconds of audio is held in front of the speakers, so everything
 plays that far behind the radio. The cushion is what absorbs everything that
 can go wrong between the cable and the speakers, from a frame arriving late to
-the operating system coming for audio at a bad moment, and a night of listening
-to real traffic found artifacts below this tool that went away when the cushion
-grew. `--buffer` moves the trade: smaller plays sooner, bigger plays more
-smoothly. That matters because you are probably sitting next to the radio,
+the operating system coming for audio at a bad moment. `--buffer` moves the
+trade: smaller plays sooner, bigger plays more smoothly on a computer that
+struggles to keep up. That matters because you are probably sitting next to the
+radio,
 comparing the two.
 
-The squelch costs nothing on top of it: the speakers open on the first frame
-above the noise floor, rather than waiting for the transmission to prove itself
-long enough to be worth a file.
+The squelch, when it is asked for, costs nothing on top of it: the speakers
+open on the first frame above the noise floor, rather than waiting for the
+transmission to prove itself long enough to be worth a file.
 
 That is the one place this and `audio record` deliberately disagree. A blip too
 short to be recorded is still heard, the way it would be on the scanner's own
@@ -292,10 +294,10 @@ radiocli audio listen [flags]
 | Parameter | Required | Default | Description |
 | --------- | -------- | ------- | ----------- |
 | `--speaker` | No | this computer's own | Which speakers to play on, as `radiocli audio` names them. |
-| `--squelch` | No | `true` | Play only the transmissions. `--squelch=false` plays everything. |
+| `--squelch` | No | `false` | Play only the transmissions. The default plays everything the input carries. |
 | `--hang` | No | `2s` | How long the audio must stay quiet before the speakers close again. |
 | `--gain` | No | `0` | Decibels to turn the audio up by on the way to the speakers. |
-| `--buffer` | No | `250ms` | How much audio to keep between the radio and the speakers. |
+| `--buffer` | No | `40ms` | How much audio to keep between the radio and the speakers. |
 | `--input` | No | none | Open this sound input directly instead of asking a daemon. |
 | `--channel` | No | `auto` | Which side of the cable the scanner is on, for `--input`. |
 
@@ -318,12 +320,13 @@ a coin toss you could not see.
 
 ### `--squelch`
 
-On by default. The speakers open when a transmission starts and close once the
-audio has been quiet for `--hang`.
+Off by default, which plays every sample the input carries. That is what makes a
+cable checkable: hiss means the lead is connected and carrying something, and
+digital silence means it is not.
 
-`--squelch=false` plays every sample the input carries, which is worth having
-when you are checking a cable: hiss means the lead is connected and carrying
-something, and digital silence means it is not.
+Pass `--squelch` and the speakers open when a transmission starts and close once
+the audio has been quiet for `--hang`, which is the better setting for leaving
+running for an evening.
 
 ### `--hang`
 
@@ -349,10 +352,10 @@ too much gain plays as flattened speech: turn it down.
 How much audio stands between the radio and the speakers, written as a Go
 duration such as `250ms` or `1s`. Everything is heard this far behind the
 radio, and everything that can go wrong underneath the playing has this long
-to put itself right before it is audible. The default is a quarter of a
-second. Bigger plays more smoothly on a busy computer, smaller plays sooner,
-and below about `100ms` you are trading audible pops for a lateness only a
-side-by-side comparison with the scanner's own speaker can hear. It has to be
+to put itself right before it is audible. The default is `40ms`, which is two
+frames and as narrow as it goes, so the speakers are as close to live as the
+tool can make them. Raise it if playback breaks up on a busy computer: bigger
+plays more smoothly, and the whole range up to `500ms` is available. It has to be
 between `40ms` and `500ms`.
 
 ### `--input`
@@ -399,14 +402,14 @@ $ radiocli audio listen
 Playing on a named set of speakers rather than this computer's own:
 
 ```
-$ radiocli audio listen --speaker "Cubilux CB5 Headphones"
+$ radiocli audio listen --squelch --speaker "Cubilux CB5 Headphones"
 Playing the transmissions from "Cubilux CB5 Line In" on "Cubilux CB5 Headphones". Press Ctrl-C to stop.
 ```
 
 Checking a cable, with no scanner and no daemon involved. The hiss is the point:
 
 ```
-$ radiocli audio listen --input "Cubilux CB5 Line In" --squelch=false
+$ radiocli audio listen --input "Cubilux CB5 Line In"
 Playing everything the input carries from "Cubilux CB5 Line In" on this computer's own speakers. Press Ctrl-C to stop.
 ```
 
@@ -465,9 +468,9 @@ what arrives in real time is played in real time.
 All of them exit with status `1`.
 
 Hearing nothing at all, with no error, means the audio is silent rather than
-absent. With `--squelch=false` a working cable hisses, so silence there is the
-lead, the scanner's volume, or on macOS the microphone permission having been
-refused. The same warning `audio output` prints appears here too when an input
+absent. With the squelch off, which is the default, a working cable hisses, so
+silence there is the lead, the scanner's volume, or on macOS the microphone
+permission having been refused. The same warning `audio output` prints appears here too when an input
 delivers perfect digital zero for several seconds.
 
 ---
@@ -709,10 +712,11 @@ radiocli audio record [destination] [flags]
 | `--min-duration` | No | `250ms` | Discard any transmission shorter than this. |
 | `--max-duration` | No | `5m` | Split any transmission longer than this. |
 | `--normalize` | No | `true` | Scale each recording up so its loudest moment is just under full scale. `--normalize=false` keeps the level exactly as it arrived. |
-| `--listen` | No | `false` | Play each transmission on this computer's speakers as it is recorded. |
+| `--listen` | No | `false` | Play the radio on this computer's speakers as it is recorded. |
+| `--squelch` | No | `false` | With `--listen`, play only the transmissions. The default plays everything the input carries. Does not change what is recorded. |
 | `--speaker` | No | this computer's own | Which speakers `--listen` plays on, as `radiocli audio` names them. |
 | `--gain` | No | `0` | Decibels `--listen` turns the audio up by. Does not change what is recorded. |
-| `--buffer` | No | `250ms` | How much audio `--listen` keeps between the radio and the speakers. Does not change what is recorded. |
+| `--buffer` | No | `40ms` | How much audio `--listen` keeps between the radio and the speakers. Does not change what is recorded. |
 
 ### `[destination]`
 
@@ -906,13 +910,21 @@ something long enough to be split and the join matters.
 
 ### `--listen`
 
-Plays each transmission on this computer's speakers while it is being recorded.
-Off by default, because a recorder is usually left running somewhere nobody is
-sitting.
+Plays the radio on this computer's speakers while it is being recorded. Off by
+default, because a recorder is usually left running somewhere nobody is sitting.
 
 It is the same audio, played rather than written, so nothing is opened twice and
 a directly opened `--input` still works: this is the way to hear and record at
-once without a daemon.
+once without a daemon. What is played never changes what is recorded.
+
+It plays everything the input carries, hiss and all, the way the scanner's own
+speaker does. Add [`--squelch`](#--squelch-1) to hear only the transmissions.
+
+### `--squelch`
+
+Plays only the transmissions, rather than everything the input carries. Off by
+default. It decides what reaches the speakers and nothing else: what is recorded
+is the scanner's decision either way, so this cannot change a file.
 
 The speakers open on the first frame above the noise floor and stay open for as
 long as the transmission does, `--hang` included. They deliberately do not wait
@@ -923,6 +935,9 @@ which in back and forth traffic is most of the first word each time.
 So what you hear and what you keep are not quite the same. A transmission
 shorter than `--min-duration` is heard and not written, which is what a
 scanner's own speaker does with a blip. Everything that is written is heard.
+
+Asking for it without `--listen` is refused, since there would be nothing for it
+to decide about.
 
 ### `--speaker`
 
@@ -1167,6 +1182,7 @@ The colour is dropped when stderr is not a terminal, and when `NO_COLOR` is set.
 | `error: "audio record" runs until it is stopped, so it cannot be run inside a daemon` | The command was sent to a daemon to run, rather than run in a terminal. | Run it in a terminal of its own. |
 | `error: --speaker says where to play the transmissions, which only means something with --listen` | `--speaker` was given on its own. | Add `--listen`, or drop `--speaker`. |
 | `error: --buffer sets how far behind the radio the speakers play, which only means something with --listen` | `--buffer` was given on its own. | Add `--listen`, or drop `--buffer`. |
+| `error: --squelch decides what reaches the speakers, which only means something with --listen` | `--squelch` was given on its own. | Add `--listen`, or drop `--squelch`. |
 | `error: no speaker by that name: "..."` | `--speaker` named something not attached. | Run [`radiocli audio`](#audio) to see the names under `SPEAKERS`. |
 | `error: the scanner stopped answering, so recording has stopped: ...` | The scanner was unplugged or switched off while recording. | Reconnect it and start again. The transmission in progress is written out before the command exits. |
 | `error: <port> is in use by another radiocli` | Another invocation has the scanner and no daemon is sharing it. | Wait for it, or start a [`daemon`](daemon.md). |
