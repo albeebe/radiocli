@@ -28,7 +28,7 @@ radiocli audio -o json
 radiocli --device $SDS audio listen
 
 # The same, on a named set of speakers, with the hiss between transmissions left in.
-radiocli --device $SDS audio listen --speaker "Cubilux CB5 Headphones" --squelch
+radiocli --device $SDS audio listen --squelch
 
 # Send the audio to another program instead, through a daemon holding the input.
 radiocli --device $SDS audio output | ffplay -f s16le -ar 48000 -ac 1 -i -

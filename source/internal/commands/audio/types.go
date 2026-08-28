@@ -154,8 +154,8 @@ var listSources = audioin.Sources
 // which is not a nil interface however it reads. That is harmless in both
 // directions: every caller checks the error before it touches the player, and
 // every method on *audioout.Player is safe on nil anyway.
-var openPlayer = func(name string, buffer time.Duration) (player, error) {
-	return audioout.Open(name, buffer)
+var openPlayer = func(buffer time.Duration) (player, error) {
+	return audioout.Open(buffer)
 }
 
 // silence is handed to the speakers a frame at a time between transmissions, to
@@ -195,9 +195,6 @@ type player interface {
 	// Close stops the device and gives back what the library allocated.
 	Close()
 
-	// Name is what the operating system calls the output being played on.
-	Name() string
-
 	// Play hands over audio to be played as soon as the speakers ask for it.
 	Play(pcm []byte)
 
@@ -212,7 +209,6 @@ type player interface {
 type listenOptions struct {
 	input   string  // Sound input to open directly, empty to take the audio from a daemon
 	channel string  // Which side of the cable the scanner is on, as --channel gave it
-	speaker string  // Speakers to play on, empty for whichever this computer is already using
 	squelch bool    // Play only the transmissions, off when --squelch=false
 	gain    float64 // Decibels to turn the audio up by, as --gain gave it
 
@@ -325,7 +321,6 @@ type recordOptions struct {
 	normalize   bool          // Scale each recording up to just under full scale once it has ended, on unless --normalize=false
 	listen      bool          // Play the transmissions as they are recorded, off unless --listen
 	squelch     bool          // Play only the transmissions with --listen, off unless --squelch
-	speaker     string        // Speakers to play on with --listen, empty for whichever this computer is already using
 	gain        float64       // Decibels to turn the played audio up by, as --gain gave it
 	buffer      time.Duration // How much audio stands between the radio and the speakers with --listen
 	bufferSet   bool          // Whether --buffer was typed, so asking for it without --listen can be refused

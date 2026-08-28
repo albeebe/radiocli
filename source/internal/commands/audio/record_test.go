@@ -538,7 +538,6 @@ func Test_reportRecording(t *testing.T) {
 //   - Recording: the input and the destination are named, on stderr
 //   - Listening: the speakers are named as well when there are any
 //   - Squelched: the line says the transmissions rather than everything
-//   - DefaultSpeakers: an unnamed default is described rather than left blank
 func Test_announceRecording(t *testing.T) {
 	// Verify that what is being recorded and where it is going are said, and
 	// that stdout is left for the recordings themselves.
@@ -557,14 +556,14 @@ func Test_announceRecording(t *testing.T) {
 		}
 	})
 
-	// Verify that the speakers are said too, since --listen is easy to have
-	// left on and the audio may be going somewhere unexpected.
+	// Verify that the playing is said too, since --listen is easy to have left
+	// on and it is worth knowing the audio is going to the speakers as well.
 	t.Run("Listening", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{name: "MacBook Pro Speakers"}, false)
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{}, false)
 
-		if !strings.Contains(errs.String(), "MacBook Pro Speakers") {
-			t.Errorf("wrote %q, want the speakers named", errs.String())
+		if !strings.Contains(errs.String(), "this computer's speakers") {
+			t.Errorf("wrote %q, want the speakers described", errs.String())
 		}
 		// The default plays the lot, so the line has to say so rather than
 		// promising only the transmissions.
@@ -580,17 +579,6 @@ func Test_announceRecording(t *testing.T) {
 
 		if !strings.Contains(errs.String(), "each transmission") {
 			t.Errorf("wrote %q, want it to say only the transmissions are played", errs.String())
-		}
-	})
-
-	// Verify that the system's own output, which the library does not always
-	// put a name to, is described rather than quoted as nothing.
-	t.Run("DefaultSpeakers", func(t *testing.T) {
-		app, _, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{}, false)
-
-		if !strings.Contains(errs.String(), "this computer's own speakers") {
-			t.Errorf("wrote %q, want the default speakers described", errs.String())
 		}
 	})
 }
@@ -1267,21 +1255,6 @@ func Test_runRecord(t *testing.T) {
 	// Verify that naming speakers without asking to hear anything is caught
 	// rather than quietly ignored, since a flag that does nothing reads as a
 	// flag that did something.
-	t.Run("SpeakerWithoutListen", func(t *testing.T) {
-		app, _, _ := recorderApp()
-		app.Config.Device = "/dev/example"
-
-		err := runRecord(context.Background(), app, recordOptions{
-			destination: t.TempDir(), speaker: "MacBook Pro Speakers"})
-		if err == nil || !strings.Contains(err.Error(), "--listen") {
-			t.Fatalf("got %v, want it to say --speaker needs --listen", err)
-		}
-	})
-
-	// Verify that a gain with nothing to play is caught rather than quietly
-	// ignored, the same way --speaker is. It does not change what is recorded,
-	// so a run that passed it and heard nothing would have got nothing it asked
-	// for.
 	t.Run("GainWithoutListen", func(t *testing.T) {
 		app, _, _ := recorderApp()
 		app.Config.Device = "/dev/example"
@@ -1331,7 +1304,7 @@ func Test_runRecord(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "recordings")
 		err := runRecord(context.Background(), app, recordOptions{
 			destination: dir, channel: audiofeed.ChannelAuto,
-			listen: true, speaker: "Kitchen Radio"})
+			listen: true})
 		if err == nil || !strings.Contains(err.Error(), "no speaker by that name") {
 			t.Fatalf("got %v, want the speakers' own failure", err)
 		}
@@ -1822,7 +1795,7 @@ func Test_runRecordRecords(t *testing.T) {
 
 	// --listen as well, so the whole path is exercised: the speakers are
 	// opened, turned up, said, and given back with the rest of it.
-	p := &fakePlayer{name: "MacBook Pro Speakers"}
+	p := &fakePlayer{}
 	fakeOpenPlayer(t, p, nil)
 
 	dir := t.TempDir()
@@ -1834,7 +1807,6 @@ func Test_runRecordRecords(t *testing.T) {
 		input:       "USB Audio CODEC",
 		channel:     audiofeed.ChannelAuto,
 		listen:      true,
-		speaker:     "MacBook Pro Speakers",
 		gain:        6,
 	}); err != nil {
 		t.Fatalf("recording: %v", err)
@@ -1847,8 +1819,8 @@ func Test_runRecordRecords(t *testing.T) {
 	if p.closes != 1 {
 		t.Errorf("the speakers were closed %d times, want them given back", p.closes)
 	}
-	if !strings.Contains(errs.String(), "MacBook Pro Speakers") {
-		t.Errorf("wrote %q, want the speakers named", errs.String())
+	if !strings.Contains(errs.String(), "this computer's speakers") {
+		t.Errorf("wrote %q, want the speakers described", errs.String())
 	}
 
 	if !strings.Contains(errs.String(), "USB Audio CODEC") {

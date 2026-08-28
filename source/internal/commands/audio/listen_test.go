@@ -40,9 +40,6 @@ type fakePlayer struct {
 	// gain is the last thing SetGain was asked for.
 	gain float64
 
-	// name is what Name reports, empty for the system's own output.
-	name string
-
 	// stats is what Stats reports.
 	stats audioout.Stats
 }
@@ -53,9 +50,6 @@ func (f *fakePlayer) Close() {
 	defer f.mu.Unlock()
 	f.closes++
 }
-
-// Name answers with whatever the test put there.
-func (f *fakePlayer) Name() string { return f.name }
 
 // Play keeps a copy of the audio, the way real speakers keep it long enough to
 // play it.
@@ -109,15 +103,15 @@ func (f *fakePlayer) audible() int {
 //   - err: the failure to report instead, if there is one
 //
 // Returns:
-//   - the name the opener was asked for, readable after the command has run
-func fakeOpenPlayer(t *testing.T, p *fakePlayer, err error) *string {
+//   - the buffer the opener was asked for, readable after the command has run
+func fakeOpenPlayer(t *testing.T, p *fakePlayer, err error) *time.Duration {
 	t.Helper()
 
-	asked := new(string)
+	asked := new(time.Duration)
 	original := openPlayer
 	t.Cleanup(func() { openPlayer = original })
-	openPlayer = func(name string, _ time.Duration) (player, error) {
-		*asked = name
+	openPlayer = func(buffer time.Duration) (player, error) {
+		*asked = buffer
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +143,7 @@ func listenFrames(frames []audiofeed.Frame) chan audiofeed.Frame {
 //
 // Test cases:
 //   - Wiring: the command carries its name and its flags
-//   - Defaults: the squelch is off and the speakers are this computer's own
+//   - Defaults: the squelch is off
 //   - Runs: executing the command reaches runListen, which refuses it in a daemon
 func Test_newListen(t *testing.T) {
 	// Verify that the command is described the way the tool wires it
@@ -159,7 +153,7 @@ func Test_newListen(t *testing.T) {
 		if cmd.Use != "listen" {
 			t.Errorf("the command is %q, wanted %q", cmd.Use, "listen")
 		}
-		for _, name := range []string{"input", "channel", "speaker", "squelch", "hang", "gain"} {
+		for _, name := range []string{"input", "channel", "squelch", "hang", "gain"} {
 			if cmd.Flags().Lookup(name) == nil {
 				t.Errorf("the command has no --%s flag", name)
 			}
@@ -174,9 +168,6 @@ func Test_newListen(t *testing.T) {
 
 		if got := cmd.Flags().Lookup("squelch").DefValue; got != "false" {
 			t.Errorf("--squelch defaults to %q, wanted everything the input carries", got)
-		}
-		if got := cmd.Flags().Lookup("speaker").DefValue; got != "" {
-			t.Errorf("--speaker defaults to %q, wanted this computer's own", got)
 		}
 		if got := cmd.Flags().Lookup("hang").DefValue; got != audiogate.DefaultQuietHang.String() {
 			t.Errorf("--hang defaults to %q, wanted the gate's own quiet hang", got)
@@ -203,37 +194,25 @@ func Test_newListen(t *testing.T) {
 // Test_announceListening tests the announceListening function with 100%
 // coverage, and that it writes to stderr.
 //
-// Coverage: 100% (4 test cases covering every branch)
+// Coverage: 100% (3 test cases covering every branch)
 //
 // Test cases:
-//   - Named: the speakers are quoted as the system spells them
-//   - DefaultSpeakers: an unnamed default is described rather than left blank
+//   - Named: the input is named and the output described, on stderr
 //   - Squelched: the transmissions are what it says it is playing
 //   - Everything: with the squelch off it says so
 func Test_announceListening(t *testing.T) {
-	// Verify that the input and the speakers are both named, on stderr, so
+	// Verify that the input is named and the output described, on stderr, so
 	// that a person can see the audio is going where they meant.
 	t.Run("Named", func(t *testing.T) {
 		app, out, errs := recorderApp()
-		announceListening(app, "USB Audio CODEC", "MacBook Pro Speakers", true)
+		announceListening(app, "USB Audio CODEC", true)
 
 		if out.Len() != 0 {
 			t.Errorf("wrote %q to stdout, want the commentary on stderr", out.String())
 		}
 		if !strings.Contains(errs.String(), "USB Audio CODEC") ||
-			!strings.Contains(errs.String(), "MacBook Pro Speakers") {
-			t.Errorf("wrote %q, want the input and the speakers named", errs.String())
-		}
-	})
-
-	// Verify that the system's own output, which the library does not always
-	// put a name to, is described rather than quoted as nothing.
-	t.Run("DefaultSpeakers", func(t *testing.T) {
-		app, _, errs := recorderApp()
-		announceListening(app, "USB Audio CODEC", "", true)
-
-		if !strings.Contains(errs.String(), "this computer's own speakers") {
-			t.Errorf("wrote %q, want the default speakers described", errs.String())
+			!strings.Contains(errs.String(), "this computer's speakers") {
+			t.Errorf("wrote %q, want the input named and the output described", errs.String())
 		}
 	})
 
@@ -241,7 +220,7 @@ func Test_announceListening(t *testing.T) {
 	// between transmissions.
 	t.Run("Squelched", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		announceListening(app, "USB Audio CODEC", "", true)
+		announceListening(app, "USB Audio CODEC", true)
 
 		if !strings.Contains(errs.String(), "the transmissions") {
 			t.Errorf("wrote %q, want it to say only the transmissions are played", errs.String())
@@ -251,7 +230,7 @@ func Test_announceListening(t *testing.T) {
 	// Verify that the squelch being off is said too, since it explains the hiss.
 	t.Run("Everything", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		announceListening(app, "USB Audio CODEC", "", false)
+		announceListening(app, "USB Audio CODEC", false)
 
 		if !strings.Contains(errs.String(), "everything the input carries") {
 			t.Errorf("wrote %q, want it to say everything is played", errs.String())
@@ -459,8 +438,8 @@ func Test_runListen(t *testing.T) {
 		}
 	})
 
-	// Verify that the speakers are opened before the audio, so that a typo in
-	// --speaker costs a moment rather than a sound card being taken and given
+	// Verify that the speakers are opened before the audio, so that speakers
+	// that will not open cost a moment rather than a sound card being taken and
 	// straight back.
 	t.Run("SpeakersFail", func(t *testing.T) {
 		app, _, _ := recorderApp()
@@ -475,7 +454,7 @@ func Test_runListen(t *testing.T) {
 		}
 
 		err := runListen(context.Background(), app, listenOptions{
-			input: "Line In", channel: audiofeed.ChannelAuto, speaker: "Kitchen Radio",
+			input: "Line In", channel: audiofeed.ChannelAuto,
 			hang: time.Second,
 		})
 		if err == nil || !strings.Contains(err.Error(), "no speaker by that name") {
@@ -505,11 +484,12 @@ func Test_runListen(t *testing.T) {
 		}
 	})
 
-	// Verify the whole path: the named speakers are asked for, the input is
-	// opened, and stopping ends it quietly with everything given back.
+	// Verify the whole path: the speakers are opened with the buffer asked for,
+	// the input is opened, and stopping ends it quietly with everything given
+	// back.
 	t.Run("Listens", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		p := &fakePlayer{name: "MacBook Pro Speakers"}
+		p := &fakePlayer{}
 		asked := fakeOpenPlayer(t, p, nil)
 		fakeStart(t, "Cubilux CB5 Line In", nil)
 
@@ -518,13 +498,14 @@ func Test_runListen(t *testing.T) {
 
 		err := runListen(ctx, app, listenOptions{
 			input: "Line In", channel: audiofeed.ChannelAuto,
-			speaker: "MacBook Pro Speakers", hang: time.Second, gain: 6,
+			hang: time.Second, gain: 6, buffer: audioout.DefaultBuffer,
 		})
 		if err != nil {
 			t.Fatalf("listening gave %v, want stopping to be quiet", err)
 		}
-		if *asked != "MacBook Pro Speakers" {
-			t.Errorf("the speakers asked for were %q, want the ones named", *asked)
+		if *asked != audioout.DefaultBuffer {
+			t.Errorf("the speakers were opened with a buffer of %s, want %s",
+				*asked, audioout.DefaultBuffer)
 		}
 		if p.gain != 6 {
 			t.Errorf("the speakers were set to %v dB, want what --gain asked for", p.gain)
@@ -542,27 +523,26 @@ func Test_runListen(t *testing.T) {
 //
 // Coverage: 100% (1 test case covering the one call the real opener makes)
 //
-// The name below cannot belong to anything attached, so the refusal happens
-// while the library is still reading its device list and no speakers are ever
-// opened. That is the whole of the real opener that can be reached without
-// making a noise in the room the tests are running in.
+// The buffer below is far outside what the ring can hold, so the refusal
+// happens before any device is touched. That is the whole of the real opener
+// that can be reached without making a noise in the room the tests are running
+// in, now that there is no name for it to reject.
 //
 // Test cases:
-//   - NoSuchSpeaker: a name nothing answers to is refused, and what comes back
-//     with the refusal is harmless to close
+//   - ImpossibleBuffer: a buffer nothing could hold is refused, and what comes
+//     back with the refusal is harmless to close
 func Test_openPlayer(t *testing.T) {
 	// Verify that the default opener is the real one, refusing what it refuses.
 	//
 	// The player handed back alongside a refusal is a nil *audioout.Player in an
 	// interface, which does not read as nil. Nothing checks it, because every
 	// caller checks the error first, and closing it anyway has to be harmless
-	// or that arrangement would be a crash waiting for a typo in --speaker.
-	t.Run("NoSuchSpeaker", func(t *testing.T) {
-		p, err := openPlayer("no speaker is called this, and none ever will be",
-			audioout.DefaultBuffer)
+	// or that arrangement would be a crash waiting for a bad --buffer.
+	t.Run("ImpossibleBuffer", func(t *testing.T) {
+		p, err := openPlayer(time.Hour)
 		if err == nil {
 			p.Close()
-			t.Fatal("the speakers opened, wanted a name nothing answers to to be refused")
+			t.Fatal("the speakers opened, wanted a buffer nothing could hold to be refused")
 		}
 		p.Close()
 	})

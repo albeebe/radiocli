@@ -54,8 +54,6 @@ func newListen(app *appcontext.App) *cobra.Command {
 		"sound input to listen to directly, as \"radiocli audio\" names it")
 	cmd.Flags().StringVar(&opts.channel, "channel", audiofeed.ChannelAuto,
 		"which side of the cable the scanner is on: \"auto\", \"left\", \"right\" or \"mix\"")
-	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
-		"speakers to play on, as \"radiocli audio\" names them (default: this computer's own)")
 	cmd.Flags().BoolVar(&opts.squelch, "squelch", false,
 		"play only the transmissions; the default plays everything the input carries")
 	cmd.Flags().DurationVar(&opts.hang, "hang", audiogate.DefaultQuietHang,
@@ -77,24 +75,15 @@ func newListen(app *appcontext.App) *cobra.Command {
 // Parameters:
 //   - app: the application context whose Stderr receives the line
 //   - source: the name of the sound input the audio is coming from
-//   - speaker: the name of the output being played on, empty for one the
-//     library did not name
 //   - squelch: whether only the transmissions are being played
-func announceListening(app *appcontext.App, source, speaker string, squelch bool) {
-	// An empty name is the system's own choice of output, which the library
-	// does not always put a name to. "Playing on " is not a sentence, so it
-	// gets a description instead of a name.
-	where := fmt.Sprintf("%q", speaker)
-	if speaker == "" {
-		where = "this computer's own speakers"
-	}
-
+func announceListening(app *appcontext.App, source string, squelch bool) {
 	what := "everything the input carries"
 	if squelch {
 		what = "the transmissions"
 	}
 
-	app.Notef("Playing %s from %q on %s. Press Ctrl-C to stop.\n", what, source, where)
+	app.Notef("Playing %s from %q on this computer's speakers. Press Ctrl-C to stop.\n",
+		what, source)
 }
 
 // listenLoop plays what arrives until ctx is cancelled or the audio ends.
@@ -205,11 +194,7 @@ func (m *playbackMeter) observe(app *appcontext.App, p player, played bool) {
 		// Absolute rather than a difference: it is a level, and which way it is
 		// creeping is the whole point of reading it every second.
 		"waiting", (time.Duration(stats.Waiting) * time.Second /
-			time.Duration(audiofeed.FrameBytes*50)).Round(time.Millisecond),
-		// What the device is actually asking in, which is not necessarily what
-		// --buffer asked it for. See audioout.Stats.Period.
-		"period", (time.Duration(stats.Period) * time.Second /
-			audioout.SampleRate).Round(time.Millisecond))
+			time.Duration(audiofeed.FrameBytes*50)).Round(time.Millisecond))
 
 	m.played, m.seen, m.last = 0, 0, stats
 }
@@ -288,7 +273,7 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 	// The speakers are opened before the audio is asked for, so that a typo in
 	// --speaker costs a moment rather than a sound card being taken and given
 	// straight back.
-	p, err := openPlayer(opts.speaker, opts.buffer)
+	p, err := openPlayer(opts.buffer)
 	if err != nil {
 		return err
 	}
@@ -301,7 +286,7 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 	}
 	defer closeAudio()
 
-	announceListening(app, source, p.Name(), opts.squelch)
+	announceListening(app, source, opts.squelch)
 	defer reportPlayback(app, p)
 
 	return listenLoop(ctx, app, frames, p, opts)

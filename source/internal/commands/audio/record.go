@@ -91,9 +91,6 @@ func newRecord(app *appcontext.App) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.squelch, "squelch", false,
 		"with --listen, play only the transmissions; the default plays everything the "+
 			"input carries, which does not change what is recorded")
-	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
-		"speakers to play on with --listen, as \"radiocli audio\" names them "+
-			"(default: this computer's own)")
 	cmd.Flags().DurationVar(&opts.buffer, "buffer", audioout.DefaultBuffer,
 		"how much audio to keep between the radio and the speakers with --listen: bigger "+
 			"plays more smoothly, smaller plays sooner")
@@ -192,17 +189,11 @@ func announceRecording(app *appcontext.App, source, dir string, p player, squelc
 		return
 	}
 
-	// The name is empty when the system's own choice of output was opened and
-	// the library did not put a name to it.
-	where := fmt.Sprintf("%q", p.Name())
-	if p.Name() == "" {
-		where = "this computer's own speakers"
-	}
 	what := "everything the input carries"
 	if squelch {
 		what = "each transmission"
 	}
-	app.Notef("Playing %s on %s as it is recorded.\n", what, where)
+	app.Notef("Playing %s on this computer's speakers as it is recorded.\n", what)
 }
 
 // apply acts on what the gate said.
@@ -795,7 +786,7 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 // command usable as a live feed of what the scanner is hearing. Under
 // --output json it is the same object that was written beside the audio, so
 // anything reading one has learned to read the other.
-//
+
 // Parameters:
 //   - app: the application context to write through
 //   - e: the recording as it was filed
@@ -807,8 +798,9 @@ func reportRecording(app *appcontext.App, e recordings.Entry) error {
 		return render.JSON(app.Stdout, e)
 	}
 
-	app.Printf("%s  %5.1fs  %s\n", e.Start.Format("15:04:05"), e.Duration,
-		render.Dash(strings.TrimSpace(strings.Join([]string{e.System, e.Department, e.Channel}, " "))))
+	where := render.Dash(strings.TrimSpace(
+		strings.Join([]string{e.System, e.Department, e.Channel}, " ")))
+	app.Printf("%s  %5.1fs  %s\n", e.Start.Format("15:04:05"), e.Duration, where)
 	return nil
 }
 
@@ -845,10 +837,6 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 			appcontext.ErrNoDevice)
 	}
 
-	if opts.speaker != "" && !opts.listen {
-		return errors.New("--speaker says where to play the transmissions, which only means " +
-			"something with --listen:\nadd --listen, or drop --speaker")
-	}
 	if opts.gain != 0 && !opts.listen {
 		return errors.New("--gain turns up what is played, which only means something with " +
 			"--listen:\nit does not change what is recorded, since --normalize already " +
@@ -881,7 +869,7 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	// a run that was never going to happen.
 	var p player
 	if opts.listen {
-		if p, err = openPlayer(opts.speaker, opts.buffer); err != nil {
+		if p, err = openPlayer(opts.buffer); err != nil {
 			return err
 		}
 		defer p.Close()

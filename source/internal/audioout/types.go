@@ -62,15 +62,6 @@ const (
 	// It costs 96 KB.
 	bufferFrames = 50
 
-	// outputChannels is how many channels the speakers are opened with.
-	//
-	// The audio itself is mono, and this package took the obvious route first,
-	// opening the device as mono and leaving the library to widen it for a
-	// stereo output. Widening it here instead takes one conversion out of the
-	// path between the ring and the speakers, and leaves this package asking a
-	// device for the shape it already has.
-	outputChannels = 2
-
 	// DefaultBuffer is the cushion Open builds when its caller has no opinion:
 	// a quarter of a second.
 	//
@@ -166,11 +157,10 @@ type Sink struct {
 	Name string `json:"name"`
 }
 
-// Stats is what the ring has to say about how the playing went, and what the
-// device has to say about how it is being asked for it.
+// Stats is what the ring has to say about how the playing went.
 //
-// The counts are things the listener may have heard, and none is necessarily a
-// fault. See Player.Stats.
+// Every number counts something the listener may have heard, and none is
+// necessarily a fault. See Player.Stats.
 type Stats struct {
 	// Dropped is how many bytes of audio were thrown away because they arrived
 	// faster than the speakers took them.
@@ -185,21 +175,6 @@ type Stats struct {
 	// and a squelched run that is working perfectly on a quiet channel both
 	// report nothing dropped and nothing starved.
 	Played uint64 `json:"played"`
-
-	// Period is how many frames the device last asked for in one go, which is
-	// how often it comes and how much it takes when it does. It is zero until
-	// it has come once.
-	//
-	// It is measured rather than assumed, and that is the whole reason it is
-	// here. What Open asks for is a request and not an instruction: miniaudio
-	// says of the period that it and its sibling "are just hints, and are not
-	// necessarily exactly what you'll get", and on macOS it snaps the request
-	// to the nearest size the device will admit to, sets that, and reads back
-	// whatever the device actually settled on. If setting it fails it keeps
-	// what the device already had and says nothing. So two outputs handed the
-	// same --buffer can end up being asked in quite different sized pieces,
-	// and until this was reported there was no way to see that from here.
-	Period int `json:"period"`
 
 	// Starved is how many times the ring ran dry and silence was played
 	// instead.
@@ -220,8 +195,8 @@ type Stats struct {
 	Waiting int `json:"waiting"`
 }
 
-// output is the part of an open playback device this package uses: it can say
-// what it is, and it can be closed.
+// output is the part of an open playback device this package uses, which is
+// only that it can be closed.
 //
 // An interface rather than the concrete type, because there are two of those.
 // One is built on the audio library and only exists in a build with cgo; the
@@ -229,13 +204,6 @@ type Stats struct {
 type output interface {
 	// Close stops the device and gives back everything the library allocated.
 	Close()
-
-	// Name is what the operating system calls the output being played on.
-	Name() string
-
-	// Period is how many frames the device last asked for at once, or zero
-	// before it has asked at all. See Stats.Period.
-	Period() int
 }
 
 // ring is the jitter buffer: a fixed run of bytes that Play fills and the audio

@@ -54,7 +54,7 @@ func listSinks() ([]Sink, error) {
 //   - output that is always nil in this build
 //   - error, always, explaining that audio support was left out and how to
 //     rebuild with it
-func open(name string, periodMS int, fill func(out []byte)) (output, error) {
+func open(periodMS int, fill func(out []byte)) (output, error) {
 	return nil, errors.New("this copy of radiocli was built without audio support, " +
 		"so it cannot play audio: rebuild it with CGO_ENABLED=1")
 }

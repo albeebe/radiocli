@@ -27,22 +27,6 @@ func (p *Player) Close() {
 	})
 }
 
-// Name is what the operating system calls the output being played on, spelled
-// the way the system spells it.
-//
-// It is empty when the default device was opened and the library did not say
-// which one that is, so a caller showing this needs something to say for that
-// case: "playing on " is not a sentence.
-//
-// Returns:
-//   - the sink's name, or empty for a nil Player or an unnamed default
-func (p *Player) Name() string {
-	if p == nil {
-		return ""
-	}
-	return p.out.Name()
-}
-
 // Play hands over audio to be played as soon as the speakers ask for it.
 //
 // It never blocks and it never fails. Audio that arrives faster than the
@@ -104,10 +88,6 @@ func (p *Player) SetGain(dB float64) {
 //   - Played is the one that makes the other two readable. Nothing dropped and
 //     nothing starved means the speakers kept up with whatever they were given,
 //     which is also true of speakers that were given nothing.
-//   - Period is not about the ring at all. It is the size the device is asking
-//     in, read back from the device rather than taken from what was asked of
-//     it, and it is what says whether the cushion this was opened with is the
-//     one that is actually in force.
 //
 // Returns:
 //   - Stats as of this moment, or the zero value for a nil Player
@@ -120,7 +100,6 @@ func (p *Player) Stats() Stats {
 
 	stats := p.ring.stats
 	stats.Waiting = p.ring.length
-	stats.Period = p.out.Period()
 	return stats
 }
 
