@@ -682,7 +682,7 @@ func Test_recordLoop(t *testing.T) {
 			done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
 				hang:        200 * time.Millisecond,
 				minDuration: 100 * time.Millisecond,
-			}, nil)
+			})
 		}()
 		return r, frames, dir, out, cancel, done
 	}
@@ -1636,7 +1636,7 @@ func Test_recordLoopEndings(t *testing.T) {
 			done <- recordLoop(ctx, app, library, frames, sample, recordOptions{
 				hang:        200 * time.Millisecond,
 				minDuration: 100 * time.Millisecond,
-			}, nil)
+			})
 		}()
 		return frames, cancel, done
 	}
@@ -2090,7 +2090,7 @@ func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
 	go func() {
 		done <- recordLoop(ctx, app, library, frames, sample, recordOptions{
 			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
-		}, nil)
+		})
 	}()
 
 	settle()
@@ -2372,121 +2372,6 @@ func Test_recorderReportsAFailedReport(t *testing.T) {
 	}
 }
 
-// Test_recorderMonitor tests the recorder.monitor method with 100% coverage.
-//
-// Coverage: 100% (4 test cases covering every branch)
-//
-// Test cases:
-//   - NobodyListening: with no speakers open, nothing is played
-//   - BetweenTransmissions: the noise floor between transmissions is not played
-//   - Transmitting: the frame that has just arrived is played
-//   - BeforeTheFileOpens: audio is played from the first loud frame, well
-//     before it has proved itself worth keeping
-func Test_recorderMonitor(t *testing.T) {
-	// gated returns a recorder whose gate has heard enough noise floor to have
-	// something to measure a transmission against.
-	gated := func(p player) (*recorder, uint32) {
-		app, _, _ := recorderApp()
-		r := &recorder{app: app, player: p, squelch: true, gate: audiogate.New(audiogate.Options{
-			Hang: 200 * time.Millisecond, MinDuration: 500 * time.Millisecond,
-		})}
-
-		quiet, next := feed(0, 40, quietLevel)
-		for _, f := range quiet {
-			r.gate.Offer(f)
-			r.monitor(f)
-		}
-		return r, next
-	}
-
-	// Verify that the ordinary run, with no --listen, does not reach for
-	// speakers that were never opened.
-	t.Run("NobodyListening", func(t *testing.T) {
-		app, _, _ := recorderApp()
-		frames, _ := feed(0, 1, loudLevel)
-		r := &recorder{app: app}
-		r.monitor(frames[0])
-	})
-
-	// Verify that the hiss between transmissions is kept out, which is the
-	// whole reason the gate is asked at all, and that the speakers are handed
-	// silence rather than nothing so the ring in front of them stays primed.
-	t.Run("BetweenTransmissions", func(t *testing.T) {
-		p := &fakePlayer{}
-		r, _ := gated(p)
-
-		if p.audible() != 0 {
-			t.Errorf("%d bytes of noise floor were played", p.audible())
-		}
-		if p.played() == 0 {
-			t.Error("the speakers were handed nothing, so the ring empties between transmissions")
-		}
-		_ = r
-	})
-
-	// Verify that a transmission reaches the speakers.
-	t.Run("Transmitting", func(t *testing.T) {
-		p := &fakePlayer{}
-		r, next := gated(p)
-
-		loud, _ := feed(next, 10, loudLevel)
-		for _, f := range loud {
-			r.gate.Offer(f)
-			r.monitor(f)
-		}
-
-		if p.audible() != 10*len(loud[0].PCM) {
-			t.Errorf("%d bytes were played, want every frame of the transmission", p.audible())
-		}
-	})
-
-	// Verify the default, which is the squelch off: everything the input
-	// carries reaches the speakers, quiet included, the way the scanner's own
-	// speaker gives it.
-	t.Run("SquelchOff", func(t *testing.T) {
-		app, _, _ := recorderApp()
-		p := &fakePlayer{}
-		r := &recorder{app: app, player: p, gate: audiogate.New(audiogate.Options{
-			Hang: 200 * time.Millisecond, MinDuration: 500 * time.Millisecond,
-		})}
-
-		quiet, _ := feed(0, 40, quietLevel)
-		for _, f := range quiet {
-			r.gate.Offer(f)
-			r.monitor(f)
-		}
-
-		// The noise floor is not a transmission, so a squelched run would have
-		// played none of it.
-		if p.audible() != 40*len(quiet[0].PCM) {
-			t.Errorf("%d bytes were heard of %d, want the input played as it arrives",
-				p.audible(), 40*len(quiet[0].PCM))
-		}
-	})
-
-	// Verify the thing this method exists for: the speakers open at the first
-	// loud frame, not when the recorder is finally sure the transmission is
-	// worth a file. Following the file would lose the first half second of
-	// every transmission, which is most of the first word.
-	t.Run("BeforeTheFileOpens", func(t *testing.T) {
-		p := &fakePlayer{}
-		r, next := gated(p)
-
-		loud, _ := feed(next, 1, loudLevel)
-		events := r.gate.Offer(loud[0])
-		r.monitor(loud[0])
-
-		for _, ev := range events {
-			if ev.Kind == audiogate.KindStart {
-				t.Fatal("the gate opened a file on the first loud frame, so this proves nothing")
-			}
-		}
-		if p.audible() != len(loud[0].PCM) {
-			t.Errorf("%d bytes were played on the first loud frame, want it heard at once", p.audible())
-		}
-	})
-}
-
 // Test_recordLoopCutsWhenTheRadioChanges checks the boundary a repeater hides.
 //
 // Two people talking on a repeated channel produce one continuous carrier, so
@@ -2513,7 +2398,7 @@ func Test_recordLoopCutsWhenTheRadioChanges(t *testing.T) {
 	go func() {
 		done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
 			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
-		}, nil)
+		})
 	}()
 
 	// Quiet first, so the gate has a noise floor to measure a transmission
@@ -2604,7 +2489,7 @@ func Test_recordLoopKeepsOneTransmissionWhenTheRadioIsNamedLate(t *testing.T) {
 	go func() {
 		done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
 			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
-		}, nil)
+		})
 	}()
 
 	settle()

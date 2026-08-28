@@ -107,6 +107,23 @@ const outputQueue = 1000 / audiofeed.FrameMS
 // how much was dropped in a unit a person can picture.
 const playedBytesPerSecond = audiofeed.SampleRate * 2
 
+// playQueue is how many frames may be waiting for the speakers before the
+// oldest are dropped.
+//
+// Three, which is 60 ms, and shallow on purpose. What is on the other end of
+// this is a person, and a person cannot be caught up with: a queue in front of
+// them is not a cushion, it is a delay that never comes back. The recorder is
+// held to real time and so keeps up without ever getting ahead, so one stall
+// while it normalises a file and writes it fills whatever queue it shares, and
+// everything after that plays that far behind for the rest of the run. A run
+// measured about a second behind the radio for exactly that reason.
+//
+// So the speakers queue almost nothing and drop what they cannot keep up with.
+// A dropped frame is 20 ms nobody hears, once; a queued one is 20 ms added to
+// everything that follows. The recording is unaffected either way: it has its
+// own queue, and it is still the deep one. See recordQueue.
+const playQueue = 60 / audiofeed.FrameMS
+
 // recordQueue is how many frames may be waiting for the recorder before the
 // oldest are dropped.
 //
@@ -369,18 +386,4 @@ type recorder struct {
 	// whether the input was overloaded while it was being written.
 	clipped int
 	samples int
-
-	// player is the speakers the transmissions are being played on, nil unless
-	// --listen asked for them.
-	player player
-
-	// squelch is whether the speakers are opened only for transmissions. Off
-	// by default, which plays the input as it arrives the way the scanner's own
-	// speaker does, so a run that goes quiet is heard going quiet rather than
-	// sounding the same as one that has stopped.
-	squelch bool
-
-	// speakers reports what the player did with each second of audio, for
-	// somebody watching a run that sounds wrong.
-	speakers playbackMeter
 }

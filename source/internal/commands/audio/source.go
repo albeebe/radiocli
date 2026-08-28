@@ -36,28 +36,42 @@ import (
 //
 // Returns:
 //   - a channel of frames, closed when the daemon stops sending
+//   - a shallow channel of the same frames for the speakers, nil unless one
+//     was asked for
 //   - the name of the sound input the daemon is recording from
 //   - a function closing the stream, which is never nil
 //   - error if there is no daemon or it will not send audio
-func audioViaDaemon(ctx context.Context, app *appcontext.App) (
-	<-chan audiofeed.Frame, string, func(), error) {
+func audioViaDaemon(ctx context.Context, app *appcontext.App, speakers bool) (
+	<-chan audiofeed.Frame, <-chan audiofeed.Frame, string, func(), error) {
 
 	stream, err := broker.DialAudio(app.Config.Device, formatPCM, 0)
 	if err != nil {
 		if errors.Is(err, broker.ErrNoDaemon) {
-			return nil, "", nil, fmt.Errorf("%w.\n"+
+			return nil, nil, "", nil, fmt.Errorf("%w.\n"+
 				"Audio comes from a daemon, because a sound input can only be open once and\n"+
 				"sharing it is what the daemon is for. Start one with:\n"+
 				"  radiocli daemon --device %s --audio \"<sound input>\"\n"+
 				"Or pass --input to open a sound input directly, without sharing it",
 				err, app.Config.Device)
 		}
-		return nil, "", nil, err
+		return nil, nil, "", nil, err
 	}
 
 	frames := make(chan audiofeed.Frame, recordQueue)
+
+	// The speakers get their own shallow queue rather than a place in the deep
+	// one. See playQueue: what is late to a disk is worth keeping and what is
+	// late to a person is not.
+	var play chan audiofeed.Frame
+	if speakers {
+		play = make(chan audiofeed.Frame, playQueue)
+	}
+
 	go func() {
 		defer close(frames)
+		if play != nil {
+			defer close(play)
+		}
 		// The daemon sends samples with no level and no timestamp, so both are
 		// worked out here. The level is measured with the same function the
 		// capture uses, because a gate tuned against one definition of loudness
@@ -72,20 +86,40 @@ func audioViaDaemon(ctx context.Context, app *appcontext.App) (
 				continue
 			}
 
-			select {
-			case frames <- audiofeed.Frame{
+			frame := audiofeed.Frame{
 				Seq:   seq,
 				PCM:   audio,
 				Level: audiofeed.LevelOf(audio),
 				At:    time.Now(),
-			}:
+			}
+
+			// Offered to the speakers first and never waited on. A full queue
+			// means they are behind, and the cure for that is the newest frame
+			// rather than the oldest, so the oldest is thrown away to make room.
+			if play != nil {
+				select {
+				case play <- frame:
+				default:
+					select {
+					case <-play:
+					default:
+					}
+					select {
+					case play <- frame:
+					default:
+					}
+				}
+			}
+
+			select {
+			case frames <- frame:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
-	return frames, stream.Info().Source, func() { stream.Close() }, nil
+	return frames, play, stream.Info().Source, func() { stream.Close() }, nil
 }
 
 // openAudio starts the audio arriving, either from a sound card this process
@@ -96,17 +130,20 @@ func audioViaDaemon(ctx context.Context, app *appcontext.App) (
 //   - app: the application context holding the device setting and the logger
 //   - input: the sound input to open, empty to take the audio from a daemon
 //   - channel: the side of the cable to take, as audiofeed.ParseChannel gave it
+//   - speakers: whether a second, shallow stream is wanted for playing
 //
 // Returns:
 //   - a channel of frames, closed when the audio ends
+//   - a shallow channel of the same frames for the speakers, nil unless one was
+//     asked for
 //   - the name of the sound input the audio is coming from
 //   - a function releasing whatever was opened, which is never nil
 //   - error if the sound input or the daemon cannot be reached
-func openAudio(ctx context.Context, app *appcontext.App, input, channel string) (
-	<-chan audiofeed.Frame, string, func(), error) {
+func openAudio(ctx context.Context, app *appcontext.App, input, channel string, speakers bool) (
+	<-chan audiofeed.Frame, <-chan audiofeed.Frame, string, func(), error) {
 
 	if input == "" {
-		return audioViaDaemon(ctx, app)
+		return audioViaDaemon(ctx, app, speakers)
 	}
 
 	feed := audiofeed.New(app.Log)
@@ -116,6 +153,14 @@ func openAudio(ctx context.Context, app *appcontext.App, input, channel string) 
 	// of the cable cancel, is decided in the first few seconds. A subscription
 	// made afterwards can miss the news it exists to carry.
 	sub := feed.Subscribe(recordQueue)
+
+	// A subscriber of its own for the speakers, shallow, so that being late
+	// costs them the frames they missed rather than a place at the back of the
+	// recorder's queue. See playQueue.
+	var play *audiofeed.Sub
+	if speakers {
+		play = feed.Subscribe(playQueue)
+	}
 
 	// The feed has things to say that are not audio, and every one of them is
 	// about the recording being wrong rather than about the radio: a cable in
@@ -130,12 +175,23 @@ func openAudio(ctx context.Context, app *appcontext.App, input, channel string) 
 	capture, err := startCapture(audiofeed.Options{Source: input, Channel: channel, Log: app.Log}, feed)
 	if err != nil {
 		sub.Close()
-		return nil, "", nil, err
+		if play != nil {
+			play.Close()
+		}
+		return nil, nil, "", nil, err
 	}
 
-	return sub.Frames(), capture.Source(), func() {
+	var playFrames <-chan audiofeed.Frame
+	if play != nil {
+		playFrames = play.Frames()
+	}
+
+	return sub.Frames(), playFrames, capture.Source(), func() {
 		capture.Close()
 		sub.Close()
+		if play != nil {
+			play.Close()
+		}
 	}, nil
 }
 

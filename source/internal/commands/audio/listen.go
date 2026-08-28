@@ -280,7 +280,9 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 	defer p.Close()
 	p.SetGain(opts.gain)
 
-	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
+	// No second stream: this command is the speakers, so the frames it reads
+	// are already the ones being played.
+	frames, _, source, closeAudio, err := openAudio(ctx, app, opts.input, channel, false)
 	if err != nil {
 		return err
 	}

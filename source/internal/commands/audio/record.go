@@ -375,69 +375,6 @@ func key(h device.Heard, speaker string) string {
 		h.Frequency, h.Talkgroup, speaker}, "\x00")
 }
 
-// monitor plays the frame that has just arrived, if it is part of a
-// transmission and somebody asked to hear it.
-//
-// Nothing is playing unless --listen asked for it, so the usual case is the
-// first line and nothing else.
-//
-// Three things could decide what reaches the speakers here, and only one of
-// them is right. The audio the gate hands back is a hang behind the radio,
-// because it is held so that the end of a recording can be trimmed. The
-// recording being open is most of a second behind, because a file is not opened
-// until the transmission has proved itself worth one. Both were tried, and both
-// sound like holes rather than like a radio. What is played is the frame that
-// has just arrived, while the gate says a transmission is live, which starts at
-// the first frame above the noise floor.
-//
-// The consequence is that the speakers and the files no longer agree exactly: a
-// blip too short to be worth keeping is heard and not written. That is the
-// right way round. A scanner's own speaker plays every blip, and somebody
-// listening while they record is listening to the radio rather than auditioning
-// the disk.
-//
-// With the squelch off, which is the default, every frame goes to the speakers
-// and this is the whole of it: the input is heard as it arrives, the way the
-// scanner's own speaker gives it, and a quiet channel sounds like a quiet
-// channel rather than like a tool that has stopped.
-//
-// With --squelch, silence is handed over between transmissions rather than
-// nothing at all. The speakers are fed from a ring that will not play until it
-// holds a whole buffer, and it gives that up every time it empties, so a gap in
-// what is handed to it costs the audio after the gap as well: the buffer has to
-// be built again before a sample is heard. Squelched playback used to empty it
-// at the end of every transmission, which put the cost on the beginning of the
-// next one, and any moment the frames arrived late during a transmission spent
-// another buffer's worth of silence recovering. Keeping the ring fed leaves it
-// primed and the cushion intact, and silence rather than the frame is what
-// keeps the hiss out while doing it.
-//
-// Parameters:
-//   - frame: the audio that has just arrived, already offered to the gate
-func (r *recorder) monitor(frame audiofeed.Frame) {
-	if r.player == nil {
-		return
-	}
-
-	// With the squelch off, which is the default, everything the input carries
-	// goes to the speakers: a run that has gone quiet then sounds like a radio
-	// sitting there rather than like one that has stopped.
-	live := r.gate.Live(frame)
-	radio := live || !r.squelch
-	switch {
-	case radio:
-		r.player.Play(frame.PCM)
-	default:
-		r.player.Play(quiet(len(frame.PCM)))
-	}
-
-	// Whether the radio was played rather than whether the gate was open. With
-	// the squelch off they are different questions, and reporting the second
-	// one had the meter saying "played=0/50" through a run that was playing
-	// every frame it was given.
-	r.speakers.observe(r.app, r.player, radio)
-}
-
 // mostReported returns the value the readings agreed on most often.
 //
 // The digital format is the one label here that is a fresh observation on every
@@ -666,21 +603,13 @@ func poll(ctx context.Context, sample func(context.Context) (device.Heard, error
 //   - frames: the audio arriving
 //   - sample: reads what the scanner is hearing
 //   - opts: what the flags asked for
-//   - p: the speakers to play each transmission on, nil when nobody asked to
-//     hear them
-//
-// Returns:
-//   - error if a recording cannot be written or the scanner stops answering;
-//     nil once ctx is cancelled or the audio ends
 func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Library,
 	frames <-chan audiofeed.Frame, sample func(context.Context) (device.Heard, error),
-	opts recordOptions, p player) error {
+	opts recordOptions) error {
 
 	r := &recorder{
 		app:     app,
 		library: library,
-		player:  p,
-		squelch: opts.squelch,
 		volume:  func() int { return volumeNow(ctx, app) },
 		gate: audiogate.New(audiogate.Options{
 			Hang:        opts.hang,
@@ -775,7 +704,6 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 				r.abandon()
 				return err
 			}
-			r.monitor(frame)
 		}
 	}
 }
@@ -902,14 +830,27 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 			len(left), library.Dir(), ".partial-")
 	}
 
-	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
+	frames, speakers, source, closeAudio, err := openAudio(ctx, app, opts.input, channel,
+		opts.listen)
 	if err != nil {
 		return err
 	}
 	defer closeAudio()
 
 	announceRecording(app, source, library.Dir(), p, opts.squelch)
-	return recordLoop(ctx, app, library, frames, sample, opts, p)
+
+	// The speakers run beside the recorder rather than behind it, on their own
+	// shallow stream, so a disk that stalls costs the recording nothing and the
+	// listener nothing but the frames that went by while it stalled. It is the
+	// same loop "audio listen" runs, because it wants exactly the same thing.
+	if speakers != nil {
+		go listenLoop(ctx, app, speakers, p, listenOptions{
+			squelch: opts.squelch,
+			hang:    opts.hang,
+		})
+	}
+
+	return recordLoop(ctx, app, library, frames, sample, opts)
 }
 
 // stronger reports whether one signal reading beats another.
