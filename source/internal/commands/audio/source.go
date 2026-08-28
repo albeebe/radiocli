@@ -138,3 +138,30 @@ func openAudio(ctx context.Context, app *appcontext.App, input, channel string) 
 		sub.Close()
 	}, nil
 }
+
+// quiet returns n bytes of silence to hand to the speakers.
+//
+// It exists so that playback with the squelch on keeps handing the speakers
+// something between transmissions. The ring behind them will not play until it
+// holds a whole buffer and gives that up whenever it empties, so a gap in what
+// it is handed is paid for twice: once in the gap, and again in the buffer it
+// has to rebuild before anything is heard. Silence rather than the frame is
+// what keeps the hiss out while still keeping the ring fed.
+//
+// The same backing array is handed out every time, which is safe because the
+// player copies what it is given and never writes to it, and because nothing
+// here ever hands out a longer slice than the one frame it was asked for. A
+// frame arrives every 20 ms, so allocating one would be 50 a second for the
+// length of a run.
+//
+// Parameters:
+//   - n: how many bytes of silence are wanted
+//
+// Returns:
+//   - a slice of n zero bytes
+func quiet(n int) []byte {
+	if n > len(silence) {
+		return make([]byte, n)
+	}
+	return silence[:n]
+}

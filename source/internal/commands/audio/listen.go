@@ -162,9 +162,13 @@ func listenLoop(ctx context.Context, app *appcontext.App, frames <-chan audiofee
 			// question worth asking of it here.
 			gate.Offer(frame)
 
+			// Silence between transmissions rather than nothing, so the ring
+			// behind the speakers stays primed. See quiet.
 			live := gate.Live(frame)
 			if live {
 				p.Play(frame.PCM)
+			} else {
+				p.Play(quiet(len(frame.PCM)))
 			}
 			meter.observe(app, p, live)
 		}

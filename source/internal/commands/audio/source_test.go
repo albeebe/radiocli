@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -248,4 +249,47 @@ func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.Write(p)
+}
+
+// Test_quiet checks the silence handed to the speakers between transmissions.
+//
+// Coverage: quiet, both the shared array and the allocation past the end of it.
+//
+// Test cases:
+//   - OneFrame: a frame's worth is silent and the right length
+//   - Oversized: a request longer than the shared array still answers silence
+//   - Shared: two calls come from the same array rather than allocating
+func Test_quiet(t *testing.T) {
+	// Verify the ordinary case, which is one frame every 20 ms.
+	t.Run("OneFrame", func(t *testing.T) {
+		got := quiet(audiofeed.FrameBytes)
+		if len(got) != audiofeed.FrameBytes {
+			t.Errorf("quiet gave %d bytes, want %d", len(got), audiofeed.FrameBytes)
+		}
+		if slices.ContainsFunc(got, func(b byte) bool { return b != 0 }) {
+			t.Error("the silence handed to the speakers was not silent")
+		}
+	})
+
+	// Verify that a frame larger than anything expected is still answered,
+	// rather than panicking on a slice past the end of the shared array.
+	t.Run("Oversized", func(t *testing.T) {
+		n := len(silence) + 1
+		got := quiet(n)
+		if len(got) != n {
+			t.Errorf("quiet gave %d bytes, want %d", len(got), n)
+		}
+		if slices.ContainsFunc(got, func(b byte) bool { return b != 0 }) {
+			t.Error("the oversized silence was not silent")
+		}
+	})
+
+	// Verify the reason the array is shared: a frame arrives fifty times a
+	// second for the length of a run, and allocating one each time is waste.
+	t.Run("Shared", func(t *testing.T) {
+		a, b := quiet(audiofeed.FrameBytes), quiet(audiofeed.FrameBytes)
+		if &a[0] != &b[0] {
+			t.Error("two calls allocated rather than sharing the one array")
+		}
+	})
 }

@@ -260,6 +260,44 @@ func TestRingRead(t *testing.T) {
 		}
 	})
 
+	// Verify what a starve costs the audio that comes after it, which is the
+	// reason playback keeps the ring fed between transmissions rather than
+	// letting it empty. Running dry gives up the cushion as well as the audio,
+	// so the next arrival is not heard until a whole buffer has been built
+	// again: on the defaults that is another 250 ms of silence, on top of the
+	// gap itself, every time it happens.
+	t.Run("StarvingCostsTheNextBuffer", func(t *testing.T) {
+		r := primedRing()
+
+		// Drained to empty, the way the ring empties when nothing is handed to
+		// it between transmissions.
+		for range primeFrames {
+			r.read(make([]byte, FrameBytes))
+		}
+		r.read(make([]byte, FrameBytes))
+		if r.primed {
+			t.Fatal("the ring stayed primed through a starve, so this proves nothing")
+		}
+
+		// One frame arriving is not enough to be heard: the cushion has to be
+		// rebuilt first, and until it is, what plays is silence.
+		r.write(loudFrame(FrameSamples, 12000))
+		out := make([]byte, FrameBytes)
+		r.read(out)
+		if !bytes.Equal(out, make([]byte, FrameBytes)) {
+			t.Error("audio played before the cushion was rebuilt")
+		}
+
+		// A whole buffer's worth, and it is heard.
+		for range primeFrames {
+			r.write(loudFrame(FrameSamples, 12000))
+		}
+		r.read(out)
+		if bytes.Equal(out, make([]byte, FrameBytes)) {
+			t.Error("nothing played once the cushion was whole again")
+		}
+	})
+
 	// Verify that a ring with less than was asked for fills the rest with
 	// silence and counts it, rather than leaving the library's buffer holding
 	// whatever it held last time.

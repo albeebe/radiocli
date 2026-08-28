@@ -7,6 +7,7 @@ package audio
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,10 @@ type fakePlayer struct {
 
 	// heard is every byte handed over, in order.
 	heard []byte
+
+	// loud counts the bytes handed over by calls that carried audio rather
+	// than the silence played between transmissions.
+	loud int
 
 	// gain is the last thing SetGain was asked for.
 	gain float64
@@ -58,6 +63,9 @@ func (f *fakePlayer) Play(pcm []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.heard = append(f.heard, pcm...)
+	if slices.ContainsFunc(pcm, func(b byte) bool { return b != 0 }) {
+		f.loud += len(pcm)
+	}
 }
 
 // SetGain records what it was asked for rather than applying it.
@@ -75,6 +83,21 @@ func (f *fakePlayer) played() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.heard)
+}
+
+// audible reports how many of the bytes handed over were not silence.
+//
+// Playback hands the speakers silence between transmissions to keep the ring
+// primed, so the count of everything played no longer answers what somebody in
+// the room would hear. A call is classified whole, which is exact here because
+// every call hands over either one frame of audio or one frame of silence.
+//
+// Returns:
+//   - the number of bytes belonging to calls that carried audio
+func (f *fakePlayer) audible() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loud
 }
 
 // fakeOpenPlayer installs a speaker opener that answers with what it was given,
@@ -279,15 +302,21 @@ func Test_listenLoop(t *testing.T) {
 			t.Fatalf("listening gave %v, want it to end quietly", err)
 		}
 
-		played := p.played()
-		if played == 0 {
+		audible := p.audible()
+		if audible == 0 {
 			t.Fatal("nothing was played, want the transmission")
 		}
 		// Everything is a possibility worth ruling out: it would mean the gate
 		// opened on the noise floor and the squelch does nothing.
-		if played >= len(frames)*len(quiet[0].PCM) {
-			t.Errorf("%d bytes were played of %d, want the quiet left out",
-				played, len(frames)*len(quiet[0].PCM))
+		if audible >= len(frames)*len(quiet[0].PCM) {
+			t.Errorf("%d bytes were heard of %d, want the quiet left out",
+				audible, len(frames)*len(quiet[0].PCM))
+		}
+		// The quiet is handed over as silence rather than withheld, so that the
+		// ring in front of the speakers never empties and has to prime again.
+		if p.played() != len(frames)*len(quiet[0].PCM) {
+			t.Errorf("%d bytes reached the speakers of %d, want every frame's worth",
+				p.played(), len(frames)*len(quiet[0].PCM))
 		}
 	})
 
