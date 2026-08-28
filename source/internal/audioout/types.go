@@ -62,19 +62,34 @@ const (
 	// It costs 96 KB.
 	bufferFrames = 50
 
+	// outputChannels is how many channels the speakers are opened with.
+	//
+	// The audio itself is mono, and this package took the obvious route first,
+	// opening the device as mono and leaving the library to widen it for a
+	// stereo output. Widening it here instead takes one conversion out of the
+	// path between the ring and the speakers, and leaves this package asking a
+	// device for the shape it already has.
+	outputChannels = 2
+
 	// DefaultBuffer is the cushion Open builds when its caller has no opinion:
 	// a quarter of a second.
 	//
-	// Generous rather than mean, and that is a change of heart this package
-	// has already had once. The cushion started at 40 ms, spent as narrowly as
-	// the arrival jitter allowed, on the grounds that somebody sitting next to
-	// the scanner hears lateness as the feature failing. Then a night of real
-	// listening found artifacts that no measurement could: the audio entering
-	// the device was bit-perfect, every callback arrived on time, and the
-	// scratch was heard anyway, born somewhere below this package, and it went
-	// away when the buffers in front of the device grew. A quarter of a second
-	// is late enough to notice and nothing like as noticeable as a pop in the
-	// middle of a dispatcher's sentence.
+	// Generous rather than mean, and it has been measured rather than guessed
+	// at. The duration sets the device's period as well as the cushion, at half
+	// of it, so asking for a small cushion is also asking the operating system
+	// to come for audio far more often. Played into a virtual device and
+	// captured back, one 80 ms tone at a time, a 40 ms cushion broke every tone
+	// of 120 into as many as six pieces, with runs of digital silence and
+	// spliced discontinuities inside them, while a quarter of a second broke
+	// seven and half a second broke the same seven. None of it shows on this
+	// side of the library: the ring never ran dry and nothing was ever dropped,
+	// because the audio was always ready and the device was not always there to
+	// take it.
+	//
+	// Half a second measuring the same as a quarter is periodFor's cap showing
+	// through rather than the two being equally good. Both ask the device for
+	// 100 ms, so above a quarter of a second this only deepens the ring, and
+	// the ring was never what was running out.
 	//
 	// A default rather than a constant of the package, because that trade,
 	// lateness against robustness, belongs to the person listening. Both
@@ -151,10 +166,11 @@ type Sink struct {
 	Name string `json:"name"`
 }
 
-// Stats is what the ring has to say about how the playing went.
+// Stats is what the ring has to say about how the playing went, and what the
+// device has to say about how it is being asked for it.
 //
-// Both numbers count something the listener may have heard, and neither is
-// necessarily a fault. See Player.Stats.
+// The counts are things the listener may have heard, and none is necessarily a
+// fault. See Player.Stats.
 type Stats struct {
 	// Dropped is how many bytes of audio were thrown away because they arrived
 	// faster than the speakers took them.
@@ -170,9 +186,38 @@ type Stats struct {
 	// report nothing dropped and nothing starved.
 	Played uint64 `json:"played"`
 
+	// Period is how many frames the device last asked for in one go, which is
+	// how often it comes and how much it takes when it does. It is zero until
+	// it has come once.
+	//
+	// It is measured rather than assumed, and that is the whole reason it is
+	// here. What Open asks for is a request and not an instruction: miniaudio
+	// says of the period that it and its sibling "are just hints, and are not
+	// necessarily exactly what you'll get", and on macOS it snaps the request
+	// to the nearest size the device will admit to, sets that, and reads back
+	// whatever the device actually settled on. If setting it fails it keeps
+	// what the device already had and says nothing. So two outputs handed the
+	// same --buffer can end up being asked in quite different sized pieces,
+	// and until this was reported there was no way to see that from here.
+	Period int `json:"period"`
+
 	// Starved is how many times the ring ran dry and silence was played
 	// instead.
 	Starved uint64 `json:"starved"`
+
+	// Waiting is how many bytes are in the ring at this moment, which is the
+	// delay somebody hears: everything plays this far behind the radio.
+	//
+	// It is the reading the other three cannot give. A sound input and a set of
+	// speakers keep their own clocks and never agree exactly, so the audio
+	// arrives a little faster or a little slower than it leaves, and this
+	// creeps in one direction for as long as a run lasts. Creeping down ends in
+	// a starve, which is heard, and creeping up ends against the far wall of
+	// the ring, where every arrival evicts the oldest audio and is heard as
+	// well. Both take minutes to arrive and neither shows in a count that is
+	// still zero, so the depth is what says a run is drifting while there is
+	// still time to say it.
+	Waiting int `json:"waiting"`
 }
 
 // output is the part of an open playback device this package uses: it can say
@@ -187,6 +232,10 @@ type output interface {
 
 	// Name is what the operating system calls the output being played on.
 	Name() string
+
+	// Period is how many frames the device last asked for at once, or zero
+	// before it has asked at all. See Stats.Period.
+	Period() int
 }
 
 // ring is the jitter buffer: a fixed run of bytes that Play fills and the audio

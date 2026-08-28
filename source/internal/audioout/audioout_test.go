@@ -17,6 +17,7 @@ import (
 type fakeOutput struct {
 	closes int    // How many times Close was called
 	name   string // What Name answers with
+	period int    // What Period answers with
 }
 
 // Close counts the teardown rather than doing one.
@@ -24,6 +25,10 @@ func (f *fakeOutput) Close() { f.closes++ }
 
 // Name answers with whatever the test put there.
 func (f *fakeOutput) Name() string { return f.name }
+
+// Period answers with whatever the test put there, standing in for the size a
+// real device would be asking in.
+func (f *fakeOutput) Period() int { return f.period }
 
 // useOpen points Open at a fake for the length of one test.
 //

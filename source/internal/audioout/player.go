@@ -104,6 +104,10 @@ func (p *Player) SetGain(dB float64) {
 //   - Played is the one that makes the other two readable. Nothing dropped and
 //     nothing starved means the speakers kept up with whatever they were given,
 //     which is also true of speakers that were given nothing.
+//   - Period is not about the ring at all. It is the size the device is asking
+//     in, read back from the device rather than taken from what was asked of
+//     it, and it is what says whether the cushion this was opened with is the
+//     one that is actually in force.
 //
 // Returns:
 //   - Stats as of this moment, or the zero value for a nil Player
@@ -113,7 +117,11 @@ func (p *Player) Stats() Stats {
 	}
 	p.ring.mu.Lock()
 	defer p.ring.mu.Unlock()
-	return p.ring.stats
+
+	stats := p.ring.stats
+	stats.Waiting = p.ring.length
+	stats.Period = p.out.Period()
+	return stats
 }
 
 // newRing builds the jitter buffer a Player is opened with.

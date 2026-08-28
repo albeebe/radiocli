@@ -8,6 +8,7 @@ package audioout
 
 import (
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/gen2brain/malgo"
@@ -62,6 +63,12 @@ type playback struct {
 	ctx  *malgo.AllocatedContext // The library context the device was allocated from, freed last
 	dev  *malgo.Device           // The running playback device, stopped and freed before the context
 	name string                  // The output being played on, spelled the way the system spells it
+
+	// period is how many frames the last callback asked for. Written by the
+	// audio thread and read by whoever is reporting, so it is atomic: a plain
+	// int here would be a data race on every callback, and a mutex would be a
+	// lock taken on the one path that must never take one.
+	period *atomic.Uint32
 }
 
 // Close stops the device and gives back everything the library allocated.
@@ -89,6 +96,13 @@ func (p *playback) Close() {
 // Name is what the operating system calls the output this is playing on,
 // spelled the way the system spells it rather than the way it was typed.
 func (p *playback) Name() string { return p.name }
+
+// Period is how many frames the device last asked for at once, or zero before
+// it has asked at all.
+//
+// The reading is taken in the callback rather than worked out from what was
+// asked for at Open, because the two are not the same thing. See Stats.Period.
+func (p *playback) Period() int { return int(p.period.Load()) }
 
 // defaultName finds what the library calls this computer's usual output.
 //
@@ -227,7 +241,9 @@ func open(name string, periodMS int, fill func(out []byte)) (output, error) {
 		deviceID, chosen = devices[at].ID.Pointer(), names[at]
 	}
 
-	dev, err := initDevice(ctx.Context, playbackConfig(deviceID, periodMS), playbackCallbacks(fill))
+	period := &atomic.Uint32{}
+	dev, err := initDevice(ctx.Context, playbackConfig(deviceID, periodMS),
+		playbackCallbacks(fill, period))
 	if err != nil {
 		return nil, fmt.Errorf("opening the speakers %q: %w", chosen, err)
 	}
@@ -238,26 +254,60 @@ func open(name string, periodMS int, fill func(out []byte)) (output, error) {
 	}
 
 	handedOver = true
-	return &playback{ctx: ctx, dev: dev, name: chosen}, nil
+	return &playback{ctx: ctx, dev: dev, name: chosen, period: period}, nil
 }
 
 // playbackCallbacks wraps fill in the shape the audio library calls back in.
 //
-// The output buffer is handed over as it stands, to be written into. It is not
-// a fresh buffer: it holds whatever the library last put there, so anything
-// filling less than all of it leaves the rest playing again. The rule that read
-// fills every byte is what that comes from.
+// The device is opened with two channels and the audio has one, so fill is
+// asked for half the bytes the device wants and each sample it writes is put on
+// both sides. Handing fill the device's own buffer instead would play the audio
+// at twice its speed and empty the ring twice as fast.
+//
+// Neither buffer is fresh: the library's holds whatever it last put there, and
+// the one fill is handed is reused between callbacks, so anything filling less
+// than all of it leaves the rest playing again. The rule that read fills every
+// byte is what that comes from.
 //
 // Parameters:
 //   - fill: called with each buffer the device wants filled
+//   - period: where each callback records how many frames it was asked for, so
+//     that what the device settled on can be read rather than assumed
 //
 // Returns:
 //   - malgo.DeviceCallbacks whose Data hands the output buffer to fill and
 //     ignores the input buffer a playback device never receives
-func playbackCallbacks(fill func(out []byte)) malgo.DeviceCallbacks {
+func playbackCallbacks(fill func(out []byte), period *atomic.Uint32) malgo.DeviceCallbacks {
+	// Grown on the first callback and reused after it, because a callback that
+	// allocates is a callback that can be made to wait by the garbage
+	// collector, and this one must never wait. A device asks for the same size
+	// every time, so the growth happens once.
+	var mono []byte
+
 	return malgo.DeviceCallbacks{
-		Data: func(out, _ []byte, _ uint32) {
-			fill(out)
+		Data: func(out, _ []byte, frames uint32) {
+			// A store and nothing else, which is the most this path can afford.
+			// The library says outright that the frame count "will not
+			// necessarily be equal to what you requested" and must not be
+			// assumed constant, so it is recorded every time rather than once.
+			period.Store(frames)
+
+			need := len(out) / outputChannels
+			if cap(mono) < need {
+				mono = make([]byte, need)
+			}
+			m := mono[:need]
+			fill(m)
+
+			// One mono sample written to both sides. The alternative is to open
+			// the device as mono and let the library widen it, which is what
+			// this package did before: it sounds the same in principle, and
+			// doing it here is one conversion fewer between the ring and the
+			// speakers.
+			for i, j := 0, 0; i+1 < need; i, j = i+2, j+4 {
+				out[j], out[j+1] = m[i], m[i+1]
+				out[j+2], out[j+3] = m[i], m[i+1]
+			}
 		},
 	}
 }
@@ -287,7 +337,7 @@ func playbackConfig(deviceID unsafe.Pointer, periodMS int) malgo.DeviceConfig {
 	cfg.SampleRate = SampleRate
 	cfg.PeriodSizeInMilliseconds = uint32(periodMS)
 	cfg.Playback.Format = malgo.FormatS16
-	cfg.Playback.Channels = Channels
+	cfg.Playback.Channels = outputChannels
 	cfg.Playback.DeviceID = deviceID
 	return cfg
 }

@@ -7,8 +7,10 @@
 package audioout
 
 import (
+	"bytes"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 
@@ -108,6 +110,41 @@ func TestPlaybackClose(t *testing.T) {
 
 		if p.Name() != nullDeviceName {
 			t.Error("Close forgot the name of the output it was playing on")
+		}
+	})
+}
+
+// TestPlaybackPeriod tests the playback.Period method with 100% coverage.
+//
+// Coverage: 100% (2 test cases covering all branches)
+//
+// Test cases:
+//   - NotYetAsked: a device that has never called back reports nothing
+//   - WhatTheCallbackRecorded: the frame count the device asked for is what
+//     comes back out
+func TestPlaybackPeriod(t *testing.T) {
+	// Verify that a device which has not yet asked for audio reports zero
+	// rather than the size it was opened with, since the point of the reading
+	// is that the two can differ.
+	t.Run("NotYetAsked", func(t *testing.T) {
+		p := &playback{period: &atomic.Uint32{}}
+
+		if got := p.Period(); got != 0 {
+			t.Errorf("Period is %d before the device has asked for anything, want 0", got)
+		}
+	})
+
+	// Verify that what the callback recorded is what Period answers with, which
+	// is the whole path from the audio thread to whoever is reporting.
+	t.Run("WhatTheCallbackRecorded", func(t *testing.T) {
+		period := &atomic.Uint32{}
+		p := &playback{period: period}
+
+		cb := playbackCallbacks(func([]byte) {}, period)
+		cb.Data(make([]byte, 8), nil, 512)
+
+		if got := p.Period(); got != 512 {
+			t.Errorf("Period is %d after a callback asking for 512 frames, want 512", got)
 		}
 	})
 }
@@ -419,34 +456,74 @@ func Test_openLibraryFailures(t *testing.T) {
 // Test_playbackCallbacks tests the playbackCallbacks function with 100%
 // coverage.
 //
-// Coverage: 100% (2 test cases covering all branches)
+// Coverage: 100% (4 test cases covering all branches)
 //
 // Test cases:
-//   - HandsOutputThrough: the buffer to be filled reaches the caller's function
+//   - AsksForMono: the caller is asked for half the bytes, the device being
+//     opened with two channels and the audio having one
+//   - DuplicatesIntoBothSides: every sample written reaches left and right
+//   - RecordsEveryFrameCount: each callback records the frame count it was
+//     given, not just the first
 //   - IgnoresInput: the capture buffer a playback device never receives is
 //     dropped
 func Test_playbackCallbacks(t *testing.T) {
-	// Verify that the library's own buffer is what the caller's function is
-	// handed, since filling a copy of it would play silence.
-	t.Run("HandsOutputThrough", func(t *testing.T) {
-		out := []byte{1, 2, 3, 4}
-		var got []byte
+	// Verify the size the caller is asked for. The device takes stereo frames
+	// of two samples, and the ring behind this holds one channel, so asking for
+	// as many bytes as the device wants would play everything at double speed
+	// and run the ring dry twice as fast.
+	t.Run("AsksForMono", func(t *testing.T) {
+		out := make([]byte, 16)
+		var asked int
 		calls := 0
 
 		cb := playbackCallbacks(func(buf []byte) {
 			calls++
-			got = buf
-		})
+			asked = len(buf)
+		}, &atomic.Uint32{})
 		if cb.Data == nil {
 			t.Fatal("playbackCallbacks gave no Data callback, so nothing would be played")
 		}
-		cb.Data(out, nil, 1)
+		cb.Data(out, nil, 4)
 
 		if calls != 1 {
 			t.Errorf("the caller's function ran %d times, want once per buffer", calls)
 		}
-		if &got[0] != &out[0] || len(got) != len(out) {
-			t.Errorf("got %v, want the library's own output buffer handed straight through", got)
+		if asked != len(out)/outputChannels {
+			t.Errorf("the caller was asked for %d bytes, want %d for a %d byte stereo buffer",
+				asked, len(out)/outputChannels, len(out))
+		}
+	})
+
+	// Verify that one mono sample lands on both sides, which is what makes a
+	// mono radio audible on a stereo output.
+	t.Run("DuplicatesIntoBothSides", func(t *testing.T) {
+		out := make([]byte, 8)
+		cb := playbackCallbacks(func(buf []byte) {
+			// Two samples, 0x1234 and 0x5678, little endian as the format is.
+			copy(buf, []byte{0x34, 0x12, 0x78, 0x56})
+		}, &atomic.Uint32{})
+		cb.Data(out, nil, 2)
+
+		want := []byte{0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x78, 0x56}
+		if !bytes.Equal(out, want) {
+			t.Errorf("played %v, want each sample on both sides: %v", out, want)
+		}
+	})
+
+	// Verify that every callback records the count it was given rather than
+	// only the first, since the library says outright that it can change.
+	t.Run("RecordsEveryFrameCount", func(t *testing.T) {
+		period := &atomic.Uint32{}
+		cb := playbackCallbacks(func([]byte) {}, period)
+
+		cb.Data(make([]byte, 8), nil, 512)
+		if got := period.Load(); got != 512 {
+			t.Errorf("recorded %d frames, want 512", got)
+		}
+
+		cb.Data(make([]byte, 8), nil, 480)
+		if got := period.Load(); got != 480 {
+			t.Errorf("recorded %d frames after the size changed, want 480", got)
 		}
 	})
 
@@ -456,7 +533,7 @@ func Test_playbackCallbacks(t *testing.T) {
 		in := []byte{9, 9, 9}
 		var got []byte
 
-		cb := playbackCallbacks(func(buf []byte) { got = buf })
+		cb := playbackCallbacks(func(buf []byte) { got = buf }, &atomic.Uint32{})
 		cb.Data(nil, in, 0)
 
 		if got != nil {
@@ -489,8 +566,11 @@ func Test_playbackConfig(t *testing.T) {
 		if cfg.Playback.Format != malgo.FormatS16 {
 			t.Errorf("Playback.Format is %v, want signed 16-bit", cfg.Playback.Format)
 		}
-		if cfg.Playback.Channels != Channels {
-			t.Errorf("Playback.Channels is %d, want %d", cfg.Playback.Channels, Channels)
+		// Stereo, though the audio is mono: the device is opened in the shape
+		// it already has, and the callback duplicates into both sides rather
+		// than the library widening it on the way through.
+		if cfg.Playback.Channels != outputChannels {
+			t.Errorf("Playback.Channels is %d, want %d", cfg.Playback.Channels, outputChannels)
 		}
 		if cfg.PeriodSizeInMilliseconds != 100 {
 			t.Errorf("PeriodSizeInMilliseconds is %d, want the period handed in",
