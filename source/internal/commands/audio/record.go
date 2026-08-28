@@ -395,6 +395,17 @@ func key(h device.Heard, speaker string) string {
 // listening while they record is listening to the radio rather than auditioning
 // the disk.
 //
+// Silence is handed over between transmissions rather than nothing at all. The
+// speakers are fed from a ring that will not play until it holds a whole
+// buffer, and it gives that up every time it empties, so a gap in what is
+// handed to it costs the audio after the gap as well: the buffer has to be
+// built again before a sample is heard. Squelched playback empties it at the
+// end of every transmission, which put the cost on the beginning of the next
+// one, and any moment the frames arrived late during a transmission spent
+// another buffer's worth of silence recovering. Keeping the ring fed leaves it
+// primed and the cushion intact, and silence rather than the frame is what
+// keeps the hiss between transmissions out of the speakers.
+//
 // Parameters:
 //   - frame: the audio that has just arrived, already offered to the gate
 func (r *recorder) monitor(frame audiofeed.Frame) {
@@ -405,6 +416,8 @@ func (r *recorder) monitor(frame audiofeed.Frame) {
 	live := r.gate.Live(frame)
 	if live {
 		r.player.Play(frame.PCM)
+	} else {
+		r.player.Play(quiet(len(frame.PCM)))
 	}
 	r.speakers.observe(r.app, r.player, live)
 }

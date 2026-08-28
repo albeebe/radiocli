@@ -2378,13 +2378,17 @@ func Test_recorderMonitor(t *testing.T) {
 	})
 
 	// Verify that the hiss between transmissions is kept out, which is the
-	// whole reason the gate is asked at all.
+	// whole reason the gate is asked at all, and that the speakers are handed
+	// silence rather than nothing so the ring in front of them stays primed.
 	t.Run("BetweenTransmissions", func(t *testing.T) {
 		p := &fakePlayer{}
 		r, _ := gated(p)
 
-		if p.played() != 0 {
-			t.Errorf("%d bytes of noise floor were played", p.played())
+		if p.audible() != 0 {
+			t.Errorf("%d bytes of noise floor were played", p.audible())
+		}
+		if p.played() == 0 {
+			t.Error("the speakers were handed nothing, so the ring empties between transmissions")
 		}
 		_ = r
 	})
@@ -2400,8 +2404,8 @@ func Test_recorderMonitor(t *testing.T) {
 			r.monitor(f)
 		}
 
-		if p.played() != 10*len(loud[0].PCM) {
-			t.Errorf("%d bytes were played, want every frame of the transmission", p.played())
+		if p.audible() != 10*len(loud[0].PCM) {
+			t.Errorf("%d bytes were played, want every frame of the transmission", p.audible())
 		}
 	})
 
@@ -2422,8 +2426,8 @@ func Test_recorderMonitor(t *testing.T) {
 				t.Fatal("the gate opened a file on the first loud frame, so this proves nothing")
 			}
 		}
-		if p.played() != len(loud[0].PCM) {
-			t.Errorf("%d bytes were played on the first loud frame, want it heard at once", p.played())
+		if p.audible() != len(loud[0].PCM) {
+			t.Errorf("%d bytes were played on the first loud frame, want it heard at once", p.audible())
 		}
 	})
 }

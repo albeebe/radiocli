@@ -158,6 +158,14 @@ var openPlayer = func(name string, buffer time.Duration) (player, error) {
 	return audioout.Open(name, buffer)
 }
 
+// silence is handed to the speakers a frame at a time between transmissions, to
+// keep the ring behind them fed. See quiet, which slices it.
+//
+// One frame is all any caller asks for. It is sized well above that so a longer
+// frame never has to allocate, and it is never written to, so the one array
+// serves every caller.
+var silence = make([]byte, 4*audiofeed.FrameBytes)
+
 // startCapture opens the sound card and begins publishing frames into out. It
 // is a var so tests can substitute a fake and never open a real sound card,
 // which on macOS is what raises the microphone permission prompt.
