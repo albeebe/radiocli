@@ -475,11 +475,15 @@ func Test_key(t *testing.T) {
 
 // Test_reportRecording tests the reportRecording function with 100% coverage.
 //
-// Coverage: 100% (2 test cases covering both output formats)
+// Coverage: 100% (4 test cases covering both output formats and both halves of
+// the unit)
 //
 // Test cases:
-//   - Text: one line per transmission, on stdout
+//   - Text: one line per transmission, on stdout, with nothing said about a
+//     unit the scanner never decoded
+//   - WithUnit: the radio heard transmitting is named on the end
 //   - JSON: the same object that was written beside the audio
+//   - Unlabelled: a recording with nothing known still prints a line
 func Test_reportRecording(t *testing.T) {
 	e := recordings.Entry{
 		File:       "2026-08-22/19-54-03_x.wav",
@@ -498,6 +502,30 @@ func Test_reportRecording(t *testing.T) {
 		if !strings.Contains(out.String(), "MARLINTON DISPATCH") ||
 			!strings.Contains(out.String(), "4.8s") {
 			t.Errorf("wrote %q, want the channel and the length", out.String())
+		}
+		// Nothing stands in for a radio the scanner never decoded, which is
+		// every transmission on an analog channel.
+		if strings.Contains(out.String(), "MARLINTON DISPATCH:") {
+			t.Errorf("wrote %q, want nothing said about a unit that was not decoded",
+				out.String())
+		}
+	})
+
+	// The radio that was transmitting is named when there is one, after a colon
+	// so it does not read as the tail of the channel path.
+	t.Run("WithUnit", func(t *testing.T) {
+		app, out, _ := recorderApp()
+		heard := e
+		heard.Unit = "1234567"
+
+		if err := reportRecording(app, heard); err != nil {
+			t.Fatalf("reporting: %v", err)
+		}
+		if !strings.Contains(out.String(), "MARLINTON DISPATCH: 1234567") {
+			t.Errorf("wrote %q, want the radio named on the end", out.String())
+		}
+		if !strings.Contains(out.String(), "MARLINTON DISPATCH") {
+			t.Errorf("wrote %q, want the channel kept as well", out.String())
 		}
 	})
 

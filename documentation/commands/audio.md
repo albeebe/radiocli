@@ -945,12 +945,16 @@ Recording with the audio cable plugged straight into this computer:
 $ radiocli --device /dev/cu.usbmodem00000000000011 audio record ~/scanner --input "USB Audio CODEC"
 Recording from "USB Audio CODEC" into /Users/you/scanner
 One file per transmission, with a description beside it. Press Ctrl-C to stop.
-19:54:03    4.8s  PUBLIC SAFETY POLICE DEPARTMENT MARLINTON DISPATCH
+19:54:03    4.8s  PUBLIC SAFETY POLICE DEPARTMENT MARLINTON DISPATCH: 1234567
 19:54:31    2.1s  PUBLIC SAFETY FIRE RESCUE FIREGROUND 2
 ```
 
 Each line is one finished transmission: when it started, how long it is, and
-what it was.
+what it was. The radio heard transmitting is named after a colon when the
+scanner decoded one, which it does on a digital channel that it stopped on
+before the transmission began. An analog channel never carries one, and neither
+does a digital transmission already under way when the scanner landed on it, so
+a line without a unit is normal rather than a fault.
 
 Recording while a daemon holds both the scanner and its audio, so other commands
 can still use the radio:

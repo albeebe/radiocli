@@ -800,6 +800,10 @@ func reportRecording(app *appcontext.App, e recordings.Entry) error {
 
 	where := render.Dash(strings.TrimSpace(
 		strings.Join([]string{e.System, e.Department, e.Channel}, " ")))
+	if e.Unit != "" {
+		where += ": " + e.Unit
+	}
+
 	app.Printf("%s  %5.1fs  %s\n", e.Start.Format("15:04:05"), e.Duration, where)
 	return nil
 }
