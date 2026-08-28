@@ -63,29 +63,26 @@ const (
 	bufferFrames = 50
 
 	// DefaultBuffer is the cushion Open builds when its caller has no opinion:
-	// a quarter of a second.
+	// three frames.
 	//
-	// Generous rather than mean, and it has been measured rather than guessed
-	// at. The duration sets the device's period as well as the cushion, at half
-	// of it, so asking for a small cushion is also asking the operating system
-	// to come for audio far more often. Played into a virtual device and
-	// captured back, one 80 ms tone at a time, a 40 ms cushion broke every tone
-	// of 120 into as many as six pieces, with runs of digital silence and
-	// spliced discontinuities inside them, while a quarter of a second broke
-	// seven and half a second broke the same seven. None of it shows on this
-	// side of the library: the ring never ran dry and nothing was ever dropped,
-	// because the audio was always ready and the device was not always there to
-	// take it.
+	// Small, because everything played comes out this far behind the radio and
+	// somebody sitting next to a scanner hears lateness as the tool being
+	// broken. It was not always: it stood at a quarter of a second while the
+	// audio went out through miniaudio, where a cushion this size broke every
+	// one of 120 test tones into as many as six pieces, with runs of digital
+	// silence spliced into them. None of that showed on this side of the
+	// library, because the ring never ran dry and nothing was ever dropped: the
+	// audio was always ready and the device was not always there to take it.
 	//
-	// Half a second measuring the same as a quarter is periodFor's cap showing
-	// through rather than the two being equally good. Both ask the device for
-	// 100 ms, so above a quarter of a second this only deepens the ring, and
-	// the ring was never what was running out.
+	// oto does not do that. Measured the same way, three frames plays clean and
+	// puts the speakers about 40 ms behind the radio, which is close enough to
+	// live that it reads as the scanner's own speaker rather than as a delay.
 	//
 	// A default rather than a constant of the package, because that trade,
 	// lateness against robustness, belongs to the person listening. Both
-	// commands that play expose it as --buffer.
-	DefaultBuffer = 250 * time.Millisecond
+	// commands that play expose it as --buffer, and raising it is the first
+	// thing to try if a busy machine breaks up.
+	DefaultBuffer = 3 * FrameMS * time.Millisecond
 )
 
 // The range a buffer may be asked for in.

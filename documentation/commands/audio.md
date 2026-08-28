@@ -296,7 +296,7 @@ radiocli audio listen [flags]
 | `--squelch` | No | `false` | Play only the transmissions. The default plays everything the input carries. |
 | `--hang` | No | `2s` | How long the audio must stay quiet before the speakers close again. |
 | `--gain` | No | `0` | Decibels to turn the audio up by on the way to the speakers. |
-| `--buffer` | No | `250ms` | How much audio to keep between the radio and the speakers. |
+| `--buffer` | No | `60ms` | How much audio to keep between the radio and the speakers. |
 | `--input` | No | none | Open this sound input directly instead of asking a daemon. |
 | `--channel` | No | `auto` | Which side of the cable the scanner is on, for `--input`. |
 
@@ -334,13 +334,12 @@ too much gain plays as flattened speech: turn it down.
 How much audio stands between the radio and the speakers, written as a Go
 duration such as `250ms` or `1s`. Everything is heard this far behind the
 radio, and everything that can go wrong underneath the playing has this long
-to put itself right before it is audible. The default is `250ms`, which was
-measured rather than guessed at: played into a virtual device and captured back
-one tone at a time, a `40ms` cushion broke every tone of 120 into as many as six
-pieces, while a quarter of a second broke seven. Lower it if you want the
-speakers closer to live and your computer can keep up, and note that going above
-`250ms` only deepens the queue rather than asking the device for more. It has to
-be between `40ms` and `500ms`.
+to put itself right before it is audible. The default is `60ms`, which puts the
+speakers about 40 ms behind the radio: close enough to live that it reads as the
+scanner's own speaker rather than as a delay. Raise it if playback breaks up on
+a busy computer, and note that going much above `250ms` only deepens the queue
+rather than asking the sound card for more. It has to be between `40ms` and
+`500ms`.
 
 ### `--input`
 
@@ -690,7 +689,7 @@ radiocli audio record [destination] [flags]
 | `--listen` | No | `false` | Play the radio on this computer's speakers as it is recorded. |
 | `--squelch` | No | `false` | With `--listen`, play only the transmissions. The default plays everything the input carries. Does not change what is recorded. |
 | `--gain` | No | `0` | Decibels `--listen` turns the audio up by. Does not change what is recorded. |
-| `--buffer` | No | `250ms` | How much audio `--listen` keeps between the radio and the speakers. Does not change what is recorded. |
+| `--buffer` | No | `60ms` | How much audio `--listen` keeps between the radio and the speakers. Does not change what is recorded. |
 
 ### `[destination]`
 
