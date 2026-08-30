@@ -23,7 +23,8 @@ import (
 // Coverage: 100% (3 test cases covering every branch)
 //
 // Test cases:
-//   - Direct: a named input is opened here
+//   - Direct: a named input is opened here, with a stream for the speakers
+//   - DirectWithoutSpeakers: no second stream when nothing is playing
 //   - DirectFails: a sound input that will not open is reported
 //   - NoDaemon: no input reaches for a daemon, and finding none is advice
 func Test_openAudio(t *testing.T) {
@@ -32,8 +33,8 @@ func Test_openAudio(t *testing.T) {
 		fakeStart(t, "USB Audio CODEC", nil)
 		app, _, _ := recorderApp()
 
-		frames, source, done, err := openAudio(context.Background(), app,
-			"USB Audio CODEC", audiofeed.ChannelAuto)
+		frames, speakers, source, done, err := openAudio(context.Background(), app,
+			"USB Audio CODEC", audiofeed.ChannelAuto, true)
 		if err != nil {
 			t.Fatalf("opening the audio: %v", err)
 		}
@@ -42,6 +43,32 @@ func Test_openAudio(t *testing.T) {
 		if source != "USB Audio CODEC" || frames == nil {
 			t.Errorf("got %q and %v, want the input named", source, frames)
 		}
+		// The speakers get a stream of their own so that a stalled recorder
+		// cannot put them behind the radio.
+		if speakers == nil {
+			t.Error("no stream for the speakers, so they would share the recorder's queue")
+		}
+	})
+
+	// Verify that a run with nothing to play opens no second stream, since
+	// every frame put in one nobody reads is a frame dropped for nothing.
+	t.Run("DirectWithoutSpeakers", func(t *testing.T) {
+		fakeStart(t, "USB Audio CODEC", nil)
+		app, _, _ := recorderApp()
+
+		frames, speakers, _, done, err := openAudio(context.Background(), app,
+			"USB Audio CODEC", audiofeed.ChannelAuto, false)
+		if err != nil {
+			t.Fatalf("opening the audio: %v", err)
+		}
+		defer done()
+
+		if frames == nil {
+			t.Error("no frames for the recorder")
+		}
+		if speakers != nil {
+			t.Error("a stream was opened for speakers nobody asked for")
+		}
 	})
 
 	// Verify a sound input that will not open is reported.
@@ -49,8 +76,8 @@ func Test_openAudio(t *testing.T) {
 		fakeStart(t, "", errors.New("no such input"))
 		app, _, _ := recorderApp()
 
-		if _, _, _, err := openAudio(context.Background(), app,
-			"Nothing", audiofeed.ChannelAuto); err == nil {
+		if _, _, _, _, err := openAudio(context.Background(), app,
+			"Nothing", audiofeed.ChannelAuto, true); err == nil {
 			t.Fatal("an input that will not open reported nothing")
 		}
 	})
@@ -62,7 +89,7 @@ func Test_openAudio(t *testing.T) {
 		app, _, _ := recorderApp()
 		app.Config.Device = "/dev/example"
 
-		_, _, _, err := openAudio(context.Background(), app, "", audiofeed.ChannelAuto)
+		_, _, _, _, err := openAudio(context.Background(), app, "", audiofeed.ChannelAuto, true)
 		if err == nil || !strings.Contains(err.Error(), "radiocli daemon") {
 			t.Fatalf("got %v, want advice on starting a daemon", err)
 		}
@@ -89,11 +116,22 @@ func Test_audioViaDaemon(t *testing.T) {
 	app, _, _ := recorderApp()
 	app.Config.Device = port
 
-	frames, _, done, err := audioViaDaemon(context.Background(), app)
+	frames, speakers, _, done, err := audioViaDaemon(context.Background(), app, true)
 	if err != nil {
 		t.Fatalf("asking the daemon for audio: %v", err)
 	}
 	defer done()
+
+	// The same frame reaches the speakers on their own stream, so a stalled
+	// recorder cannot put them behind the radio.
+	select {
+	case f := <-speakers:
+		if f.Seq != 7 {
+			t.Errorf("the speakers got frame %d, want 7 as the daemon sent it", f.Seq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no audio reached the speakers")
+	}
 
 	select {
 	case f := <-frames:
@@ -125,7 +163,7 @@ func Test_audioViaDaemonRefused(t *testing.T) {
 	app, _, _ := recorderApp()
 	app.Config.Device = port
 
-	_, _, _, err := audioViaDaemon(context.Background(), app)
+	_, _, _, _, err := audioViaDaemon(context.Background(), app, true)
 	if err == nil {
 		t.Fatal("a daemon that would not send audio reported nothing")
 	}
@@ -140,6 +178,10 @@ func Test_audioViaDaemonRefused(t *testing.T) {
 //
 // The frames waiting have to be let go of rather than the goroutine blocking on
 // a channel nobody will read again.
+//
+// The speakers are asked for and then never read, which is the other half of
+// it: their queue is three frames deep and this sends hundreds, so every one
+// after the third has to push the oldest out rather than wait for room.
 func Test_audioViaDaemonStopsWhenTheRunDoes(t *testing.T) {
 	sockets(t)
 	const port = "/dev/example-floods"
@@ -159,7 +201,7 @@ func Test_audioViaDaemonStopsWhenTheRunDoes(t *testing.T) {
 	app.Config.Device = port
 
 	ctx, cancel := context.WithCancel(context.Background())
-	frames, _, done, err := audioViaDaemon(ctx, app)
+	frames, _, _, done, err := audioViaDaemon(ctx, app, true)
 	if err != nil {
 		t.Fatalf("asking the daemon for audio: %v", err)
 	}
@@ -209,7 +251,8 @@ func Test_openAudioReportsWhatTheFeedSays(t *testing.T) {
 	errs := &lockedBuffer{}
 	app.Stderr = errs
 
-	_, _, done, err := openAudio(context.Background(), app, "USB Audio CODEC", audiofeed.ChannelAuto)
+	_, _, _, done, err := openAudio(context.Background(), app, "USB Audio CODEC",
+		audiofeed.ChannelAuto, false)
 	if err != nil {
 		t.Fatalf("opening the audio: %v", err)
 	}

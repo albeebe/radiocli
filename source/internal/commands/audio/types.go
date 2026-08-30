@@ -107,6 +107,29 @@ const outputQueue = 1000 / audiofeed.FrameMS
 // how much was dropped in a unit a person can picture.
 const playedBytesPerSecond = audiofeed.SampleRate * 2
 
+// playQueue is how many frames may be waiting for the speakers before the
+// oldest are dropped.
+//
+// Ten, which is 200 ms, and shallow next to the recorder's two seconds. What is on the other end of
+// this is a person, and a person cannot be caught up with: a queue in front of
+// them is not a cushion, it is a delay that never comes back. The recorder is
+// held to real time and so keeps up without ever getting ahead, so one stall
+// while it normalises a file and writes it fills whatever queue it shares, and
+// everything after that plays that far behind for the rest of the run. A run
+// measured about a second behind the radio for exactly that reason.
+//
+// So the speakers queue little and drop what they cannot keep up with. A
+// dropped frame is 20 ms nobody hears, once; a queued one is 20 ms added to
+// everything that follows. The recording is unaffected either way: it has its
+// own queue, and it is still the deep one. See recordQueue.
+//
+// Not as shallow as it can be, though. This queue only holds anything when the
+// speakers are behind, so in the ordinary case it is empty and costs nothing,
+// and its depth is a ceiling on lateness rather than lateness itself. Set at
+// three frames it threw audio away on every hiccup the machine had. Ten leaves
+// room to ride those out and still caps the delay at a fifth of a second.
+const playQueue = 200 / audiofeed.FrameMS
+
 // recordQueue is how many frames may be waiting for the recorder before the
 // oldest are dropped.
 //
@@ -154,8 +177,8 @@ var listSources = audioin.Sources
 // which is not a nil interface however it reads. That is harmless in both
 // directions: every caller checks the error before it touches the player, and
 // every method on *audioout.Player is safe on nil anyway.
-var openPlayer = func(name string, buffer time.Duration) (player, error) {
-	return audioout.Open(name, buffer)
+var openPlayer = func(buffer time.Duration) (player, error) {
+	return audioout.Open(buffer)
 }
 
 // silence is handed to the speakers a frame at a time between transmissions, to
@@ -195,9 +218,6 @@ type player interface {
 	// Close stops the device and gives back what the library allocated.
 	Close()
 
-	// Name is what the operating system calls the output being played on.
-	Name() string
-
 	// Play hands over audio to be played as soon as the speakers ask for it.
 	Play(pcm []byte)
 
@@ -212,7 +232,6 @@ type player interface {
 type listenOptions struct {
 	input   string  // Sound input to open directly, empty to take the audio from a daemon
 	channel string  // Which side of the cable the scanner is on, as --channel gave it
-	speaker string  // Speakers to play on, empty for whichever this computer is already using
 	squelch bool    // Play only the transmissions, off when --squelch=false
 	gain    float64 // Decibels to turn the audio up by, as --gain gave it
 
@@ -324,7 +343,7 @@ type recordOptions struct {
 	maxDuration time.Duration // Longest a recording may run before it is split
 	normalize   bool          // Scale each recording up to just under full scale once it has ended, on unless --normalize=false
 	listen      bool          // Play the transmissions as they are recorded, off unless --listen
-	speaker     string        // Speakers to play on with --listen, empty for whichever this computer is already using
+	squelch     bool          // Play only the transmissions with --listen, off unless --squelch
 	gain        float64       // Decibels to turn the played audio up by, as --gain gave it
 	buffer      time.Duration // How much audio stands between the radio and the speakers with --listen
 	bufferSet   bool          // Whether --buffer was typed, so asking for it without --listen can be refused
@@ -373,12 +392,4 @@ type recorder struct {
 	// whether the input was overloaded while it was being written.
 	clipped int
 	samples int
-
-	// player is the speakers the transmissions are being played on, nil unless
-	// --listen asked for them.
-	player player
-
-	// speakers reports what the player did with each second of audio, for
-	// somebody watching a run that sounds wrong.
-	speakers playbackMeter
 }

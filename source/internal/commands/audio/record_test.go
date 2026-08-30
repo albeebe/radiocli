@@ -475,11 +475,15 @@ func Test_key(t *testing.T) {
 
 // Test_reportRecording tests the reportRecording function with 100% coverage.
 //
-// Coverage: 100% (2 test cases covering both output formats)
+// Coverage: 100% (4 test cases covering both output formats and both halves of
+// the unit)
 //
 // Test cases:
-//   - Text: one line per transmission, on stdout
+//   - Text: one line per transmission, on stdout, with nothing said about a
+//     unit the scanner never decoded
+//   - WithUnit: the radio heard transmitting is named on the end
 //   - JSON: the same object that was written beside the audio
+//   - Unlabelled: a recording with nothing known still prints a line
 func Test_reportRecording(t *testing.T) {
 	e := recordings.Entry{
 		File:       "2026-08-22/19-54-03_x.wav",
@@ -498,6 +502,30 @@ func Test_reportRecording(t *testing.T) {
 		if !strings.Contains(out.String(), "MARLINTON DISPATCH") ||
 			!strings.Contains(out.String(), "4.8s") {
 			t.Errorf("wrote %q, want the channel and the length", out.String())
+		}
+		// Nothing stands in for a radio the scanner never decoded, which is
+		// every transmission on an analog channel.
+		if strings.Contains(out.String(), "MARLINTON DISPATCH:") {
+			t.Errorf("wrote %q, want nothing said about a unit that was not decoded",
+				out.String())
+		}
+	})
+
+	// The radio that was transmitting is named when there is one, after a colon
+	// so it does not read as the tail of the channel path.
+	t.Run("WithUnit", func(t *testing.T) {
+		app, out, _ := recorderApp()
+		heard := e
+		heard.Unit = "1234567"
+
+		if err := reportRecording(app, heard); err != nil {
+			t.Fatalf("reporting: %v", err)
+		}
+		if !strings.Contains(out.String(), "MARLINTON DISPATCH: 1234567") {
+			t.Errorf("wrote %q, want the radio named on the end", out.String())
+		}
+		if !strings.Contains(out.String(), "MARLINTON DISPATCH") {
+			t.Errorf("wrote %q, want the channel kept as well", out.String())
 		}
 	})
 
@@ -537,13 +565,13 @@ func Test_reportRecording(t *testing.T) {
 // Test cases:
 //   - Recording: the input and the destination are named, on stderr
 //   - Listening: the speakers are named as well when there are any
-//   - DefaultSpeakers: an unnamed default is described rather than left blank
+//   - Squelched: the line says the transmissions rather than everything
 func Test_announceRecording(t *testing.T) {
 	// Verify that what is being recorded and where it is going are said, and
 	// that stdout is left for the recordings themselves.
 	t.Run("Recording", func(t *testing.T) {
 		app, out, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", nil)
+		announceRecording(app, "USB Audio CODEC", "./rec", nil, false)
 
 		if out.Len() != 0 {
 			t.Errorf("wrote %q to stdout, want it kept for the recordings", out.String())
@@ -556,25 +584,29 @@ func Test_announceRecording(t *testing.T) {
 		}
 	})
 
-	// Verify that the speakers are said too, since --listen is easy to have
-	// left on and the audio may be going somewhere unexpected.
+	// Verify that the playing is said too, since --listen is easy to have left
+	// on and it is worth knowing the audio is going to the speakers as well.
 	t.Run("Listening", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{name: "MacBook Pro Speakers"})
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{}, false)
 
-		if !strings.Contains(errs.String(), "MacBook Pro Speakers") {
-			t.Errorf("wrote %q, want the speakers named", errs.String())
+		if !strings.Contains(errs.String(), "this computer's speakers") {
+			t.Errorf("wrote %q, want the speakers described", errs.String())
+		}
+		// The default plays the lot, so the line has to say so rather than
+		// promising only the transmissions.
+		if !strings.Contains(errs.String(), "everything the input carries") {
+			t.Errorf("wrote %q, want it to say everything is played", errs.String())
 		}
 	})
 
-	// Verify that the system's own output, which the library does not always
-	// put a name to, is described rather than quoted as nothing.
-	t.Run("DefaultSpeakers", func(t *testing.T) {
+	// Verify the squelched line, which is what --squelch asks for.
+	t.Run("Squelched", func(t *testing.T) {
 		app, _, errs := recorderApp()
-		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{})
+		announceRecording(app, "USB Audio CODEC", "./rec", &fakePlayer{}, true)
 
-		if !strings.Contains(errs.String(), "this computer's own speakers") {
-			t.Errorf("wrote %q, want the default speakers described", errs.String())
+		if !strings.Contains(errs.String(), "each transmission") {
+			t.Errorf("wrote %q, want it to say only the transmissions are played", errs.String())
 		}
 	})
 }
@@ -650,7 +682,7 @@ func Test_recordLoop(t *testing.T) {
 			done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
 				hang:        200 * time.Millisecond,
 				minDuration: 100 * time.Millisecond,
-			}, nil)
+			})
 		}()
 		return r, frames, dir, out, cancel, done
 	}
@@ -1251,21 +1283,6 @@ func Test_runRecord(t *testing.T) {
 	// Verify that naming speakers without asking to hear anything is caught
 	// rather than quietly ignored, since a flag that does nothing reads as a
 	// flag that did something.
-	t.Run("SpeakerWithoutListen", func(t *testing.T) {
-		app, _, _ := recorderApp()
-		app.Config.Device = "/dev/example"
-
-		err := runRecord(context.Background(), app, recordOptions{
-			destination: t.TempDir(), speaker: "MacBook Pro Speakers"})
-		if err == nil || !strings.Contains(err.Error(), "--listen") {
-			t.Fatalf("got %v, want it to say --speaker needs --listen", err)
-		}
-	})
-
-	// Verify that a gain with nothing to play is caught rather than quietly
-	// ignored, the same way --speaker is. It does not change what is recorded,
-	// so a run that passed it and heard nothing would have got nothing it asked
-	// for.
 	t.Run("GainWithoutListen", func(t *testing.T) {
 		app, _, _ := recorderApp()
 		app.Config.Device = "/dev/example"
@@ -1290,6 +1307,21 @@ func Test_runRecord(t *testing.T) {
 		}
 	})
 
+	// Verify that asking for the squelch with nothing playing is refused the
+	// way the other playback flags are. It decides what reaches the speakers
+	// and nothing else, so a run that passed it without --listen would have
+	// changed nothing at all.
+	t.Run("SquelchWithoutListen", func(t *testing.T) {
+		app, _, _ := recorderApp()
+		app.Config.Device = "/dev/example"
+
+		err := runRecord(context.Background(), app, recordOptions{
+			destination: t.TempDir(), squelch: true})
+		if err == nil || !strings.Contains(err.Error(), "--listen") {
+			t.Fatalf("got %v, want it to say --squelch needs --listen", err)
+		}
+	})
+
 	// Verify that speakers which will not open stop the run before a
 	// recordings folder is made for it.
 	t.Run("SpeakersFail", func(t *testing.T) {
@@ -1300,7 +1332,7 @@ func Test_runRecord(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "recordings")
 		err := runRecord(context.Background(), app, recordOptions{
 			destination: dir, channel: audiofeed.ChannelAuto,
-			listen: true, speaker: "Kitchen Radio"})
+			listen: true})
 		if err == nil || !strings.Contains(err.Error(), "no speaker by that name") {
 			t.Fatalf("got %v, want the speakers' own failure", err)
 		}
@@ -1604,7 +1636,7 @@ func Test_recordLoopEndings(t *testing.T) {
 			done <- recordLoop(ctx, app, library, frames, sample, recordOptions{
 				hang:        200 * time.Millisecond,
 				minDuration: 100 * time.Millisecond,
-			}, nil)
+			})
 		}()
 		return frames, cancel, done
 	}
@@ -1791,7 +1823,7 @@ func Test_runRecordRecords(t *testing.T) {
 
 	// --listen as well, so the whole path is exercised: the speakers are
 	// opened, turned up, said, and given back with the rest of it.
-	p := &fakePlayer{name: "MacBook Pro Speakers"}
+	p := &fakePlayer{}
 	fakeOpenPlayer(t, p, nil)
 
 	dir := t.TempDir()
@@ -1803,7 +1835,6 @@ func Test_runRecordRecords(t *testing.T) {
 		input:       "USB Audio CODEC",
 		channel:     audiofeed.ChannelAuto,
 		listen:      true,
-		speaker:     "MacBook Pro Speakers",
 		gain:        6,
 	}); err != nil {
 		t.Fatalf("recording: %v", err)
@@ -1816,8 +1847,8 @@ func Test_runRecordRecords(t *testing.T) {
 	if p.closes != 1 {
 		t.Errorf("the speakers were closed %d times, want them given back", p.closes)
 	}
-	if !strings.Contains(errs.String(), "MacBook Pro Speakers") {
-		t.Errorf("wrote %q, want the speakers named", errs.String())
+	if !strings.Contains(errs.String(), "this computer's speakers") {
+		t.Errorf("wrote %q, want the speakers described", errs.String())
 	}
 
 	if !strings.Contains(errs.String(), "USB Audio CODEC") {
@@ -2059,7 +2090,7 @@ func Test_recordLoopAbandonsAnOpenRecordingWhenTheRadioGoesAway(t *testing.T) {
 	go func() {
 		done <- recordLoop(ctx, app, library, frames, sample, recordOptions{
 			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
-		}, nil)
+		})
 	}()
 
 	settle()
@@ -2341,97 +2372,6 @@ func Test_recorderReportsAFailedReport(t *testing.T) {
 	}
 }
 
-// Test_recorderMonitor tests the recorder.monitor method with 100% coverage.
-//
-// Coverage: 100% (4 test cases covering every branch)
-//
-// Test cases:
-//   - NobodyListening: with no speakers open, nothing is played
-//   - BetweenTransmissions: the noise floor between transmissions is not played
-//   - Transmitting: the frame that has just arrived is played
-//   - BeforeTheFileOpens: audio is played from the first loud frame, well
-//     before it has proved itself worth keeping
-func Test_recorderMonitor(t *testing.T) {
-	// gated returns a recorder whose gate has heard enough noise floor to have
-	// something to measure a transmission against.
-	gated := func(p player) (*recorder, uint32) {
-		app, _, _ := recorderApp()
-		r := &recorder{app: app, player: p, gate: audiogate.New(audiogate.Options{
-			Hang: 200 * time.Millisecond, MinDuration: 500 * time.Millisecond,
-		})}
-
-		quiet, next := feed(0, 40, quietLevel)
-		for _, f := range quiet {
-			r.gate.Offer(f)
-			r.monitor(f)
-		}
-		return r, next
-	}
-
-	// Verify that the ordinary run, with no --listen, does not reach for
-	// speakers that were never opened.
-	t.Run("NobodyListening", func(t *testing.T) {
-		app, _, _ := recorderApp()
-		frames, _ := feed(0, 1, loudLevel)
-		r := &recorder{app: app}
-		r.monitor(frames[0])
-	})
-
-	// Verify that the hiss between transmissions is kept out, which is the
-	// whole reason the gate is asked at all, and that the speakers are handed
-	// silence rather than nothing so the ring in front of them stays primed.
-	t.Run("BetweenTransmissions", func(t *testing.T) {
-		p := &fakePlayer{}
-		r, _ := gated(p)
-
-		if p.audible() != 0 {
-			t.Errorf("%d bytes of noise floor were played", p.audible())
-		}
-		if p.played() == 0 {
-			t.Error("the speakers were handed nothing, so the ring empties between transmissions")
-		}
-		_ = r
-	})
-
-	// Verify that a transmission reaches the speakers.
-	t.Run("Transmitting", func(t *testing.T) {
-		p := &fakePlayer{}
-		r, next := gated(p)
-
-		loud, _ := feed(next, 10, loudLevel)
-		for _, f := range loud {
-			r.gate.Offer(f)
-			r.monitor(f)
-		}
-
-		if p.audible() != 10*len(loud[0].PCM) {
-			t.Errorf("%d bytes were played, want every frame of the transmission", p.audible())
-		}
-	})
-
-	// Verify the thing this method exists for: the speakers open at the first
-	// loud frame, not when the recorder is finally sure the transmission is
-	// worth a file. Following the file would lose the first half second of
-	// every transmission, which is most of the first word.
-	t.Run("BeforeTheFileOpens", func(t *testing.T) {
-		p := &fakePlayer{}
-		r, next := gated(p)
-
-		loud, _ := feed(next, 1, loudLevel)
-		events := r.gate.Offer(loud[0])
-		r.monitor(loud[0])
-
-		for _, ev := range events {
-			if ev.Kind == audiogate.KindStart {
-				t.Fatal("the gate opened a file on the first loud frame, so this proves nothing")
-			}
-		}
-		if p.audible() != len(loud[0].PCM) {
-			t.Errorf("%d bytes were played on the first loud frame, want it heard at once", p.audible())
-		}
-	})
-}
-
 // Test_recordLoopCutsWhenTheRadioChanges checks the boundary a repeater hides.
 //
 // Two people talking on a repeated channel produce one continuous carrier, so
@@ -2458,7 +2398,7 @@ func Test_recordLoopCutsWhenTheRadioChanges(t *testing.T) {
 	go func() {
 		done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
 			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
-		}, nil)
+		})
 	}()
 
 	// Quiet first, so the gate has a noise floor to measure a transmission
@@ -2549,7 +2489,7 @@ func Test_recordLoopKeepsOneTransmissionWhenTheRadioIsNamedLate(t *testing.T) {
 	go func() {
 		done <- recordLoop(ctx, app, library, frames, r.sample, recordOptions{
 			hang: 5 * time.Second, minDuration: 100 * time.Millisecond,
-		}, nil)
+		})
 	}()
 
 	settle()

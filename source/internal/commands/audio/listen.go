@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/albeebe/radiocli/internal/appcontext"
 	"github.com/albeebe/radiocli/internal/audiofeed"
@@ -31,12 +32,12 @@ func newListen(app *appcontext.App) *cobra.Command {
 		Use:   "listen",
 		Short: "Play the scanner's audio on this computer's speakers",
 		Long: "Listen plays the scanner on this computer, until you stop it.\n\n" +
-			"By default it plays only the transmissions. The hiss between them is not\n" +
-			"worth listening to for an evening, and the same detector that finds them for\n" +
-			"\"audio record\" decides when to open the speakers. It opens them on the first\n" +
-			"frame above the noise floor rather than waiting to be sure, so nothing of the\n" +
-			"first word is lost. Pass --squelch=false to hear the input exactly as it\n" +
-			"arrives, hiss included, the way the scanner's own speaker does.\n\n" +
+			"By default it plays the input exactly as it arrives, hiss and all, the way\n" +
+			"the scanner's own speaker does with the squelch down. Pass --squelch to play\n" +
+			"only the transmissions instead: the same detector that finds them for \"audio\n" +
+			"record\" then decides when to open the speakers, and it opens them on the\n" +
+			"first frame above the noise floor rather than waiting to be sure, so nothing\n" +
+			"of the first word is lost.\n\n" +
 			"The audio comes from a daemon, which is what lets this run while something\n" +
 			"else is recording the same radio: a sound input can only be open once, and\n" +
 			"sharing it is the daemon's whole job. --input opens a sound input directly\n" +
@@ -53,10 +54,8 @@ func newListen(app *appcontext.App) *cobra.Command {
 		"sound input to listen to directly, as \"radiocli audio\" names it")
 	cmd.Flags().StringVar(&opts.channel, "channel", audiofeed.ChannelAuto,
 		"which side of the cable the scanner is on: \"auto\", \"left\", \"right\" or \"mix\"")
-	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
-		"speakers to play on, as \"radiocli audio\" names them (default: this computer's own)")
-	cmd.Flags().BoolVar(&opts.squelch, "squelch", true,
-		"play only the transmissions; --squelch=false plays everything the input carries")
+	cmd.Flags().BoolVar(&opts.squelch, "squelch", false,
+		"play only the transmissions; the default plays everything the input carries")
 	cmd.Flags().DurationVar(&opts.hang, "hang", audiogate.DefaultQuietHang,
 		"how long the audio must stay quiet before the speakers close again")
 	cmd.Flags().Float64Var(&opts.gain, "gain", 0,
@@ -76,24 +75,15 @@ func newListen(app *appcontext.App) *cobra.Command {
 // Parameters:
 //   - app: the application context whose Stderr receives the line
 //   - source: the name of the sound input the audio is coming from
-//   - speaker: the name of the output being played on, empty for one the
-//     library did not name
 //   - squelch: whether only the transmissions are being played
-func announceListening(app *appcontext.App, source, speaker string, squelch bool) {
-	// An empty name is the system's own choice of output, which the library
-	// does not always put a name to. "Playing on " is not a sentence, so it
-	// gets a description instead of a name.
-	where := fmt.Sprintf("%q", speaker)
-	if speaker == "" {
-		where = "this computer's own speakers"
-	}
-
+func announceListening(app *appcontext.App, source string, squelch bool) {
 	what := "everything the input carries"
 	if squelch {
 		what = "the transmissions"
 	}
 
-	app.Notef("Playing %s from %q on %s. Press Ctrl-C to stop.\n", what, source, where)
+	app.Notef("Playing %s from %q on this computer's speakers. Press Ctrl-C to stop.\n",
+		what, source)
 }
 
 // listenLoop plays what arrives until ctx is cancelled or the audio ends.
@@ -200,7 +190,11 @@ func (m *playbackMeter) observe(app *appcontext.App, p player, played bool) {
 	app.Log.Debug("playback",
 		"played", fmt.Sprintf("%d/%d", m.played, m.seen),
 		"starved", stats.Starved-m.last.Starved,
-		"dropped", stats.Dropped-m.last.Dropped)
+		"dropped", stats.Dropped-m.last.Dropped,
+		// Absolute rather than a difference: it is a level, and which way it is
+		// creeping is the whole point of reading it every second.
+		"waiting", (time.Duration(stats.Waiting) * time.Second /
+			time.Duration(audiofeed.FrameBytes*50)).Round(time.Millisecond))
 
 	m.played, m.seen, m.last = 0, 0, stats
 }
@@ -214,10 +208,12 @@ func (m *playbackMeter) observe(app *appcontext.App, p player, played bool) {
 // only way to tell that from a bad cable was to open the recording and find it
 // perfect.
 //
-// Running dry needs the yardstick that goes with it. With the squelch on the
-// audio stops between transmissions, so the speakers run dry once per
-// transmission by design, and only a count far above that means the audio was
-// arriving in bursts too big to smooth out.
+// Running dry is a fault rather than a reading to interpret. It used to be one:
+// when the speakers only opened for transmissions they ran dry at the end of
+// every one, by design, and the count only meant something well above that.
+// The default now plays continuously, so the audio never stops and there is no
+// legitimate reason for them to run out. Any count at all is audio the listener
+// did not hear.
 //
 // Parameters:
 //   - app: the application context whose Stderr and logger receive it
@@ -236,8 +232,8 @@ func reportPlayback(app *appcontext.App, p player) {
 
 	if stats.Starved > 0 {
 		app.Notef("The speakers ran dry %d time(s), and played silence until the audio caught "+
-			"up.\nOnce per transmission is expected, since the audio stops between them. Many\n"+
-			"more than that is what choppy playback sounds like.\n", stats.Starved)
+			"up.\nThat is what choppy playback sounds like. Raise --buffer, which is how much\n"+
+			"audio stands in front of them.\n", stats.Starved)
 	}
 }
 
@@ -279,20 +275,22 @@ func runListen(ctx context.Context, app *appcontext.App, opts listenOptions) err
 	// The speakers are opened before the audio is asked for, so that a typo in
 	// --speaker costs a moment rather than a sound card being taken and given
 	// straight back.
-	p, err := openPlayer(opts.speaker, opts.buffer)
+	p, err := openPlayer(opts.buffer)
 	if err != nil {
 		return err
 	}
 	defer p.Close()
 	p.SetGain(opts.gain)
 
-	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
+	// No second stream: this command is the speakers, so the frames it reads
+	// are already the ones being played.
+	frames, _, source, closeAudio, err := openAudio(ctx, app, opts.input, channel, false)
 	if err != nil {
 		return err
 	}
 	defer closeAudio()
 
-	announceListening(app, source, p.Name(), opts.squelch)
+	announceListening(app, source, opts.squelch)
 	defer reportPlayback(app, p)
 
 	return listenLoop(ctx, app, frames, p, opts)

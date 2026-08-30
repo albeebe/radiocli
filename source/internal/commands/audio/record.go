@@ -56,9 +56,11 @@ func newRecord(app *appcontext.App) *cobra.Command {
 			"padded with silence to make sure it does not.\n\n" +
 			"Each recording is a WAV, with a JSON file of the same name beside it\n" +
 			"saying what it is: when it was, which channel, and how long it ran.\n\n" +
-			"Pass --listen to hear each transmission on this computer's speakers while it\n" +
-			"is being recorded. That is the same audio, played rather than written, so\n" +
-			"nothing has to be opened twice.",
+			"Pass --listen to hear the radio on this computer's speakers while it is being\n" +
+			"recorded. That is the same audio, played rather than written, so nothing has\n" +
+			"to be opened twice, and what is played never changes what is recorded. It\n" +
+			"plays everything the input carries, hiss and all, the way the scanner's own\n" +
+			"speaker does; add --squelch to hear only the transmissions.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
@@ -86,9 +88,9 @@ func newRecord(app *appcontext.App) *cobra.Command {
 			"--normalize=false keeps the level exactly as it arrived")
 	cmd.Flags().BoolVar(&opts.listen, "listen", false,
 		"play each transmission on this computer's speakers as it is recorded")
-	cmd.Flags().StringVar(&opts.speaker, "speaker", "",
-		"speakers to play on with --listen, as \"radiocli audio\" names them "+
-			"(default: this computer's own)")
+	cmd.Flags().BoolVar(&opts.squelch, "squelch", false,
+		"with --listen, play only the transmissions; the default plays everything the "+
+			"input carries, which does not change what is recorded")
 	cmd.Flags().DurationVar(&opts.buffer, "buffer", audioout.DefaultBuffer,
 		"how much audio to keep between the radio and the speakers with --listen: bigger "+
 			"plays more smoothly, smaller plays sooner")
@@ -175,9 +177,10 @@ func (r *recorder) abandon() {
 //   - app: the application context whose Stderr receives the lines
 //   - source: the name of the sound input the audio is coming from
 //   - dir: the destination recordings are written into
-//   - p: the speakers each transmission is being played on as well, nil when
-//     nobody asked to hear them
-func announceRecording(app *appcontext.App, source, dir string, p player) {
+//   - p: the speakers the audio is being played on as well, nil when nobody
+//     asked to hear it
+//   - squelch: whether only the transmissions are being played
+func announceRecording(app *appcontext.App, source, dir string, p player, squelch bool) {
 	app.Notef("Recording from %q into %s\n"+
 		"One file per transmission, with a description beside it. Press Ctrl-C to stop.\n",
 		source, dir)
@@ -186,13 +189,11 @@ func announceRecording(app *appcontext.App, source, dir string, p player) {
 		return
 	}
 
-	// The name is empty when the system's own choice of output was opened and
-	// the library did not put a name to it.
-	where := fmt.Sprintf("%q", p.Name())
-	if p.Name() == "" {
-		where = "this computer's own speakers"
+	what := "everything the input carries"
+	if squelch {
+		what = "each transmission"
 	}
-	app.Notef("Playing each transmission on %s as it is recorded.\n", where)
+	app.Notef("Playing %s on this computer's speakers as it is recorded.\n", what)
 }
 
 // apply acts on what the gate said.
@@ -372,54 +373,6 @@ func key(h device.Heard, speaker string) string {
 	}
 	return strings.Join([]string{h.System, h.Department, h.Site, h.Channel,
 		h.Frequency, h.Talkgroup, speaker}, "\x00")
-}
-
-// monitor plays the frame that has just arrived, if it is part of a
-// transmission and somebody asked to hear it.
-//
-// Nothing is playing unless --listen asked for it, so the usual case is the
-// first line and nothing else.
-//
-// Three things could decide what reaches the speakers here, and only one of
-// them is right. The audio the gate hands back is a hang behind the radio,
-// because it is held so that the end of a recording can be trimmed. The
-// recording being open is most of a second behind, because a file is not opened
-// until the transmission has proved itself worth one. Both were tried, and both
-// sound like holes rather than like a radio. What is played is the frame that
-// has just arrived, while the gate says a transmission is live, which starts at
-// the first frame above the noise floor.
-//
-// The consequence is that the speakers and the files no longer agree exactly: a
-// blip too short to be worth keeping is heard and not written. That is the
-// right way round. A scanner's own speaker plays every blip, and somebody
-// listening while they record is listening to the radio rather than auditioning
-// the disk.
-//
-// Silence is handed over between transmissions rather than nothing at all. The
-// speakers are fed from a ring that will not play until it holds a whole
-// buffer, and it gives that up every time it empties, so a gap in what is
-// handed to it costs the audio after the gap as well: the buffer has to be
-// built again before a sample is heard. Squelched playback empties it at the
-// end of every transmission, which put the cost on the beginning of the next
-// one, and any moment the frames arrived late during a transmission spent
-// another buffer's worth of silence recovering. Keeping the ring fed leaves it
-// primed and the cushion intact, and silence rather than the frame is what
-// keeps the hiss between transmissions out of the speakers.
-//
-// Parameters:
-//   - frame: the audio that has just arrived, already offered to the gate
-func (r *recorder) monitor(frame audiofeed.Frame) {
-	if r.player == nil {
-		return
-	}
-
-	live := r.gate.Live(frame)
-	if live {
-		r.player.Play(frame.PCM)
-	} else {
-		r.player.Play(quiet(len(frame.PCM)))
-	}
-	r.speakers.observe(r.app, r.player, live)
 }
 
 // mostReported returns the value the readings agreed on most often.
@@ -650,20 +603,13 @@ func poll(ctx context.Context, sample func(context.Context) (device.Heard, error
 //   - frames: the audio arriving
 //   - sample: reads what the scanner is hearing
 //   - opts: what the flags asked for
-//   - p: the speakers to play each transmission on, nil when nobody asked to
-//     hear them
-//
-// Returns:
-//   - error if a recording cannot be written or the scanner stops answering;
-//     nil once ctx is cancelled or the audio ends
 func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Library,
 	frames <-chan audiofeed.Frame, sample func(context.Context) (device.Heard, error),
-	opts recordOptions, p player) error {
+	opts recordOptions) error {
 
 	r := &recorder{
 		app:     app,
 		library: library,
-		player:  p,
 		volume:  func() int { return volumeNow(ctx, app) },
 		gate: audiogate.New(audiogate.Options{
 			Hang:        opts.hang,
@@ -758,7 +704,6 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 				r.abandon()
 				return err
 			}
-			r.monitor(frame)
 		}
 	}
 }
@@ -769,7 +714,7 @@ func recordLoop(ctx context.Context, app *appcontext.App, library *recordings.Li
 // command usable as a live feed of what the scanner is hearing. Under
 // --output json it is the same object that was written beside the audio, so
 // anything reading one has learned to read the other.
-//
+
 // Parameters:
 //   - app: the application context to write through
 //   - e: the recording as it was filed
@@ -781,8 +726,13 @@ func reportRecording(app *appcontext.App, e recordings.Entry) error {
 		return render.JSON(app.Stdout, e)
 	}
 
-	app.Printf("%s  %5.1fs  %s\n", e.Start.Format("15:04:05"), e.Duration,
-		render.Dash(strings.TrimSpace(strings.Join([]string{e.System, e.Department, e.Channel}, " "))))
+	where := render.Dash(strings.TrimSpace(
+		strings.Join([]string{e.System, e.Department, e.Channel}, " ")))
+	if e.Unit != "" {
+		where += ": " + e.Unit
+	}
+
+	app.Printf("%s  %5.1fs  %s\n", e.Start.Format("15:04:05"), e.Duration, where)
 	return nil
 }
 
@@ -819,10 +769,6 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 			appcontext.ErrNoDevice)
 	}
 
-	if opts.speaker != "" && !opts.listen {
-		return errors.New("--speaker says where to play the transmissions, which only means " +
-			"something with --listen:\nadd --listen, or drop --speaker")
-	}
 	if opts.gain != 0 && !opts.listen {
 		return errors.New("--gain turns up what is played, which only means something with " +
 			"--listen:\nit does not change what is recorded, since --normalize already " +
@@ -831,6 +777,11 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	if opts.bufferSet && !opts.listen {
 		return errors.New("--buffer sets how far behind the radio the speakers play, which " +
 			"only means something with --listen:\nit does not change what is recorded")
+	}
+	if opts.squelch && !opts.listen {
+		return errors.New("--squelch decides what reaches the speakers, which only means " +
+			"something with --listen:\nit does not change what is recorded, since the " +
+			"scanner already decides that")
 	}
 
 	channel, err := audiofeed.ParseChannel(opts.channel)
@@ -850,7 +801,7 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 	// a run that was never going to happen.
 	var p player
 	if opts.listen {
-		if p, err = openPlayer(opts.speaker, opts.buffer); err != nil {
+		if p, err = openPlayer(opts.buffer); err != nil {
 			return err
 		}
 		defer p.Close()
@@ -879,14 +830,27 @@ func runRecord(ctx context.Context, app *appcontext.App, opts recordOptions) err
 			len(left), library.Dir(), ".partial-")
 	}
 
-	frames, source, closeAudio, err := openAudio(ctx, app, opts.input, channel)
+	frames, speakers, source, closeAudio, err := openAudio(ctx, app, opts.input, channel,
+		opts.listen)
 	if err != nil {
 		return err
 	}
 	defer closeAudio()
 
-	announceRecording(app, source, library.Dir(), p)
-	return recordLoop(ctx, app, library, frames, sample, opts, p)
+	announceRecording(app, source, library.Dir(), p, opts.squelch)
+
+	// The speakers run beside the recorder rather than behind it, on their own
+	// shallow stream, so a disk that stalls costs the recording nothing and the
+	// listener nothing but the frames that went by while it stalled. It is the
+	// same loop "audio listen" runs, because it wants exactly the same thing.
+	if speakers != nil {
+		go listenLoop(ctx, app, speakers, p, listenOptions{
+			squelch: opts.squelch,
+			hang:    opts.hang,
+		})
+	}
+
+	return recordLoop(ctx, app, library, frames, sample, opts)
 }
 
 // stronger reports whether one signal reading beats another.

@@ -54,28 +54,31 @@ import (
 	"time"
 )
 
-// Open starts playing on the sink called name, with buffer standing between
+// Open starts playing on this computer's output, with buffer standing between
 // the audio arriving and the audio being heard.
 //
 // It opens the device and starts it immediately, playing silence until
 // something is handed to Play, because a device that is started only once audio
 // arrives would spend the first transmission starting.
 //
+// Which output is not a choice. The library this plays through takes whichever
+// one the system is currently using and offers no way to name another, which
+// is also what somebody plugging in headphones mid-run expects: the audio
+// follows them.
+//
 // The buffer is the trade this package cannot make for its caller: everything
 // played comes out that far behind the radio, and everything the machine does
 // to the audio on its way out has that long to go wrong invisibly. See
 // DefaultBuffer for how the default landed where it did. The duration is spent
 // twice over: as the cushion that must arrive before playing starts, and as
-// the size of the buffers the device itself is asked to run, which is where
-// the robustness it buys actually lives.
+// the size of the buffer the device itself is asked to run, which is where the
+// robustness it buys actually lives.
 //
 // This is the call that reaches the hardware, and on some systems it is what
 // makes the volume indicator appear. It costs nothing but a device handle while
 // nothing is playing.
 //
 // Parameters:
-//   - name: the sink to play on, matched the way Resolve matches, or empty for
-//     whichever output this computer is already using
 //   - buffer: how much audio to keep standing in front of the speakers,
 //     rounded down to whole frames; DefaultBuffer when the listener has no
 //     opinion
@@ -83,14 +86,8 @@ import (
 // Returns:
 //   - *Player that plays whatever is handed to it until Close is called
 //   - error if the buffer is outside the range the ring can hold, the audio
-//     system cannot be asked, the name matches no sink or more than one, the
-//     device cannot be opened or started, or this build was made without audio
-//     support
-//
-// Errors:
-//   - ErrNoSink: if nothing attached is called name
-//   - ErrAmbiguousSink: if more than one attached sink is called name
-func Open(name string, buffer time.Duration) (*Player, error) {
+//     system cannot be opened, or this build was made without audio support
+func Open(buffer time.Duration) (*Player, error) {
 	if buffer < minBuffer || buffer > maxBuffer {
 		return nil, fmt.Errorf("a buffer of %s is not something the speakers can hold: "+
 			"it has to be between %s and %s", buffer, minBuffer, maxBuffer)
@@ -99,49 +96,11 @@ func Open(name string, buffer time.Duration) (*Player, error) {
 	frames := int(buffer / (FrameMS * time.Millisecond))
 	r := newRing(frames * FrameBytes)
 
-	out, err := openFn(name, periodFor(frames), r.read)
+	out, err := openFn(periodFor(frames), r.read)
 	if err != nil {
 		return nil, err
 	}
 	return &Player{out: out, ring: r}, nil
-}
-
-// Resolve checks that exactly one attached sink is called name, and returns it
-// spelled the way the operating system spells it.
-//
-// It opens nothing, so a name can be checked the moment it is typed rather than
-// when there is finally something to play. The canonical spelling comes back
-// rather than the one that was typed, so what gets shown afterwards matches
-// what a listing shows.
-//
-// Parameters:
-//   - name: what somebody typed, matched case-insensitively with surrounding
-//     space ignored
-//
-// Returns:
-//   - string holding the matched sink's name as the operating system spells it
-//   - error if the audio system cannot be asked, or the name matches no sink or
-//     more than one
-//
-// Errors:
-//   - ErrNoSink: if nothing attached is called name
-//   - ErrAmbiguousSink: if more than one attached sink is called name
-func Resolve(name string) (string, error) {
-	sinks, err := Sinks()
-	if err != nil {
-		return "", err
-	}
-
-	names := make([]string, len(sinks))
-	for i, s := range sinks {
-		names[i] = s.Name
-	}
-
-	at, err := pickSink(names, name)
-	if err != nil {
-		return "", err
-	}
-	return names[at], nil
 }
 
 // Sinks returns every place this computer can play sound, sorted by name.
@@ -193,60 +152,6 @@ func periodFor(frames int) int {
 		period = 100
 	}
 	return period
-}
-
-// pickSink finds the one sink called name among names, and returns where it
-// sits in that list.
-//
-// The index rather than the name, because the caller is about to want the audio
-// library's own identifier for it, and that is only reachable by position. This
-// is audioin.pickSource with the errors changed, and it is copied rather than
-// shared because sharing it would mean one of these two packages importing the
-// other for twenty lines, and the direction of that import would say something
-// about the two that is not true.
-//
-// Parameters:
-//   - names: every attached sink's name, in the audio library's own order
-//   - name: the name to find, matched case-insensitively with surrounding space
-//     ignored
-//
-// Returns:
-//   - int index into names of the one matching sink
-//   - error if the name is blank, matches nothing, or matches more than one
-//
-// Errors:
-//   - ErrNoSink: if name is blank or nothing in names matches it
-//   - ErrAmbiguousSink: if more than one entry in names matches it
-func pickSink(names []string, name string) (int, error) {
-	want := strings.TrimSpace(name)
-	if want == "" {
-		return 0, fmt.Errorf("%w: no name was given", ErrNoSink)
-	}
-
-	var exact, folded []int
-	for i, have := range names {
-		switch {
-		case have == want:
-			exact = append(exact, i)
-		case strings.EqualFold(have, want):
-			folded = append(folded, i)
-		}
-	}
-
-	found := exact
-	if len(found) == 0 {
-		found = folded
-	}
-
-	switch len(found) {
-	case 1:
-		return found[0], nil
-	case 0:
-		return 0, fmt.Errorf("%w: %q", ErrNoSink, want)
-	default:
-		return 0, fmt.Errorf("%w: %d of them are called %q, and nothing here can tell them apart",
-			ErrAmbiguousSink, len(found), want)
-	}
 }
 
 // sortSinks puts a listing in this package's order: by name, ignoring case.

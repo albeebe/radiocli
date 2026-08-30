@@ -86,33 +86,6 @@ func TestPlayerClose(t *testing.T) {
 	})
 }
 
-// TestPlayerName tests the Player.Name method with 100% coverage.
-//
-// Coverage: 100% (2 test cases covering both branches)
-//
-// Test cases:
-//   - Named: the device's own spelling comes back
-//   - Nil: a player nobody opened has no name rather than crashing
-func TestPlayerName(t *testing.T) {
-	// Verify that what comes back is the system's spelling, which is what a
-	// person will have read in a listing.
-	t.Run("Named", func(t *testing.T) {
-		p := &Player{out: &fakeOutput{name: "MacBook Pro Speakers"}, ring: newRing(primeFrames * FrameBytes)}
-		if got := p.Name(); got != "MacBook Pro Speakers" {
-			t.Errorf("Name gave %q, want the device's own name", got)
-		}
-	})
-
-	// Verify that the nil player is answerable, since the commands ask for the
-	// name when they say what they are doing.
-	t.Run("Nil", func(t *testing.T) {
-		var p *Player
-		if got := p.Name(); got != "" {
-			t.Errorf("Name gave %q, want nothing", got)
-		}
-	})
-}
-
 // TestPlayerPlay tests the Player.Play method with 100% coverage.
 //
 // Coverage: 100% (3 test cases covering both branches)

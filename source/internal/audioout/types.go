@@ -63,23 +63,37 @@ const (
 	bufferFrames = 50
 
 	// DefaultBuffer is the cushion Open builds when its caller has no opinion:
-	// a quarter of a second.
+	// four frames.
 	//
-	// Generous rather than mean, and that is a change of heart this package
-	// has already had once. The cushion started at 40 ms, spent as narrowly as
-	// the arrival jitter allowed, on the grounds that somebody sitting next to
-	// the scanner hears lateness as the feature failing. Then a night of real
-	// listening found artifacts that no measurement could: the audio entering
-	// the device was bit-perfect, every callback arrived on time, and the
-	// scratch was heard anyway, born somewhere below this package, and it went
-	// away when the buffers in front of the device grew. A quarter of a second
-	// is late enough to notice and nothing like as noticeable as a pop in the
-	// middle of a dispatcher's sentence.
+	// Small, because everything played comes out this far behind the radio and
+	// somebody sitting next to a scanner hears lateness as the tool being
+	// broken. It was not always: it stood at a quarter of a second while the
+	// audio went out through miniaudio, where a cushion this size broke every
+	// one of 120 test tones into as many as six pieces, with runs of digital
+	// silence spliced into them. None of that showed on this side of the
+	// library, because the ring never ran dry and nothing was ever dropped: the
+	// audio was always ready and the device was not always there to take it.
+	//
+	// oto does not do that, so this came down, and where it landed was measured
+	// against live traffic rather than argued about. Four minutes on a police
+	// channel at each of three settings ran the speakers dry exactly once each,
+	// on the first reading, which is the ring filling before any audio has
+	// arrived. What separates them is what is left over: two frames is the
+	// floor the ring allows and has nothing behind it, while four leaves room
+	// for a machine busier than the one this was measured on.
+	//
+	// Going lower buys less than the number suggests. The ring settles wherever
+	// the device's own pulling leaves it rather than at what was asked for,
+	// which was 50 ms at both four frames and six, so most of what this changes
+	// is the device buffer underneath. Two frames measured about 80 ms from
+	// radio to speaker against four frames' 90 ms: ten milliseconds, for the
+	// whole of the margin.
 	//
 	// A default rather than a constant of the package, because that trade,
 	// lateness against robustness, belongs to the person listening. Both
-	// commands that play expose it as --buffer.
-	DefaultBuffer = 250 * time.Millisecond
+	// commands that play expose it as --buffer, and raising it is the first
+	// thing to try if a busy machine breaks up.
+	DefaultBuffer = 4 * FrameMS * time.Millisecond
 )
 
 // The range a buffer may be asked for in.
@@ -153,7 +167,7 @@ type Sink struct {
 
 // Stats is what the ring has to say about how the playing went.
 //
-// Both numbers count something the listener may have heard, and neither is
+// Every number counts something the listener may have heard, and none is
 // necessarily a fault. See Player.Stats.
 type Stats struct {
 	// Dropped is how many bytes of audio were thrown away because they arrived
@@ -173,10 +187,24 @@ type Stats struct {
 	// Starved is how many times the ring ran dry and silence was played
 	// instead.
 	Starved uint64 `json:"starved"`
+
+	// Waiting is how many bytes are in the ring at this moment, which is the
+	// delay somebody hears: everything plays this far behind the radio.
+	//
+	// It is the reading the other three cannot give. A sound input and a set of
+	// speakers keep their own clocks and never agree exactly, so the audio
+	// arrives a little faster or a little slower than it leaves, and this
+	// creeps in one direction for as long as a run lasts. Creeping down ends in
+	// a starve, which is heard, and creeping up ends against the far wall of
+	// the ring, where every arrival evicts the oldest audio and is heard as
+	// well. Both take minutes to arrive and neither shows in a count that is
+	// still zero, so the depth is what says a run is drifting while there is
+	// still time to say it.
+	Waiting int `json:"waiting"`
 }
 
-// output is the part of an open playback device this package uses: it can say
-// what it is, and it can be closed.
+// output is the part of an open playback device this package uses, which is
+// only that it can be closed.
 //
 // An interface rather than the concrete type, because there are two of those.
 // One is built on the audio library and only exists in a build with cgo; the
@@ -184,9 +212,6 @@ type Stats struct {
 type output interface {
 	// Close stops the device and gives back everything the library allocated.
 	Close()
-
-	// Name is what the operating system calls the output being played on.
-	Name() string
 }
 
 // ring is the jitter buffer: a fixed run of bytes that Play fills and the audio
