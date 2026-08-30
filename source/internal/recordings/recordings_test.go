@@ -170,8 +170,13 @@ func TestRecordingIsFiledWithItsDescription(t *testing.T) {
 
 	// The default template puts the day in a folder, which is what stops a long
 	// run piling a week into one directory.
-	want := filepath.Join("2026-08-22",
-		at.Format("15-04-05")+"_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav")
+	//
+	// Joined with "/" rather than with the separator this machine happens to
+	// use. The path stored in an entry is the template's own, and the template
+	// is written with "/" whatever the operating system is, so that a sidecar
+	// carried to another machine still points at its audio.
+	want := "2026-08-22/" +
+		at.Format("15-04-05") + "_PUBLIC-SAFETY_POLICE-DEPARTMENT_MARLINTON-DISPATCH.wav"
 	if filed.File != want {
 		t.Errorf("filed as %q, want %q", filed.File, want)
 	}
@@ -278,14 +283,17 @@ func TestLongNamesAreShortened(t *testing.T) {
 	if len(filed.File) > maxPath+len(".wav") {
 		t.Errorf("filed as a path %d long, want no more than %d", len(filed.File), maxPath)
 	}
-	for _, c := range strings.Split(filed.File, string(filepath.Separator)) {
+	// Split on "/" rather than on this machine's separator, for the reason
+	// given in TestRecordingIsFiledWithItsDescription: the stored path is the
+	// template's and the template is written with "/" everywhere.
+	for _, c := range strings.Split(filed.File, "/") {
 		if len(c) > maxComponent+len(".wav") {
 			t.Errorf("the component %q is %d long, want no more than %d", c, len(c), maxComponent)
 		}
 	}
 
 	// Every part is still recognisable, rather than one being cut to nothing.
-	if strings.Count(filed.File, string(filepath.Separator)) != 3 {
+	if strings.Count(filed.File, "/") != 3 {
 		t.Errorf("filed as %q, want all four parts kept", filed.File)
 	}
 }
@@ -339,8 +347,13 @@ func TestCloseTwiceIsHarmless(t *testing.T) {
 func TestSweepReportsPartials(t *testing.T) {
 	l, dir := library(t, "", false)
 
-	if _, err := l.Begin(); err != nil {
-		t.Fatalf("beginning a recording: %v", err)
+	// Written rather than begun. What Sweep is for is the file an earlier run
+	// left behind when it died, and nothing is holding that one open: the
+	// process that was writing it is gone. Beginning one here instead would
+	// leave this test holding the handle, which Unix does not mind and Windows
+	// does, since it will not delete a file that is still open.
+	if err := os.WriteFile(filepath.Join(dir, partialPrefix+"1.wav"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("leaving a partial recording behind: %v", err)
 	}
 
 	found, err := l.Sweep()
