@@ -117,6 +117,7 @@ func Test_modeOf(t *testing.T) {
 	// Verify that an unusual mode is preserved rather than widened, which is
 	// the whole reason this is not a constant
 	t.Run("Copies", func(t *testing.T) {
+		requireUnixPermissions(t)
 		path := filepath.Join(t.TempDir(), "radiocli")
 		writeFile(t, path, "a program", 0o500)
 
@@ -305,6 +306,7 @@ func Test_writable(t *testing.T) {
 	// Verify that a directory which cannot be written to is reported through
 	// the sentinel, which is what the sudo advice hangs off
 	t.Run("NotWritable", func(t *testing.T) {
+		requireUnixPermissions(t)
 		dir := filepath.Join(t.TempDir(), "locked")
 		if err := os.Mkdir(dir, 0o500); err != nil {
 			t.Fatalf("making the directory: %v", err)

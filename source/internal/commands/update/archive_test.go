@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -469,6 +470,7 @@ func Test_stage(t *testing.T) {
 	// Verify that the file is written and given the permissions passed in,
 	// which is how the replaced program keeps the mode it had
 	t.Run("Writes", func(t *testing.T) {
+		requireUnixPermissions(t)
 		path, err := stage(strings.NewReader("a program"), t.TempDir(), 0o750)
 		if err != nil {
 			t.Fatalf("expected no error, got: %v", err)
@@ -526,4 +528,22 @@ func Test_stage(t *testing.T) {
 			t.Errorf("expected the permissions failure to be reported, got: %v", err)
 		}
 	})
+}
+
+// requireUnixPermissions skips a test that arranges its failure with file
+// permissions.
+//
+// Windows does not honour them the way this needs. Removing write permission
+// from a directory there leaves it writable, so a test that makes something
+// unwritable and expects the next step to fail instead watches it succeed. The
+// behaviour under test is real and worth covering; it just cannot be staged on
+// a platform that does not enforce the thing being staged.
+//
+// Parameters:
+//   - t: the test to skip when there is no way to arrange what it needs
+func requireUnixPermissions(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("this stages its failure with file permissions, which Windows does not enforce")
+	}
 }

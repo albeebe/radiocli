@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -383,6 +384,7 @@ func Test_prepare(t *testing.T) {
 
 	// Verify that a destination that cannot be written to is reported.
 	t.Run("Unwritable", func(t *testing.T) {
+		requireUnixPermissions(t)
 		skipAsRoot(t)
 
 		into := t.TempDir()
@@ -639,6 +641,7 @@ func Test_run(t *testing.T) {
 
 	// Verify that a card that cannot be read is reported.
 	t.Run("Unreadable", func(t *testing.T) {
+		requireUnixPermissions(t)
 		skipAsRoot(t)
 
 		app, _, _ := newApp(t)
@@ -707,6 +710,7 @@ func Test_run(t *testing.T) {
 
 	// Verify that a copy which does not finish says where what was copied is.
 	t.Run("CopyError", func(t *testing.T) {
+		requireUnixPermissions(t)
 		skipAsRoot(t)
 
 		app, _, errOut := newApp(t)
@@ -751,5 +755,23 @@ func Test_prepareDestinationIsAbsolute(t *testing.T) {
 	}
 	if !filepath.IsAbs(target) {
 		t.Fatalf("the folder is not absolute: %q", target)
+	}
+}
+
+// requireUnixPermissions skips a test that arranges its failure with file
+// permissions.
+//
+// Windows does not honour them the way this needs. Removing write permission
+// from a directory there leaves it writable, so a test that makes something
+// unwritable and expects the next step to fail instead watches it succeed. The
+// behaviour under test is real and worth covering; it just cannot be staged on
+// a platform that does not enforce the thing being staged.
+//
+// Parameters:
+//   - t: the test to skip when there is no way to arrange what it needs
+func requireUnixPermissions(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("this stages its failure with file permissions, which Windows does not enforce")
 	}
 }

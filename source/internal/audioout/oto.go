@@ -2,7 +2,7 @@
 // Author: Alan Beebe
 // Created: 8/27/2026
 
-//go:build cgo
+//go:build cgo && (darwin || windows)
 
 package audioout
 
@@ -16,6 +16,10 @@ import (
 )
 
 // How this file reaches the library, and why there is a seam here at all.
+//
+// This plays on macOS and on Windows, where the library needs nothing installed
+// alongside it. See malgoplay.go for Linux, where it would, and why that
+// settled it.
 //
 // The same arrangement malgo.go has, for a different reason. There the seam
 // exists so a test can make each library call fail; here it exists because
