@@ -128,6 +128,7 @@ func Test_build(t *testing.T) {
 	// Verify that a file whose size cannot be read is reported rather than
 	// copied blind.
 	t.Run("InfoError", func(t *testing.T) {
+		requireUnixPermissions(t)
 		skipAsRoot(t)
 
 		src := t.TempDir()
@@ -247,6 +248,7 @@ func Test_copyFile(t *testing.T) {
 
 	// Verify that a source that cannot be read through is reported.
 	t.Run("CopyError", func(t *testing.T) {
+		requireUnixPermissions(t)
 		dir := t.TempDir()
 		from := filepath.Join(dir, "a-directory")
 		if err := os.MkdirAll(from, 0o755); err != nil {
@@ -378,6 +380,7 @@ func Test_digestOf(t *testing.T) {
 
 	// Verify that a file that cannot be read through is reported.
 	t.Run("Unreadable", func(t *testing.T) {
+		requireUnixPermissions(t)
 		_, err := digestOf(t.TempDir())
 		if err == nil {
 			t.Fatal("expected hashing a directory to fail")
@@ -515,6 +518,7 @@ func Test_planRun(t *testing.T) {
 
 	// Verify that a tree that cannot be recreated is reported.
 	t.Run("DirectoryError", func(t *testing.T) {
+		requireUnixPermissions(t)
 		skipAsRoot(t)
 
 		dst := t.TempDir()
@@ -547,6 +551,7 @@ func Test_planRun(t *testing.T) {
 
 	// Verify that a file whose directory cannot be made is reported.
 	t.Run("FileDirectoryError", func(t *testing.T) {
+		requireUnixPermissions(t)
 		skipAsRoot(t)
 
 		src := t.TempDir()

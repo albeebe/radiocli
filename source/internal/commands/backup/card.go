@@ -7,6 +7,7 @@ package backup
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -168,7 +169,11 @@ func volumeDirsFor(goos string) []string {
 			if entries, err := readDir(base); err == nil {
 				for _, e := range entries {
 					if e.IsDir() {
-						dirs = append(dirs, filepath.Join(base, e.Name()))
+						// path rather than filepath: these are Linux paths,
+						// and joining them with the separator this machine
+						// happens to use would build "\media\alice" when the
+						// question is asked from Windows.
+						dirs = append(dirs, path.Join(base, e.Name()))
 					}
 				}
 			}

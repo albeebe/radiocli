@@ -259,6 +259,7 @@ func Test_install(t *testing.T) {
 	// Verify that a directory which cannot be written to is caught before
 	// anything is downloaded, and that the message says what to type instead
 	t.Run("NotWritable", func(t *testing.T) {
+		requireUnixPermissions(t)
 		pretendPlatform(t, "darwin", "arm64")
 		dir := filepath.Join(t.TempDir(), "locked")
 		if err := os.Mkdir(dir, 0o500); err != nil {
