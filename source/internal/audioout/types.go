@@ -63,7 +63,7 @@ const (
 	bufferFrames = 50
 
 	// DefaultBuffer is the cushion Open builds when its caller has no opinion:
-	// three frames.
+	// six frames.
 	//
 	// Small, because everything played comes out this far behind the radio and
 	// somebody sitting next to a scanner hears lateness as the tool being
@@ -74,15 +74,18 @@ const (
 	// library, because the ring never ran dry and nothing was ever dropped: the
 	// audio was always ready and the device was not always there to take it.
 	//
-	// oto does not do that. Measured the same way, three frames plays clean and
-	// puts the speakers about 40 ms behind the radio, which is close enough to
-	// live that it reads as the scanner's own speaker rather than as a delay.
+	// oto does not do that, so this came down. It came down too far: three
+	// frames measured clean on a quiet bench and then ran the speakers dry
+	// three times in six minutes of real traffic, which is audio somebody did
+	// not hear. Six is the compromise, and it is still under a fifth of what
+	// this was: close enough to live to read as the scanner's own speaker, with
+	// enough in front of the device to survive the machine looking away.
 	//
 	// A default rather than a constant of the package, because that trade,
 	// lateness against robustness, belongs to the person listening. Both
 	// commands that play expose it as --buffer, and raising it is the first
 	// thing to try if a busy machine breaks up.
-	DefaultBuffer = 3 * FrameMS * time.Millisecond
+	DefaultBuffer = 6 * FrameMS * time.Millisecond
 )
 
 // The range a buffer may be asked for in.

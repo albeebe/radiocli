@@ -110,7 +110,7 @@ const playedBytesPerSecond = audiofeed.SampleRate * 2
 // playQueue is how many frames may be waiting for the speakers before the
 // oldest are dropped.
 //
-// Three, which is 60 ms, and shallow on purpose. What is on the other end of
+// Ten, which is 200 ms, and shallow next to the recorder's two seconds. What is on the other end of
 // this is a person, and a person cannot be caught up with: a queue in front of
 // them is not a cushion, it is a delay that never comes back. The recorder is
 // held to real time and so keeps up without ever getting ahead, so one stall
@@ -118,11 +118,17 @@ const playedBytesPerSecond = audiofeed.SampleRate * 2
 // everything after that plays that far behind for the rest of the run. A run
 // measured about a second behind the radio for exactly that reason.
 //
-// So the speakers queue almost nothing and drop what they cannot keep up with.
-// A dropped frame is 20 ms nobody hears, once; a queued one is 20 ms added to
+// So the speakers queue little and drop what they cannot keep up with. A
+// dropped frame is 20 ms nobody hears, once; a queued one is 20 ms added to
 // everything that follows. The recording is unaffected either way: it has its
 // own queue, and it is still the deep one. See recordQueue.
-const playQueue = 60 / audiofeed.FrameMS
+//
+// Not as shallow as it can be, though. This queue only holds anything when the
+// speakers are behind, so in the ordinary case it is empty and costs nothing,
+// and its depth is a ceiling on lateness rather than lateness itself. Set at
+// three frames it threw audio away on every hiccup the machine had. Ten leaves
+// room to ride those out and still caps the delay at a fifth of a second.
+const playQueue = 200 / audiofeed.FrameMS
 
 // recordQueue is how many frames may be waiting for the recorder before the
 // oldest are dropped.
