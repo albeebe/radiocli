@@ -346,9 +346,9 @@ func Test_reportPlayback(t *testing.T) {
 		}
 	})
 
-	// Verify that running dry is reported with what makes the number mean
-	// something. One per transmission is the buffer working; a hundred of them
-	// is what somebody hears as choppy audio.
+	// Verify that running dry is reported as a fault with the way out of it.
+	// The audio no longer stops between transmissions, so there is no count
+	// that is expected: every one of them is audio nobody heard.
 	t.Run("Starved", func(t *testing.T) {
 		app, _, errs := recorderApp()
 		reportPlayback(app, &fakePlayer{stats: audioout.Stats{Starved: 12}})
@@ -357,8 +357,8 @@ func Test_reportPlayback(t *testing.T) {
 		if !strings.Contains(said, "ran dry 12 time(s)") {
 			t.Errorf("wrote %q, want the number of holes", said)
 		}
-		if !strings.Contains(said, "per transmission") {
-			t.Errorf("wrote %q, want the yardstick that reads the number", said)
+		if !strings.Contains(said, "--buffer") {
+			t.Errorf("wrote %q, want it to say how to stop it happening", said)
 		}
 	})
 

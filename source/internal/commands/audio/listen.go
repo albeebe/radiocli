@@ -208,10 +208,12 @@ func (m *playbackMeter) observe(app *appcontext.App, p player, played bool) {
 // only way to tell that from a bad cable was to open the recording and find it
 // perfect.
 //
-// Running dry needs the yardstick that goes with it. With the squelch on the
-// audio stops between transmissions, so the speakers run dry once per
-// transmission by design, and only a count far above that means the audio was
-// arriving in bursts too big to smooth out.
+// Running dry is a fault rather than a reading to interpret. It used to be one:
+// when the speakers only opened for transmissions they ran dry at the end of
+// every one, by design, and the count only meant something well above that.
+// The default now plays continuously, so the audio never stops and there is no
+// legitimate reason for them to run out. Any count at all is audio the listener
+// did not hear.
 //
 // Parameters:
 //   - app: the application context whose Stderr and logger receive it
@@ -230,8 +232,8 @@ func reportPlayback(app *appcontext.App, p player) {
 
 	if stats.Starved > 0 {
 		app.Notef("The speakers ran dry %d time(s), and played silence until the audio caught "+
-			"up.\nOnce per transmission is expected, since the audio stops between them. Many\n"+
-			"more than that is what choppy playback sounds like.\n", stats.Starved)
+			"up.\nThat is what choppy playback sounds like. Raise --buffer, which is how much\n"+
+			"audio stands in front of them.\n", stats.Starved)
 	}
 }
 
