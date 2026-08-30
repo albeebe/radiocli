@@ -2,7 +2,7 @@
 // Author: Alan Beebe
 // Created: 8/27/2026
 
-//go:build cgo
+//go:build cgo && (darwin || windows)
 
 package audioout
 
