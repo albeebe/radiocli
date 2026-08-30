@@ -1,0 +1,78 @@
+# Builds and tests on every platform the tool ships for, on pull requests and
+# on main.
+#
+# This exists because a release tag was the first thing that ever discovered a
+# Linux build failure. The audio library used for playback was swapped, the new
+# one linked a system library the old one had not, and macOS built it happily:
+# nothing between the change and "git push origin v0.3.2" ever compiled it for
+# Linux. A pull request now does.
+#
+# Each platform builds on its own native runner for the reason the release
+# workflow does: the audio commands need cgo, so cross compiling would not
+# exercise the code that actually breaks.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      # Every platform reports, rather than the first failure cancelling the
+      # rest. A break on one is worth knowing about alongside the others.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        working-directory: source
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
+
+      # CGO_ENABLED is set explicitly rather than left to the default, because
+      # the default is off when cross compiling and the playback backends are
+      # chosen by build tag. A build with it off compiles neither of them and
+      # would pass while proving nothing.
+      - name: Build
+        env:
+          CGO_ENABLED: 1
+        run: go build ./...
+
+      - name: Vet
+        env:
+          CGO_ENABLED: 1
+        run: go vet ./...
+
+      - name: Test
+        env:
+          CGO_ENABLED: 1
+        run: go test ./...
+
+      # The Linux release also ships an arm64 build for Raspberry Pi class
+      # machines, and that is a cross compile with cgo, which is its own way to
+      # fail. Built here so a release is not the first time it is tried.
+      - name: Build for Raspberry Pi
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: 1
+          GOARCH: arm64
+          CC: aarch64-linux-gnu-gcc
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          go build ./...
