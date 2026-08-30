@@ -63,7 +63,7 @@ const (
 	bufferFrames = 50
 
 	// DefaultBuffer is the cushion Open builds when its caller has no opinion:
-	// six frames.
+	// four frames.
 	//
 	// Small, because everything played comes out this far behind the radio and
 	// somebody sitting next to a scanner hears lateness as the tool being
@@ -74,18 +74,26 @@ const (
 	// library, because the ring never ran dry and nothing was ever dropped: the
 	// audio was always ready and the device was not always there to take it.
 	//
-	// oto does not do that, so this came down. It came down too far: three
-	// frames measured clean on a quiet bench and then ran the speakers dry
-	// three times in six minutes of real traffic, which is audio somebody did
-	// not hear. Six is the compromise, and it is still under a fifth of what
-	// this was: close enough to live to read as the scanner's own speaker, with
-	// enough in front of the device to survive the machine looking away.
+	// oto does not do that, so this came down, and where it landed was measured
+	// against live traffic rather than argued about. Four minutes on a police
+	// channel at each of three settings ran the speakers dry exactly once each,
+	// on the first reading, which is the ring filling before any audio has
+	// arrived. What separates them is what is left over: two frames is the
+	// floor the ring allows and has nothing behind it, while four leaves room
+	// for a machine busier than the one this was measured on.
+	//
+	// Going lower buys less than the number suggests. The ring settles wherever
+	// the device's own pulling leaves it rather than at what was asked for,
+	// which was 50 ms at both four frames and six, so most of what this changes
+	// is the device buffer underneath. Two frames measured about 80 ms from
+	// radio to speaker against four frames' 90 ms: ten milliseconds, for the
+	// whole of the margin.
 	//
 	// A default rather than a constant of the package, because that trade,
 	// lateness against robustness, belongs to the person listening. Both
 	// commands that play expose it as --buffer, and raising it is the first
 	// thing to try if a busy machine breaks up.
-	DefaultBuffer = 6 * FrameMS * time.Millisecond
+	DefaultBuffer = 4 * FrameMS * time.Millisecond
 )
 
 // The range a buffer may be asked for in.

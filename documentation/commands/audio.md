@@ -296,7 +296,7 @@ radiocli audio listen [flags]
 | `--squelch` | No | `false` | Play only the transmissions. The default plays everything the input carries. |
 | `--hang` | No | `2s` | How long the audio must stay quiet before the speakers close again. |
 | `--gain` | No | `0` | Decibels to turn the audio up by on the way to the speakers. |
-| `--buffer` | No | `120ms` | How much audio to keep between the radio and the speakers. |
+| `--buffer` | No | `80ms` | How much audio to keep between the radio and the speakers. |
 | `--input` | No | none | Open this sound input directly instead of asking a daemon. |
 | `--channel` | No | `auto` | Which side of the cable the scanner is on, for `--input`. |
 
@@ -334,11 +334,12 @@ too much gain plays as flattened speech: turn it down.
 How much audio stands between the radio and the speakers, written as a Go
 duration such as `250ms` or `1s`. Everything is heard this far behind the
 radio, and everything that can go wrong underneath the playing has this long
-to put itself right before it is audible. The default is `120ms`, which is close
-enough to live that it reads as the scanner's own speaker rather than as a
-delay, with enough in hand that the speakers do not run dry when the computer
-looks away. Half that was tried and ran them dry three times in six minutes of
-real traffic. Raise it if playback breaks up on
+to put itself right before it is audible. The default is `80ms`, which puts the
+speakers about a tenth of a second behind the radio: close enough to live that
+it reads as the scanner's own speaker rather than as a delay, with enough in
+hand that they do not run dry when the computer looks away. Lowering it further
+gains less than it looks like it should, because most of what stands in front of
+the speakers is the sound card's own buffer rather than this. Raise it if playback breaks up on
 a busy computer, and note that going much above `250ms` only deepens the queue
 rather than asking the sound card for more. It has to be between `40ms` and
 `500ms`.
@@ -691,7 +692,7 @@ radiocli audio record [destination] [flags]
 | `--listen` | No | `false` | Play the radio on this computer's speakers as it is recorded. |
 | `--squelch` | No | `false` | With `--listen`, play only the transmissions. The default plays everything the input carries. Does not change what is recorded. |
 | `--gain` | No | `0` | Decibels `--listen` turns the audio up by. Does not change what is recorded. |
-| `--buffer` | No | `120ms` | How much audio `--listen` keeps between the radio and the speakers. Does not change what is recorded. |
+| `--buffer` | No | `80ms` | How much audio `--listen` keeps between the radio and the speakers. Does not change what is recorded. |
 
 ### `[destination]`
 
