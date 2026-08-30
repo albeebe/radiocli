@@ -646,6 +646,35 @@ func (r *radio) sample(context.Context) (device.Heard, error) {
 // once, so a change made by a test has reached the gate before audio does.
 func settle() { time.Sleep(3 * samplePeriod) }
 
+// drain waits until the recorder has taken every frame handed to it, and then
+// for long enough that it has asked the radio what it is hearing.
+//
+// Sleeping instead is what a test does when it hopes the recorder has caught
+// up. That hope holds on a fast machine and fails on a slow one: a test that
+// changed which radio was transmitting after a fixed sleep labelled both of its
+// recordings with the second radio on a loaded CI runner, because the first
+// batch of audio had not been read yet when the label changed underneath it.
+// Waiting for the queue to empty waits for the thing that actually matters.
+//
+// Parameters:
+//   - t: the test, failed if the recorder never takes the audio
+//   - frames: the channel the audio was handed to
+func drain(t *testing.T, frames chan audiofeed.Frame) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(frames) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the recorder never took the audio it was given")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// The queue being empty means the last frame has been handed over, not that
+	// it has been acted on, and the label is read on its own schedule.
+	settle()
+}
+
 // Test_recordLoop tests the recordLoop function with 100% coverage.
 //
 // It is the whole recorder driven from a channel of frames and a radio the test
@@ -900,6 +929,10 @@ func Test_recorder(t *testing.T) {
 	// breakDestination replaces the destination with a file, so every path
 	// below it becomes impossible. It is the closest thing to a disk that
 	// stopped cooperating that a test can arrange.
+	//
+	// Only safe with nothing open below it. Removing a directory that still
+	// holds an open file is a thing Unix allows and Windows refuses, so
+	// anything that has already begun a recording wants breakFiling instead.
 	breakDestination := func(t *testing.T, dir string) {
 		t.Helper()
 		if err := os.RemoveAll(dir); err != nil {
@@ -907,6 +940,23 @@ func Test_recorder(t *testing.T) {
 		}
 		if err := os.WriteFile(dir, nil, 0o644); err != nil {
 			t.Fatalf("putting a file where the destination was: %v", err)
+		}
+	}
+
+	// breakFiling makes filing a recording impossible without touching what is
+	// already open, by putting an ordinary file where the folder for the day
+	// has to be made. Creating that folder is the first thing filing does, and
+	// it cannot be done on top of a file on any operating system.
+	//
+	// Both dates are blocked because both turn up: a recording carrying audio
+	// is filed under the day its frames are stamped with, and one that never
+	// saw a frame is filed under the zero time.
+	breakFiling := func(t *testing.T, dir string) {
+		t.Helper()
+		for _, day := range []string{"2026-08-22", "0001-01-01"} {
+			if err := os.WriteFile(filepath.Join(dir, day), nil, 0o644); err != nil {
+				t.Fatalf("putting a file where the day's folder goes: %v", err)
+			}
 		}
 	}
 
@@ -965,7 +1015,7 @@ func Test_recorder(t *testing.T) {
 			t.Fatalf("starting: %v", err)
 		}
 
-		breakDestination(t, dir)
+		breakFiling(t, dir)
 		if err := r.apply([]audiogate.Event{{Kind: audiogate.KindEnd}}); err == nil {
 			t.Fatal("a recording that could not be filed reported nothing")
 		}
@@ -1739,13 +1789,13 @@ func Test_recordLoopEndings(t *testing.T) {
 		send(frames, quiet)
 		send(frames, loud)
 
-		// The transmission is open and long enough to keep. Now take the
-		// destination away underneath it.
-		if err := os.RemoveAll(dir); err != nil {
-			t.Fatalf("removing the destination: %v", err)
-		}
-		if err := os.WriteFile(dir, nil, 0o644); err != nil {
-			t.Fatalf("putting a file where the destination was: %v", err)
+		// The transmission is open and long enough to keep. Now make filing it
+		// impossible, by putting an ordinary file where the folder for the day
+		// has to be made. Taking the whole destination away instead would mean
+		// deleting a directory that still holds an open file, which Unix allows
+		// and Windows refuses.
+		if err := os.WriteFile(filepath.Join(dir, "2026-08-22"), nil, 0o644); err != nil {
+			t.Fatalf("putting a file where the day's folder goes: %v", err)
 		}
 
 		cancel()
@@ -2419,6 +2469,10 @@ func Test_recordLoopCutsWhenTheRadioChanges(t *testing.T) {
 		frames <- f
 	}
 
+	// Only now is it safe to change radios. Doing it before this audio has been
+	// read would label it with whichever radio won the race.
+	drain(t, frames)
+
 	r.unit.Store("201")
 	settle()
 	second, _ := feed(next, 60, loudLevel)
@@ -2426,7 +2480,7 @@ func Test_recordLoopCutsWhenTheRadioChanges(t *testing.T) {
 		frames <- f
 	}
 
-	settle()
+	drain(t, frames)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("recording: %v", err)
